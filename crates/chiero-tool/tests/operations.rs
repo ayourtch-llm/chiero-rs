@@ -1,0 +1,406 @@
+//! **050 contracts 1 and 4b, over *every* operation — and the registry that makes "every"
+//! mean something.**
+//!
+//! > 1. Every operation's response validates against the envelope schema, including error
+//! >    responses (**checked for all operations by a schema test**).
+//! >
+//! > 4b. An always-degenerate implementation must fail this suite. One that always answers
+//! >     `proven: false, fidelity: "Bounded"` while doing real work otherwise satisfies every
+//! >     other contract here and can never license a negative claim. **The corpus therefore
+//! >     contains, for each operation, at least one input reaching `fidelity: "Exact",
+//! >     proven: true`.**
+//!
+//! Both contracts are quantified over operations, and a test file that names the operations
+//! it happens to know about silently stops covering the next one added — in the direction
+//! nobody looks. This project has made that mistake in the other direction already, which is
+//! why `chiero-opt::PASSES` is a registry and 020 contract 44 is written over it.
+//!
+//! So the operations are enumerated here **and** [`every_operation_is_registered`] reads
+//! `src/lib.rs` and fails if a public function returning an [`Envelope`] is missing from the
+//! list. Adding an operation without a sample is a build failure, not a quiet gap.
+//!
+//! # `Exact` is not possible for every operation, and that is declared rather than assumed
+//!
+//! 4b's "for each operation" cannot hold for `select_tests`: coverage is historical, so a
+//! selection is `Bounded` **by construction** and the crate's own documentation says so. An
+//! operation like that declares why, and the test checks the declaration against reality in
+//! *both* directions — an operation claiming it cannot be `Exact` that turns out to reach
+//! `Exact` is as much a defect as the reverse, because it means the stated reason is wrong.
+
+use chiero_diff::{Program, impact};
+use chiero_gcov::{CoverageIndex, TestId, TestOutcome};
+use chiero_pp::{Config, preprocess_str};
+use chiero_select::Suite;
+use chiero_tool::{Envelope, Fidelity};
+use std::path::PathBuf;
+
+/// One 050 §3 operation, with enough representative responses to judge it by.
+struct Op {
+    /// The public function's name in `src/lib.rs`.
+    name: &'static str,
+    /// Representative responses, including the degenerate and error ones — contract 1 says
+    /// "including error responses", which is where a schema usually first goes wrong.
+    samples: fn() -> Vec<Envelope>,
+    /// `None`: this operation can be `Exact`, and at least one sample must prove it (4b).
+    /// `Some(why)`: it structurally cannot, and no sample may be.
+    never_exact: Option<&'static str>,
+}
+
+const OPS: &[Op] = &[
+    Op {
+        name: "select_tests",
+        samples: select_tests_samples,
+        never_exact: Some(
+            "coverage is historical: it records what the tests did on the previous build, \
+             so no selection is proven for all inputs (032 §3, 050's own doc comment)",
+        ),
+    },
+    Op {
+        name: "expansion_sites_envelope",
+        samples: expansion_sites_samples,
+        never_exact: None,
+    },
+    Op {
+        name: "explain_macro_expansion_envelope",
+        samples: explain_samples,
+        never_exact: None,
+    },
+    Op {
+        name: "prove_equivalent",
+        samples: prove_equivalent_samples,
+        never_exact: None,
+    },
+];
+
+// ---------------------------------------------------------------------------------------
+// Samples
+// ---------------------------------------------------------------------------------------
+
+fn corpus() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("tests/corpus/coverage")
+}
+
+fn select_tests_samples() -> Vec<Envelope> {
+    let mut idx = CoverageIndex::default();
+    chiero_gcov::ingest_native_as(&mut idx, TestId(0), &corpus(), "t").expect("fixture");
+    idx.record_outcome(TestId(0), TestOutcome::Passed);
+
+    let before =
+        Program::parse("t.c", "int main (void)\n{\n  M; M;\n  return 0;\n}\n").expect("parses");
+    let after =
+        Program::parse("t.c", "int main (void)\n{\n  M; M;\n  return 1;\n}\n").expect("parses");
+    let changed =
+        chiero_tool::select_tests(&impact(&before, &after), &after, &idx, &Suite::default());
+    // The empty answer, which is the one 050 §2 exists for: no change at all.
+    let unchanged =
+        chiero_tool::select_tests(&impact(&before, &before), &before, &idx, &Suite::default());
+    // And with no coverage at all — the degenerate input.
+    let no_coverage = chiero_tool::select_tests(
+        &impact(&before, &after),
+        &after,
+        &CoverageIndex::default(),
+        &Suite::default(),
+    );
+    vec![changed, unchanged, no_coverage]
+}
+
+fn expansion_sites_samples() -> Vec<Envelope> {
+    let src = "#define M(v) ((v) + 1)\nint a (int x) { return M (x); }\n\
+               int b (int x) { return M (x) + M (x); }\n";
+    let tu = preprocess_str("f.c", src, Config::default());
+    vec![
+        // Complete.
+        chiero_tool::expansion_sites_envelope(&tu.source_map, "M", None, 50),
+        // A page of a larger population.
+        chiero_tool::expansion_sites_envelope(&tu.source_map, "M", None, 2),
+        // A macro that does not exist — the error-shaped response.
+        chiero_tool::expansion_sites_envelope(&tu.source_map, "NOPE", None, 50),
+    ]
+}
+
+fn explain_samples() -> Vec<Envelope> {
+    let src = "#define INNER(v) ((v) + 1)\n#define OUTER(v) (INNER (v) * 2)\n\
+               int a (int x) { return OUTER (x); }\nint b (int x) { return x; }\n";
+    let tu = preprocess_str("f.c", src, Config::default());
+    vec![
+        // A real chain.
+        chiero_tool::explain_macro_expansion_envelope(&tu.source_map, "f.c", 3, None),
+        // A line with no macro on it: a *proven* empty answer.
+        chiero_tool::explain_macro_expansion_envelope(&tu.source_map, "f.c", 4, None),
+        // A file nobody has heard of: an empty answer that proves nothing.
+        chiero_tool::explain_macro_expansion_envelope(&tu.source_map, "other.c", 3, None),
+    ]
+}
+
+fn m(body: &str) -> chiero_cir::Module {
+    chiero_cir::text::parse(&format!("target x86_64-unknown-linux-gnu\n\n{body}\n"))
+        .expect("fixture parses")
+}
+
+const DOUBLE: &str = "\
+func @f(%0: i32) -> i32 {
+entry:
+  .line 1
+  %1 = mul i32 %0, 2i32
+  ret %1
+}";
+
+const SHIFTED: &str = "\
+func @f(%0: i32) -> i32 {
+entry:
+  .line 1
+  %1 = shl i32 %0, 1i32
+  ret %1
+}";
+
+const TRIPLED: &str = "\
+func @f(%0: i32) -> i32 {
+entry:
+  .line 1
+  %1 = mul i32 %0, 3i32
+  ret %1
+}";
+
+fn prove_equivalent_samples() -> Vec<Envelope> {
+    let mut out = Vec::new();
+    // The undecided answer needs no backend, so it is always sampled.
+    out.push(chiero_tool::prove_equivalent(
+        &m(DOUBLE),
+        &m(SHIFTED),
+        &chiero_opt::EquivCfg::lite("f"),
+    ));
+    // An entry that is in neither module — the error-shaped response.
+    out.push(chiero_tool::prove_equivalent(
+        &m(DOUBLE),
+        &m(SHIFTED),
+        &chiero_opt::EquivCfg::lite("nosuch"),
+    ));
+    let cfg = chiero_opt::EquivCfg::new("f");
+    if cfg.backend.is_some() {
+        out.push(chiero_tool::prove_equivalent(&m(DOUBLE), &m(SHIFTED), &cfg));
+        out.push(chiero_tool::prove_equivalent(&m(DOUBLE), &m(TRIPLED), &cfg));
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------------------
+// The contracts
+// ---------------------------------------------------------------------------------------
+
+/// **The registry is the test.** An operation added to `src/lib.rs` and not to [`OPS`] fails
+/// here, so "every operation" in contracts 1 and 4b stays true without anyone remembering.
+///
+/// Reads the source rather than reflecting, because Rust has no reflection and a list that
+/// checks itself against another hand-written list checks nothing.
+#[test]
+fn every_operation_is_registered() {
+    let src = std::fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs"))
+        .expect("this crate's own source");
+
+    // `pub fn name(` ... `) -> Envelope {`, over a signature that spans lines.
+    let mut found: Vec<String> = Vec::new();
+    let lines: Vec<&str> = src.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        // Column 0 only. An indented `pub fn` is an inherent method — `Envelope::new`
+        // returns an `Envelope` and is not an operation.
+        let Some(rest) = line.strip_prefix("pub fn ") else {
+            continue;
+        };
+        let Some(name) = rest.split('(').next().map(str::to_string) else {
+            continue;
+        };
+        // Walk forward to the end of the signature.
+        let returns_envelope = lines[i..]
+            .iter()
+            .take_while(|l| !l.contains(" {") || l.contains("-> Envelope"))
+            .take(20)
+            .any(|l| l.contains("-> Envelope"));
+        if returns_envelope {
+            found.push(name);
+        }
+    }
+
+    assert!(
+        !found.is_empty(),
+        "the scan found no operations at all, which means it is broken rather than that \
+         there are none"
+    );
+    let registered: Vec<&str> = OPS.iter().map(|o| o.name).collect();
+    let missing: Vec<&String> = found
+        .iter()
+        .filter(|f| !registered.contains(&f.as_str()))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these operations return an Envelope and are not in OPS, so contracts 1 and 4b do \
+         not cover them: {missing:?}"
+    );
+    let stale: Vec<&&str> = registered
+        .iter()
+        .filter(|r| !found.contains(&r.to_string()))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "these are registered and no longer exist: {stale:?}"
+    );
+}
+
+/// **Contract 1: every response validates against the envelope schema, error responses
+/// included.**
+#[test]
+fn every_response_has_the_envelope_shape() {
+    for op in OPS {
+        let samples = (op.samples)();
+        assert!(
+            !samples.is_empty(),
+            "{}: an operation with no samples is an operation with no coverage",
+            op.name
+        );
+        for (i, env) in samples.iter().enumerate() {
+            let v: serde_json::Value = serde_json::from_str(&env.to_json())
+                .unwrap_or_else(|e| panic!("{} sample {i}: not valid JSON: {e}", op.name));
+            for key in ["result", "fidelity", "proven", "assumptions", "blind_spots"] {
+                assert!(
+                    !v[key].is_null(),
+                    "{} sample {i}: the envelope is missing `{key}`: {v}",
+                    op.name
+                );
+            }
+            assert!(
+                v["proven"].is_boolean(),
+                "{} sample {i}: `proven` must be a boolean: {v}",
+                op.name
+            );
+            assert!(
+                v["blind_spots"].is_array() && v["assumptions"].is_array(),
+                "{} sample {i}: the qualifications must be lists, so a reader can count them",
+                op.name
+            );
+        }
+    }
+}
+
+/// **Contract 2, at the operation surface rather than on the type.**
+///
+/// `envelope.rs` proves the invariant over the constructor. This proves that no operation
+/// found a way around it — which is the claim contract 2 actually makes ("over all
+/// operations and all corpus inputs").
+#[test]
+fn no_operation_is_proven_without_being_exact() {
+    for op in OPS {
+        for (i, env) in (op.samples)().iter().enumerate() {
+            assert_eq!(
+                env.proven,
+                env.fidelity == Fidelity::Exact,
+                "{} sample {i}: proven={} with fidelity={:?}",
+                op.name,
+                env.proven,
+                env.fidelity
+            );
+        }
+    }
+}
+
+/// **Contract 4b: an always-degenerate implementation must fail this suite.**
+///
+/// Every operation that *can* license a positive claim must be shown doing it on at least one
+/// input, and every operation that cannot must have said why — checked in both directions,
+/// because an operation that claims it can never be `Exact` and then is has a wrong reason
+/// written down, which is worse than none.
+#[test]
+fn each_operation_reaches_exact_or_declares_why_it_cannot() {
+    let mut report = Vec::new();
+    for op in OPS {
+        let samples = (op.samples)();
+        let exact = samples.iter().filter(|e| e.proven).count();
+        report.push(format!("{}: {exact}/{} exact", op.name, samples.len()));
+        match op.never_exact {
+            None => assert!(
+                exact > 0,
+                "{}: no sample reaches Exact, so this operation can never license a \
+                 negative claim — contract 4b's degenerate implementation would pass \
+                 everything else",
+                op.name
+            ),
+            Some(why) => assert_eq!(
+                exact, 0,
+                "{}: declared unable to reach Exact because {why}, but {exact} sample(s) \
+                 did — the declaration is wrong",
+                op.name
+            ),
+        }
+    }
+    println!(
+        "050 contract 4b — per-operation Exact rate:\n  {}",
+        report.join("\n  ")
+    );
+}
+
+/// **An unproven answer always carries something to read.**
+///
+/// 050 §2: a consumer must be "structurally unable to miss the qualification". A response
+/// with `proven: false` and nothing anywhere is a bare no — the exact shape an LLM reads as
+/// "nothing to report".
+///
+/// **Truncation counts**, and finding out that it had to was the point of writing this over
+/// every operation. `expansion_sites_envelope` on a page of a larger population is `Bounded`
+/// with empty `assumptions` and empty `blind_spots`: the qualification is real and complete
+/// and lives in `truncation`, which 050 §2 gives its own field precisely so a reader does not
+/// have to find it in prose. A test that demanded a blind spot there would have been
+/// demanding the qualification be said twice.
+#[test]
+fn every_unproven_answer_says_what_makes_it_unproven() {
+    for op in OPS {
+        for (i, env) in (op.samples)().iter().enumerate() {
+            if env.proven {
+                continue;
+            }
+            let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
+            let truncated = v["truncation"]["truncated"] == serde_json::json!(true);
+            assert!(
+                !env.assumptions.is_empty() || !env.blind_spots.is_empty() || truncated,
+                "{} sample {i}: fidelity {:?}, proven false, and nothing anywhere in the \
+                 envelope says why: {v}",
+                op.name,
+                env.fidelity
+            );
+            // And the human rendering must carry it too — the JSON is not what a person reads.
+            let r = env.render();
+            assert!(
+                r.contains("not proven") || r.contains("within") || r.contains("showing"),
+                "{} sample {i}: the rendering reads as an unqualified answer:\n{r}",
+                op.name
+            );
+        }
+    }
+}
+
+/// **001 §5: the same input renders byte-identically.** Over every operation, not a sample.
+#[test]
+fn every_operation_is_deterministic() {
+    for op in OPS {
+        let a = (op.samples)();
+        let b = (op.samples)();
+        assert_eq!(
+            a.len(),
+            b.len(),
+            "{}: a different number of samples",
+            op.name
+        );
+        for (i, (x, y)) in a.iter().zip(&b).enumerate() {
+            assert_eq!(
+                x.determinism_key(),
+                y.determinism_key(),
+                "{} sample {i} is not reproducible:\n{}\n---\n{}",
+                op.name,
+                x.to_json(),
+                y.to_json()
+            );
+        }
+    }
+}
