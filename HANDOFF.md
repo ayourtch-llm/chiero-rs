@@ -750,6 +750,22 @@ typing the paths ever would.
 > Contracts 4, 6, 7, 8, 18, 19 are green with it: transitive closure three deep, the auditable
 > edge chain, and §3's fixpoint.
 >
+> ### 🕳️ CONTRACT 14 IS A *GAP*, NOT AN ANALYSIS — and it is counted
+>
+> §3.4: *"if a changed function's address is taken, every indirect call site whose type signature
+> is compatible is treated as a potential caller. […] `chiero-vpp` narrows it with knowledge of
+> the registration tables, and **the general engine does not guess**."*
+>
+> Both halves come from the token stream: an address is **taken** when a name appears without a
+> `(` after it, and an **indirect call** is a `name (` where the name is not a known function and
+> not one of the words that are followed by `(` without being calls. Compatibility is **arity** —
+> what can be checked without types — and it is weaker than a type check *in the safe direction*:
+> more sites, never fewer.
+>
+> ⚠️ **A fallback makes the result `Partial` even when every file parsed.** An approximated answer
+> is not a complete one, and a maintainer reading "412 impacted" needs to know how many arrived
+> through a gap. This is the first thing that can make `address_taken_fallbacks` non-zero.
+>
 > ### 📐 WHAT `LayoutChanged` COST — two premises that were wrong (b703cfc)
 >
 > Both were caught by tests written against the spec, and both would have been silently wrong:
@@ -772,7 +788,7 @@ typing the paths ever would.
 > have any line for `m.h`", which is **true**: `m.h` also holds a `static inline`, and inline
 > functions do get their own entries. Ask about the changed *line*.
 >
-> ### 📊 031 CONTRACT STATUS — 16 of 20 green
+> ### 📊 031 CONTRACT STATUS — 17 of 20 green
 >
 > | | |
 > |---|---|
@@ -785,16 +801,32 @@ typing the paths ever would.
 > | **17 precision** | ✅ guard — a macro edit does **not** impact every includer |
 > | **9, 10, 11 `LayoutChanged`** | ✅ computed from 014's `RecordLayout`, keyed by field *name* |
 > | 13 `CLIB_MARCH_VARIANT` | ❌ |
-> | 14 address-taken indirect calls | ❌ |
+> | **14 address-taken indirect calls** | ✅ arity-compatible, counted, and `Partial` |
 > | 16 `#if` and `ConfigId` | ❌ |
 >
 > ⏭️ **Next, in the order the spec gives them:**
 >
-> - **contract 14**, address-taken functions, which is also the first thing to increment
->   `address_taken_fallbacks` — one of the three `Completeness::Partial` fields that report zero
->   today and say so on themselves.
-> - **contract 16**, `#if` conditions and `ConfigId`, which needs the preprocessor's config
->   plumbing rather than new analysis.
+> #### The three that are left, and what each actually needs
+>
+> Neither of the two remaining contracts is more analysis — **both are cross-crate plumbing**, and
+> that is worth knowing before starting one:
+>
+> - **contract 16 (`#if` and `ConfigId`)** cannot be done in `chiero-diff` alone. The trap: the
+>   preprocessor *consumes* `#if` lines, so a condition that changed while its **outcome** did not
+>   produces an identical token stream and no impact at all — `#if FOO > 2` becoming `#if FOO > 3`
+>   under `FOO=1` is invisible, and is exactly the change that behaves differently under
+>   `FOO=3`. `PreprocessedTu` exposes `config`, `deps`, `pragmas` and `macro_defs`; `Conditional`
+>   is **private to the engine** (`chiero-pp/src/lib.rs:219`). So this wants a recorded
+>   conditional — its span and its condition tokens — on `PreprocessedTu` first.
+> - **contract 13 (`CLIB_MARCH_VARIANT`)** is the identity problem `chiero-gcov` already solved
+>   twice, with `FuncKey` and `Variant`. ⚠️ But 001 §4 rule 4 puts VPP knowledge only in
+>   `chiero-vpp`, and `chiero-gcov`'s answer was a `MarchResolver` extension point whose default
+>   *splits nothing*. Copy that shape rather than teaching `chiero-diff` about
+>   `CLIB_MARCH_VARIANT`: a resolver that guessed from a bare suffix would collapse `foo_avx2`
+>   into `foo` and attribute the vector variant's impact to the scalar path.
+> - **§5's output**: the machine format for 050 and the human rendering that leads with the
+>   closure reason. Self-contained — no other crate involved — and the one piece a person
+>   actually reads. §5's ordering is already tested; what is missing is the rendering itself.
 >
 > ⚠️ **Nothing here has met a real tree yet.** `Program::parse` takes a string and preprocesses it
 > alone; VPP's files need include paths and a `ConfigId`. The frontend lowers all 1871 TUs, so the
