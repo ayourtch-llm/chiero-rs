@@ -750,6 +750,25 @@ typing the paths ever would.
 > Contracts 4, 6, 7, 8, 18, 19 are green with it: transitive closure three deep, the auditable
 > edge chain, and §3's fixpoint.
 >
+> ### 🪤 A DUMMY SPAN FABRICATED A LOCATION — for the **second** time (f749c4b)
+>
+> Contract 16's *premise* test — "both sides really do yield the same entities" — failed, and not
+> for the reason it was testing. The preprocessor's **predefined macros were entities of every
+> program**: thirteen of them, `__LINE__` through `__has_builtin`, filed under the main source
+> file.
+>
+> Their `def_span` is `Span::DUMMY`, whose `lo` is `BytePos(0)` — and `lookup_file` resolves that
+> happily to whichever file starts at offset 0. **The test must be `is_dummy()`, never "did
+> `lookup_file` answer".**
+>
+> The first time was `tests_for_span` in `chiero-gcov`, where synthesized CIR nodes were answered
+> with line 1 of the first file. 010 §4 warns about it in as many words: resolving `DUMMY.lo`
+> *fabricates* a location, and call sites are expected to guard. **Grep for `is_dummy` before
+> writing any new span→file lookup.**
+>
+> A predefined macro belongs to the *configuration*, not the source — so changing one is a config
+> change, which is contract 16's own business.
+>
 > ### 🕳️ CONTRACT 14 IS A *GAP*, NOT AN ANALYSIS — and it is counted
 >
 > §3.4: *"if a changed function's address is taken, every indirect call site whose type signature
@@ -788,7 +807,7 @@ typing the paths ever would.
 > have any line for `m.h`", which is **true**: `m.h` also holds a `static inline`, and inline
 > functions do get their own entries. Ask about the changed *line*.
 >
-> ### 📊 031 CONTRACT STATUS — 17 of 20 green
+> ### 📊 031 CONTRACT STATUS — 19 of 20 green
 >
 > | | |
 > |---|---|
@@ -802,22 +821,12 @@ typing the paths ever would.
 > | **9, 10, 11 `LayoutChanged`** | ✅ computed from 014's `RecordLayout`, keyed by field *name* |
 > | 13 `CLIB_MARCH_VARIANT` | ❌ |
 > | **14 address-taken indirect calls** | ✅ arity-compatible, counted, and `Partial` |
-> | 16 `#if` and `ConfigId` | ❌ |
+> | **16 `#if` and `ConfigId`** | ✅ `chiero-pp` now records conditionals |
 >
 > ⏭️ **Next, in the order the spec gives them:**
 >
-> #### The three that are left, and what each actually needs
+> #### ⏭️ THE ONE THAT IS LEFT
 >
-> Neither of the two remaining contracts is more analysis — **both are cross-crate plumbing**, and
-> that is worth knowing before starting one:
->
-> - **contract 16 (`#if` and `ConfigId`)** cannot be done in `chiero-diff` alone. The trap: the
->   preprocessor *consumes* `#if` lines, so a condition that changed while its **outcome** did not
->   produces an identical token stream and no impact at all — `#if FOO > 2` becoming `#if FOO > 3`
->   under `FOO=1` is invisible, and is exactly the change that behaves differently under
->   `FOO=3`. `PreprocessedTu` exposes `config`, `deps`, `pragmas` and `macro_defs`; `Conditional`
->   is **private to the engine** (`chiero-pp/src/lib.rs:219`). So this wants a recorded
->   conditional — its span and its condition tokens — on `PreprocessedTu` first.
 > - **contract 13 (`CLIB_MARCH_VARIANT`)** is the identity problem `chiero-gcov` already solved
 >   twice, with `FuncKey` and `Variant`. ⚠️ But 001 §4 rule 4 puts VPP knowledge only in
 >   `chiero-vpp`, and `chiero-gcov`'s answer was a `MarchResolver` extension point whose default
