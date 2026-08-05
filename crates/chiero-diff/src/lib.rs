@@ -61,6 +61,14 @@ impl Entity {
         }
     }
 
+    /// Named with a trailing underscore because `macro` is a Rust keyword.
+    pub fn macro_(file: &str, name: &str) -> Entity {
+        Entity::Macro {
+            file: file.into(),
+            name: name.into(),
+        }
+    }
+
     pub fn record(file: &str, tag: &str) -> Entity {
         Entity::Record {
             file: file.into(),
@@ -117,6 +125,14 @@ pub enum ChangeClass {
     SignatureChanged,
     /// A global's initial value; its readers are affected.
     InitializerChanged,
+    /// A macro's replacement list differs — **every expansion site** (031 §3.2).
+    MacroBodyChanged,
+    /// A macro's parameter names or count, its variadicity, or object-versus-function-like.
+    ///
+    /// Renaming a parameter lands here even when nothing can behave differently: chiero does not
+    /// attempt to prove two macro bodies equivalent (contract 7), and the direction a wrong guess
+    /// would fail in is the one that skips tests.
+    MacroInterfaceChanged,
     Added,
     /// Also a build break for every user, which is why it is not merely "the entity is gone".
     Removed,
@@ -133,6 +149,8 @@ pub enum ImpactEdge {
     UsesGlobal { name: String },
     /// It mentions a type or typedef that changed.
     UsesType { name: String },
+    /// **It expands a macro that changed** — 031 §3.2, and the edge coverage cannot produce.
+    ExpandsMacro { name: String },
 }
 
 /// Why an entity is in the set (031 §3).
@@ -159,10 +177,35 @@ pub struct ImpactSet {
     pub entities: IndexMap<Entity, Justification>,
 }
 
+/// A loader for a translation unit that includes nothing.
+///
+/// Reaching a `#include` through this is an error rather than an empty file, so a fixture that
+/// forgot its include paths fails loudly instead of comparing two programs that are both missing
+/// the same declarations.
+struct NoIncludes;
+
+impl chiero_pp::FileLoader for NoIncludes {
+    fn load(&mut self, path: &std::path::Path) -> std::io::Result<String> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!(
+                "no include paths were configured, so `{}` cannot be read",
+                path.display()
+            ),
+        ))
+    }
+}
+
 /// One side of a comparison: a translation unit, preprocessed and parsed.
 #[derive(Debug)]
 pub struct Program {
     entities: IndexMap<Entity, Fingerprint>,
+    /// Which macro each entity expands, by name, from the preprocessor's reverse index.
+    ///
+    /// **This is the join coverage cannot make.** gcov records the `.c` line a macro was *used*
+    /// on and nothing about the macro itself (030 §1, measured), so a coverage index has no way
+    /// back from a header edit to the functions it reaches.
+    expands: IndexMap<Entity, Vec<String>>,
     /// Which names each entity mentions, for §3's closure.
     ///
     /// **Names, not resolved bindings.** A local variable shadowing a global's name puts its
@@ -194,7 +237,22 @@ impl Program {
     /// here is the honest placeholder, because returning an empty program would report *no
     /// impact* for a file nobody could read.
     pub fn parse(file: &str, src: &str) -> Option<Program> {
-        let tu = chiero_pp::preprocess_str(file, src, chiero_pp::Config::default());
+        Program::parse_with(file, src, chiero_pp::Config::default(), &mut NoIncludes)
+    }
+
+    /// The same, with include paths and a loader — which a diff that touches only a header
+    /// needs, because the contract is about a change no `.c` file contains.
+    ///
+    /// The loader is the caller's because `chiero-pp` has no disk implementation on purpose: a
+    /// preprocessor that reaches for the filesystem cannot be tested against a header that does
+    /// not exist yet, which is precisely the shape of a *before* and *after* comparison.
+    pub fn parse_with<L: chiero_pp::FileLoader>(
+        file: &str,
+        src: &str,
+        config: chiero_pp::Config,
+        loader: &mut L,
+    ) -> Option<Program> {
+        let tu = chiero_pp::preprocess_with_loader(file, src, config, loader);
         if !tu.diagnostics.is_empty() {
             return None;
         }
@@ -203,8 +261,15 @@ impl Program {
         if !parsed.diagnostics.is_empty() {
             return None;
         }
-        let (entities, refs) = extract(file, &tu, &parsed);
-        Some(Program { entities, refs })
+        let (entities, refs, spans) = extract(file, &tu, &parsed);
+        let (macros, expands) = extract_macros(&tu, &spans);
+        let mut entities = entities;
+        entities.extend(macros);
+        Some(Program {
+            entities,
+            expands,
+            refs,
+        })
     }
 
     /// Every entity this translation unit declares, in written order.
@@ -236,11 +301,16 @@ fn extract(
     file: &str,
     tu: &chiero_pp::PreprocessedTu,
     parsed: &chiero_parse::ParsedTu,
-) -> (IndexMap<Entity, Fingerprint>, IndexMap<Entity, Vec<String>>) {
+) -> (
+    IndexMap<Entity, Fingerprint>,
+    IndexMap<Entity, Vec<String>>,
+    IndexMap<Entity, (u32, u32)>,
+) {
     let ast = &parsed.ast;
     let name_of = |s| parsed.text(s).unwrap_or("?").to_string();
     let mut out: IndexMap<Entity, Fingerprint> = IndexMap::new();
     let mut refs: IndexMap<Entity, Vec<String>> = IndexMap::new();
+    let mut spans: IndexMap<Entity, (u32, u32)> = IndexMap::new();
 
     for &id in ast.items() {
         let decl = ast.decl(id);
@@ -292,6 +362,7 @@ fn extract(
         mentioned.sort();
         mentioned.dedup();
         refs.insert(entity.clone(), mentioned);
+        spans.insert(entity.clone(), (lo, hi));
         out.insert(
             entity,
             Fingerprint {
@@ -300,7 +371,87 @@ fn extract(
             },
         );
     }
-    (out, refs)
+    (out, refs, spans)
+}
+
+/// Every macro the translation unit defined, and which entity expands which.
+///
+/// **031 §3.2 steps 1 and 2, and the whole differentiator.** `SourceMap::expansion_sites` is the
+/// preprocessor's reverse index — where was this macro expanded — and it is already transitive in
+/// the sense that matters: an expansion of `m` nested inside another macro's body is still
+/// recorded against `m`. Each site's `expansion_loc` gives a position in a `.c` file, and the
+/// entity whose declaration spans that position is the function that expands it.
+#[allow(clippy::type_complexity)]
+fn extract_macros(
+    tu: &chiero_pp::PreprocessedTu,
+    spans: &IndexMap<Entity, (u32, u32)>,
+) -> (IndexMap<Entity, Fingerprint>, IndexMap<Entity, Vec<String>>) {
+    let sm = &tu.source_map;
+    let mut out: IndexMap<Entity, Fingerprint> = IndexMap::new();
+    let mut expands: IndexMap<Entity, Vec<String>> = IndexMap::new();
+
+    for def in &tu.macro_defs {
+        let Some(name) = tu.symbol_text(def.name) else {
+            continue;
+        };
+        let file = sm
+            .lookup_file(def.def_span.lo)
+            .map(|f| file_name(sm.file(f).path()))
+            .unwrap_or_else(|| "<command line>".to_string());
+        let entity = Entity::macro_(&file, name);
+
+        // The interface and the replacement list are separate for the same reason a function's
+        // signature and body are: 031 §2 gives them different classes because they close over
+        // differently — though for a macro both reach every expansion site, so the distinction is
+        // in what the report says rather than in what it selects.
+        let head = match &def.kind {
+            chiero_pp::MacroKind::ObjectLike => vec!["object-like".to_string()],
+            chiero_pp::MacroKind::FunctionLike { params, variadic } => {
+                let mut v = vec![format!("function-like({variadic:?})")];
+                v.extend(
+                    params
+                        .iter()
+                        .map(|p| tu.symbol_text(*p).unwrap_or("?").to_string()),
+                );
+                v
+            }
+        };
+        // **The body's own text, span by span.** `text_at` indexes the *translation unit's*
+        // token stream, so indexing it by a body position hands back the first N tokens of the
+        // file — identical for every macro and identical on both sides, which makes a body edit
+        // invisible. The parameter-rename test passed anyway, because its head differed.
+        let tail: Vec<String> = def
+            .body
+            .iter()
+            .filter_map(|t| sm.span_text(t.span))
+            .map(str::to_string)
+            .collect();
+        out.insert(entity, Fingerprint { head, tail });
+
+        for ctx in sm.expansion_sites(def.id).collect::<Vec<_>>() {
+            let Some(e) = sm.expansion(ctx) else { continue };
+            let Some(loc) = sm.expansion_loc(e.call_site) else {
+                continue;
+            };
+            let at = loc.pos.0;
+            for (holder, (lo, hi)) in spans {
+                if at >= *lo && at < *hi {
+                    let v = expands.entry(holder.clone()).or_default();
+                    if !v.iter().any(|n| n == name) {
+                        v.push(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+    (out, expands)
+}
+
+/// A path's final component, which is how [`Entity`] names files.
+fn file_name(p: &std::path::Path) -> String {
+    p.file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+        .unwrap_or_else(|| p.to_string_lossy().into_owned())
 }
 
 /// What could behave differently between two programs (031 §3.1).
@@ -369,7 +520,12 @@ fn close_over_references(
     while !frontier.is_empty() {
         distance += 1;
         let mut next: Vec<Entity> = Vec::new();
-        for (holder, mentioned) in old.refs.iter().chain(new.refs.iter()) {
+        let by_reference = old.refs.iter().chain(new.refs.iter());
+        // **The macro edge is separate from the name edge**, because an expansion site is not a
+        // mention: `a()` never writes `BUMP`'s name after preprocessing, and the token stream it
+        // is fingerprinted on holds the *expansion*. Only the preprocessor's reverse index knows.
+        let by_expansion = old.expands.iter().chain(new.expands.iter());
+        for (holder, mentioned) in by_reference.chain(by_expansion) {
             if entities.contains_key(holder) {
                 continue;
             }
@@ -414,9 +570,8 @@ fn edge_to(target: &Entity) -> ImpactEdge {
         Entity::Typedef { name, .. } | Entity::Record { tag: name, .. } => {
             ImpactEdge::UsesType { name: name.clone() }
         }
-        Entity::EnumConst { name, .. } | Entity::Macro { name, .. } => {
-            ImpactEdge::UsesGlobal { name: name.clone() }
-        }
+        Entity::Macro { name, .. } => ImpactEdge::ExpandsMacro { name: name.clone() },
+        Entity::EnumConst { name, .. } => ImpactEdge::UsesGlobal { name: name.clone() },
     }
 }
 
@@ -426,6 +581,18 @@ fn edge_to(target: &Entity) -> ImpactEdge {
 /// a caller that has to tell them apart in order to ignore both is one that will eventually
 /// forget to.
 fn classify(before: &Fingerprint, after: &Fingerprint) -> Option<ChangeClass> {
+    // A macro's head is its interface — object- versus function-like, the parameter names, the
+    // variadicity — and is marked so the class can say which half moved.
+    let is_macro = before
+        .head
+        .first()
+        .is_some_and(|h| h.starts_with("object-like") || h.starts_with("function-like"));
+    if is_macro {
+        if before.head != after.head {
+            return Some(ChangeClass::MacroInterfaceChanged);
+        }
+        return (before.tail != after.tail).then_some(ChangeClass::MacroBodyChanged);
+    }
     if before.head != after.head {
         // The specifiers or the declarator differ: return type, parameters, linkage. Every caller
         // is affected whether or not the body moved.

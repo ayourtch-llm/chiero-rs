@@ -33,25 +33,38 @@
 
 use chiero_diff::{ChangeClass, Entity, ImpactEdge, Program, impact};
 
-/// Write a header beside a `.c`, so the preprocessor really includes it.
+/// Two files: a header and the `.c` that includes it.
 ///
-/// The two-file shape is the whole point: the contract is about a diff that touches **no `.c`
-/// file**, which cannot be expressed in one string.
+/// **In memory, not on disk.** `chiero-pp` has no filesystem loader by design, and that is a
+/// help here rather than an obstacle: the contract compares a program against one whose header
+/// has a *different* content, and a loader that answers from a map can hold both without a
+/// temporary directory or an ordering hazard between the two parses.
+struct Header(String);
+
+impl chiero_pp::FileLoader for Header {
+    fn load(&mut self, path: &std::path::Path) -> std::io::Result<String> {
+        if path.file_name().and_then(|f| f.to_str()) == Some("m.h") {
+            return Ok(self.0.clone());
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("{} is not part of this fixture", path.display()),
+        ))
+    }
+}
+
 fn programs(header_before: &str, header_after: &str, main_c: &str) -> (Program, Program) {
-    let dir = std::env::temp_dir().join(format!(
-        "chiero-macro-{}",
-        header_before.len() * 31 + header_after.len()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch directory");
-
     let mut cfg = chiero_pp::Config::default();
-    cfg.iquote_paths.push(dir.clone());
-
-    std::fs::write(dir.join("m.h"), header_before).expect("write header");
-    let before = Program::parse_with("main.c", main_c, cfg.clone()).expect("before parses");
-    std::fs::write(dir.join("m.h"), header_after).expect("rewrite header");
-    let after = Program::parse_with("main.c", main_c, cfg).expect("after parses");
+    cfg.iquote_paths.push(std::path::PathBuf::from("."));
+    let before = Program::parse_with(
+        "main.c",
+        main_c,
+        cfg.clone(),
+        &mut Header(header_before.into()),
+    )
+    .expect("before parses");
+    let after = Program::parse_with("main.c", main_c, cfg, &mut Header(header_after.into()))
+        .expect("after parses");
     (before, after)
 }
 
@@ -91,41 +104,61 @@ fn a_macro_body_edit_impacts_every_expansion_site_where_coverage_sees_nothing() 
         );
     }
     assert!(
-        !set.entities.contains_key(&Entity::function("main.c", "untouched")),
+        !set.entities
+            .contains_key(&Entity::function("main.c", "untouched")),
         "and a function that does not expand it stays out"
     );
 
     // --- what a coverage-only tool answers, on the same diff -----------------------------
     //
-    // The diff touches `m.h` alone. gcov records the `.c` lines where a macro was *used*, never
-    // the macro's own line (030 §1, measured) — so the set of changed lines a coverage tool could
-    // intersect its index with is empty, and it selects nothing.
-    let changed_c_lines = coverage_only_baseline(&["m.h"]);
+    // The diff touches one line: the `#define` in `m.h`. A coverage-only tool intersects the
+    // *changed lines* with its index, and gcov has no entry for a macro's definition line — 030
+    // §1 measures it and `tests/corpus/coverage/t.c` pins it — so every lookup misses.
+    let selected = coverage_only_baseline(&[("m.h", 1)]);
     assert!(
-        changed_c_lines.is_empty(),
-        "the coverage-only baseline has nothing to intersect: {changed_c_lines:?}"
+        selected.is_empty(),
+        "the coverage-only baseline has nothing to intersect: {selected:?}"
     );
 }
 
-/// What a line-and-coverage tool has to work with for a diff: the changed lines it can look up.
+/// What a coverage-only tool selects for a set of changed `(file, line)` pairs: the tests its
+/// index attributes to those lines.
 ///
-/// gcov's index is keyed by `(file, line)` and **contains no entry for a macro definition line**
-/// — 030 §1 measures it and `tests/corpus/coverage/t.c` pins it as a test. So for a diff that
-/// touches only headers' macro definitions, every lookup misses and the selection is empty.
-fn coverage_only_baseline(changed_files: &[&str]) -> Vec<String> {
+/// **Against the committed fixture, not a mock.** `tests/corpus/coverage/t.c` uses a macro from
+/// `m.h` twice on line 3; gcov put both expansions on `t.c:3` and left `m.h:1`, the macro's own
+/// line, with no record at all. Using the real artifacts is what stops this baseline drifting
+/// from what gcov does — which is the whole force of the comparison.
+fn coverage_only_baseline(changed: &[(&str, u32)]) -> Vec<chiero_gcov::TestId> {
     let corpus = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
         .parent()
         .unwrap()
         .join("tests/corpus/coverage");
-    let idx = chiero_gcov::ingest_native(&corpus, "t").expect("the pinned fixture");
-    // `m.h` is where the macro is defined, and `t.c:3` is where it was used twice.
-    changed_files
-        .iter()
-        .filter(|f| idx.lines_of(f).iter().any(|l| idx.line_count(f, *l).is_some()))
-        .map(|f| (*f).to_string())
-        .collect()
+    let mut idx = chiero_gcov::CoverageIndex::default();
+    chiero_gcov::ingest_native_as(&mut idx, chiero_gcov::TestId(0), &corpus, "t")
+        .expect("the pinned fixture");
+
+    let mut out: Vec<chiero_gcov::TestId> = Vec::new();
+    for (file, line) in changed {
+        for t in idx.tests_for_line(file, *line).unwrap_or_default() {
+            if !out.contains(&t) {
+                out.push(t);
+            }
+        }
+    }
+    out
+}
+
+/// The baseline is not vacuous: the same lookup against a line gcov *did* record finds the test.
+/// Without this, "coverage selects nothing" would be indistinguishable from a broken lookup.
+#[test]
+fn the_coverage_baseline_can_see_a_line_it_recorded() {
+    assert_eq!(
+        coverage_only_baseline(&[("t.c", 3)]),
+        vec![chiero_gcov::TestId(0)],
+        "the expansion *site* is recorded, which is exactly why the definition is not"
+    );
 }
 
 /// **Contract 6.** A macro whose body expands a changed macro is itself changed, and its own
@@ -144,12 +177,17 @@ fn macro_closure_is_transitive() {
     let set = impact(&before, &after);
 
     assert!(
-        set.entities.contains_key(&Entity::function("main.c", "deep")),
+        set.entities
+            .contains_key(&Entity::function("main.c", "deep")),
         "`deep` expands OUTER, which expands MID, which expands INNER — three levels"
     );
-    assert!(set.entities.contains_key(&Entity::function("main.c", "shallow")));
     assert!(
-        !set.entities.contains_key(&Entity::function("main.c", "none")),
+        set.entities
+            .contains_key(&Entity::function("main.c", "shallow"))
+    );
+    assert!(
+        !set.entities
+            .contains_key(&Entity::function("main.c", "none")),
         "and the closure still stops"
     );
 }
