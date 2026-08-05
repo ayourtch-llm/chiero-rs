@@ -6245,3 +6245,70 @@ fn the_elvis_form_takes_the_common_type_of_both_operands() {
         "int r = bump() ?: 9; return r*10 + calls;",
     );
 }
+
+/// **The `__atomic_*` and `__sync_*` families have no type**, which HANDOFF §9 called the
+/// largest remaining gap.
+///
+/// ```text
+/// vppinfra/elog.h:287:5: `elog_event_data_inline` lowered to CIR the verifier rejects
+///   (store value operand is Int(32), declared Int(64))
+///   ei = clib_atomic_fetch_add (&em->n_total_events, 1);
+/// ```
+///
+/// A table row cannot say "the pointee of operand 1", so `builtins.rs` leaves all 46 of them out
+/// and the result keeps `Ty::Error`, which lowers to a 32-bit fallback. VPP writes these
+/// directly — `__atomic_store_n` in 38 files, `__atomic_load_n` in 32 — so this is its own code
+/// rather than gcc's headers.
+///
+/// **Measured against gcc 13.3.0**, `void take(struct Z)` for the value-returning ones and
+/// "invalid use of void expression" for the rest:
+///
+/// | family | returns |
+/// |---|---|
+/// | `__atomic_load_n`, `__atomic_exchange_n`, `__atomic_{add,sub,and,or,xor,nand}_fetch`, `__atomic_fetch_{add,sub,and,or,xor,nand}` | the pointee of operand 1, **unqualified** — `const volatile unsigned long *` gives `unsigned long`, `char **` gives `char *` |
+/// | `__sync_lock_test_and_set`, `__sync_val_compare_and_swap`, `__sync_{add,sub,and,or,xor,nand}_and_fetch`, `__sync_fetch_and_{add,sub,and,or,xor,nand}` | the same |
+/// | `__atomic_compare_exchange{,_n}`, `__atomic_test_and_set`, `__atomic_is_lock_free`, `__sync_bool_compare_and_swap` | `_Bool` |
+/// | `__atomic_store{,_n}`, `__atomic_load`, `__atomic_exchange`, `__atomic_clear`, `__atomic_{thread,signal}_fence`, `__sync_lock_release`, `__sync_synchronize` | `void` |
+///
+/// # `_Generic` is the assertion, and it is a real one
+///
+/// The *value* an atomic produces is an opaque effect and always will be until 025 models them,
+/// so a value comparison would be comparing nothing. `_Generic`'s controlling expression is
+/// unevaluated: both compilers answer from the type alone, and the answer is an integer this
+/// file can compare. A type test with a value oracle.
+#[test]
+fn the_atomic_families_take_their_type_from_the_pointee() {
+    const P: &str = "typedef unsigned long ul;\n";
+    // The pointee, for four widths and a pointer pointee.
+    agree_with(
+        P,
+        "ul v = 1, *p = &v; return _Generic(__atomic_load_n(p, 0), ul: 1, int: 2, default: 0);",
+    );
+    agree_with(
+        P,
+        "int v = 1, *p = &v; return _Generic(__atomic_fetch_add(p, 1, 0), int: 1, ul: 2, default: 0);",
+    );
+    agree_with(
+        P,
+        "char *v = 0, **p = &v; return _Generic(__atomic_exchange_n(p, v, 0), char *: 1, default: 0);",
+    );
+    // **Qualifiers are stripped**, which is the half a naive "pointee" rule gets wrong.
+    agree_with(
+        P,
+        "const volatile ul v = 1; return _Generic(__atomic_load_n(&v, 0), ul: 1, default: 0);",
+    );
+    // The `_Bool` group and the `__sync_*` spelling of the same rule.
+    agree_with(
+        P,
+        "int v = 1, e = 1, *p = &v; \
+         return _Generic(__atomic_compare_exchange_n(p, &e, 2, 0, 0, 0), _Bool: 1, default: 0);",
+    );
+    agree_with(
+        P,
+        "ul v = 1, *p = &v; return _Generic(__sync_fetch_and_add(p, 1), ul: 1, int: 2, default: 0);",
+    );
+    agree_with(
+        P,
+        "int v = 1, *p = &v; return _Generic(__sync_bool_compare_and_swap(p, 1, 2), _Bool: 1, default: 0);",
+    );
+}
