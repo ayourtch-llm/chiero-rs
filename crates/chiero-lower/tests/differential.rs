@@ -6490,3 +6490,37 @@ fn a_statement_after_return_does_not_break_the_graph() {
     // A `goto` that targets a label in the unreachable part must still resolve.
     agree_with("", "int n = 7; goto done; while (n) n--; done: return n;");
 }
+
+/// **`--x` on a narrow object yields the object's width, not the promoted one.**
+///
+/// ```text
+/// svm/svm_fifo.c:758:7: `svm_fifo_free` … (Eq operand is Int(8), declared Int(32))
+///   if (--f->refcnt == 0)
+/// svm/fifo_segment.c:958:7: `fifo_segment_free_fifo` … (SGt operand is Int(8), …)
+///   if (--f->refcnt > 0)
+/// ```
+///
+/// `inc_dec` already knows this for `_Bool`, and the comment there says why: sema types the
+/// expression `int` and inserts no conversion, "unlike a plain read of `b`, where it does". The
+/// same is true of every type narrower than `int` — an `unsigned char` counter is the one VPP
+/// writes — and the fix was keyed on `Int(1)` alone.
+#[test]
+fn a_narrow_increment_yields_its_promoted_value() {
+    agree_with(
+        "struct S { unsigned char refcnt; };",
+        "struct S s = { 1 }; return (--s.refcnt == 0) + s.refcnt;",
+    );
+    agree_with(
+        "struct S { unsigned char refcnt; };",
+        "struct S s = { 3 }; return (--s.refcnt > 0) * 10 + s.refcnt;",
+    );
+    // Signed and unsigned narrow types, and the wrap that tells them apart.
+    agree_with("", "signed char c = -128; return --c;");
+    agree_with("", "unsigned char c = 0; return --c;");
+    agree_with("", "short s = 0; return --s;");
+    agree_with("", "unsigned short s = 0; return ++s == 1;");
+    // Postfix, which yields the value from *before* the store and takes the same promotion.
+    agree_with("", "unsigned char c = 0; int r = c--; return r * 10 + c;");
+    // The `_Bool` case the existing arm covers, so a generalisation cannot lose it.
+    agree_with("", "_Bool b = 0; return (++b) * 10 + b;");
+}
