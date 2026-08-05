@@ -971,6 +971,7 @@ pub fn analyze_with(
         tags: IndexMap::new(),
         enums: IndexMap::new(),
         quiet: 0,
+        in_typeof: 0,
         next_enum_tag: 0,
         enumerators: IndexMap::new(),
         in_progress: Vec::new(),
@@ -1138,6 +1139,7 @@ impl<'a> ConstEvaluator<'a> {
             tags: IndexMap::new(),
             enums: IndexMap::new(),
             quiet: 0,
+            in_typeof: 0,
             next_enum_tag: 0,
             enumerators: IndexMap::new(),
             in_progress: Vec::new(),
@@ -1195,6 +1197,8 @@ struct Cx<'a> {
     tags: IndexMap<Symbol, RecordId>,
     /// Enum tag → its underlying integer type (014 contract 10).
     enums: IndexMap<Symbol, TyId>,
+    /// Nesting depth of a `typeof` operand, which C does not evaluate.
+    in_typeof: u32,
     /// Nesting depth of `re_resolving`; diagnostics are dropped while it is non-zero.
     dialect: chiero_ast::Dialect,
     quiet: u32,
@@ -1622,7 +1626,24 @@ impl Cx<'_> {
     /// - Anything else: the name means two different things, which is the case nothing else in
     ///   this file was asking about.
     fn declare_ordinary(&mut self, name: Symbol, meaning: Meaning, span: Span) {
-        let file_scope = self.meanings.at_file_scope();
+        self.declare_ordinary_linked(name, meaning, span, false);
+    }
+
+    /// The same, told whether this declaration's identifier has **linkage**.
+    ///
+    /// C 6.7p3 restricts "no more than one declaration ... with the same scope" to identifiers
+    /// with **no** linkage. A block-scope function declaration has external linkage (6.2.2p5)
+    /// and so does an `extern` object, so repeating either is legal — `l2_api.c` writes
+    /// `extern int vnet_l2_patch_add_del (…);` and then the same declaration without `extern`,
+    /// which gcc accepts silently and this rule was refusing.
+    fn declare_ordinary_linked(
+        &mut self,
+        name: Symbol,
+        meaning: Meaning,
+        span: Span,
+        has_linkage: bool,
+    ) {
+        let file_scope = self.meanings.at_file_scope() || has_linkage;
         let Some(was) = self.meanings.declare(name, meaning) else {
             return;
         };
@@ -2071,7 +2092,7 @@ impl Cx<'_> {
                     } else {
                         self.automatic_objects.insert(n);
                     }
-                    self.declare_ordinary(n, Meaning::Ordinary, span);
+                    self.declare_ordinary_linked(n, Meaning::Ordinary, span, storage.extern_);
                     self.check_alignment(
                         ty,
                         t,
@@ -2285,7 +2306,7 @@ impl Cx<'_> {
                 // collides. Two *declarations* of the same function do not — they land in the
                 // `Ordinary`/`Ordinary` arm, which file scope permits, and any disagreement about
                 // the type is `conflicting types for` f``'s business rather than this rule's.
-                self.declare_ordinary(name, Meaning::Ordinary, self.ast.decl(id).span);
+                self.declare_ordinary_linked(name, Meaning::Ordinary, self.ast.decl(id).span, true);
                 self.values.insert(name, t);
                 // A function declaration carries storage classes too, and `static extern` is a
                 // violation there for the same reason. `inline` is not counted, which is what
@@ -3009,7 +3030,18 @@ impl Cx<'_> {
             // expression's type here reaches for `decay` first, which would be wrong in
             // exactly the case `typeof` exists for — copying an object's type.
             TypeKind::TypeofExpr(e) => {
+                // **The operand is not evaluated**, so a dereference inside it designates no
+                // object and needs no size: `typeof (**v)` on a `struct I **` is the type
+                // `struct I`, which C is perfectly able to name while it is incomplete. gcc is
+                // silent on it and errors on a real `*p`, and VPP's `vec_foreach_pointer` is
+                // written exactly this way — every walk over a vector of opaque pointers.
+                //
+                // **A counter, not a flag, and not `quiet`.** Nesting is possible, and dropping
+                // *every* diagnostic here would hide the ones that are still faults in an
+                // unevaluated operand — an undeclared name in it is an error in gcc too.
+                self.in_typeof += 1;
                 let node = self.type_expr(e);
+                self.in_typeof -= 1;
                 self.out.typed.ty_of(node)
             }
             TypeKind::TypeofType(inner) => self.ty_of(inner),
@@ -5531,7 +5563,11 @@ impl Cx<'_> {
                         // `*nope` on an undeclared name reported the undeclared name *and*
                         // "dereference of a pointer to an incomplete type", which is contract 20's
                         // one-bad-thing-one-report broken by a message that was wrong anyway.
-                        if !matches!(self.out.types[pointee.0 as usize], Ty::Error)
+                        //
+                        // **Not inside a `typeof` operand**, which is unevaluated: there is no
+                        // result to designate an object and no size to want. See the note there.
+                        if self.in_typeof == 0
+                            && !matches!(self.out.types[pointee.0 as usize], Ty::Error)
                             && is_incomplete(&self.out, pointee)
                         {
                             self.error(span, "dereference of a pointer to an incomplete type");
