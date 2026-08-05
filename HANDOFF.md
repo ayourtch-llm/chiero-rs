@@ -1085,10 +1085,34 @@ typing the paths ever would.
 > *response* is a page of it. Nothing about the page is approximate, which is exactly why marking
 > it proven would be easy and wrong — a caller holding 50 of 1043 sites does not hold the answer.
 >
-> ⏭️ **Next in 050**: `explain_macro_expansion` (contract 6), which also already exists and needs
-> the same wrapping. Then the operations that need work behind them rather than assembly —
-> `prove_equivalent` (contract 8, and the thing 032 §3.1's `Prover` seam is waiting for),
-> `find_bugs` (contract 3), `check_reachable` (contract 5).
+> ### 🕳️ CONTRACT 6 IS GREEN, AND **THERE ARE TWO EMPTY ANSWERS** (206b2f1)
+>
+> `explain_macro_expansion_envelope`. The chain is the preprocessor's own record, so it is
+> `Exact`; the judgement is entirely in what `[]` means, and it means two different things:
+>
+> | | |
+> |---|---|
+> | a **line with no macro** on it | a complete answer that nothing expanded there — **proven** |
+> | a **file the map never heard of** | a question about something outside this TU — `Unknown`, file named |
+>
+> A consumer cannot tell those apart from the list. It can from `proven`. Returning a confident
+> empty list for the second is 050 §2's failure in the smallest case it can occur in.
+>
+> ### 🎚️ THE FIDELITY LEDGER SO FAR — four operations, four different answers
+>
+> | operation | fidelity | why |
+> |---|---|---|
+> | `select_tests` | **never `Exact`** | coverage is *historical* — no safety set makes it a proof |
+> | `expansion_sites`, complete | `Exact` | the expansion table is ground truth |
+> | `expansion_sites`, paged | `Bounded` | the operation is exact; the *response* is a page of it |
+> | `explain_macro_expansion` | `Exact` / `Unknown` | proven empty, versus a file that is not here |
+>
+> **The fidelity is the work in each 050 operation; the assembly is not.** Ask it explicitly, and
+> expect the answer to differ each time.
+>
+> ⏭️ **Next in 050** — the operations needing work behind them rather than wrapping:
+> `prove_equivalent` (contract 8, and what 032 §3.1's `Prover` seam is waiting for), `find_bugs`
+> (contract 3), `check_reachable` (contract 5).
 >
 > ### ⏭️ AFTER THAT — 032, test selection
 >
