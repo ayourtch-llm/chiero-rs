@@ -191,3 +191,26 @@ fn a_group_of_functions_keeps_its_members_apart() {
     );
     assert_eq!(count("group", "group.c", 2), Some(1));
 }
+
+/// **A compiler-generated function's lines are not the source's lines.**
+///
+/// gcov erases every `artificial` function from its list before it accounts a single line
+/// (`process_all_functions`, `gcov.cc` ~1391), so their lines never exist. gcc marks the function
+/// it outlines a `#pragma omp parallel` region into exactly that way, and that outlined body
+/// carries the *source* lines the region was written on — so counting it adds the body's counts,
+/// once per thread, on top of the real function's.
+///
+/// `omp.c:12` is the loop of a two-thread parallel region: gcov says 1, and counting the outlined
+/// copy says 4.
+///
+/// This is the one gap of its kind that plain C reaches. The others — a function in the notes
+/// with no counters, and the artificial functions C++ emits for dynamic initialization — need a
+/// toolchain the corpus does not have, and are recorded in HANDOFF rather than tested here.
+#[test]
+fn a_compiler_generated_function_is_not_counted() {
+    assert_eq!(
+        count("omp", "omp.c", 12),
+        Some(1),
+        "the outlined parallel region carries this line too, and gcov does not count it"
+    );
+}
