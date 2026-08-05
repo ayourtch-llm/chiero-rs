@@ -11,6 +11,7 @@ chiero-span.workspace = true
 chiero-ast.workspace = true
 chiero-sema.workspace = true
 chiero-parse.workspace = true
+chiero-pp.workspace = true
 indexmap.workspace = true
 
 [lints]
