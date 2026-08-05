@@ -10,6 +10,13 @@ that broke a test was caught), against **14.3%** for a coverage-only baseline, w
 
 ## The example
 
+```console
+$ chiero select-tests before.c after.c --coverage build/ --stem t
+```
+
+`--coverage` is the directory holding the build's `.gcno`/`.gcda`, `--stem` the object's base
+name — the same two things [tutorial 1](01-coverage.md) hands to `ingest_native`.
+
 The inputs are the two tutorials before this one: an index from
 [tutorial 1](01-coverage.md) and an impact set from [tutorial 2](02-change-impact.md).
 

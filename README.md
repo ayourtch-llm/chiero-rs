@@ -50,6 +50,24 @@ cargo build --release          # no external toolchain needed — see "no depend
 cargo test --workspace
 ```
 
+Then, without writing any Rust:
+
+```console
+$ ./target/release/chiero prove-equivalent before.c after.c --entry f
+verdict: differs
+input:
+  - origin: parameter 0
+    signed: -2147483648
+observation:
+  kind: return_value
+  before_signed: -2147483648
+  after_signed: 2147483647
+proven — this holds for all inputs (Exact)
+```
+
+`chiero --help` lists the five operations. Every one of them prints an
+[envelope](#the-one-rule-worth-knowing-first); `--json` gives the machine-readable form.
+
 The tutorials are the fastest way in. Each is a complete worked example you can paste and run:
 
 1. **[Reading coverage](docs/tutorials/01-coverage.md)** — turning a build's `.gcno`/`.gcda`

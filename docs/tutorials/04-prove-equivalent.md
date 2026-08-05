@@ -27,24 +27,33 @@ int f (int x) {                                       /* after */
 
 Sound reasoning, defensible change, **different function**. Ask:
 
+```console
+$ chiero prove-equivalent before.c after.c --entry f
+verdict: differs
+input:
+  - origin: parameter 0
+    width: 32
+    value: 2147483648
+    signed: -2147483648
+    pinned: true
+observation:
+  kind: return_value
+  before: 2147483648
+  before_signed: -2147483648
+  after: 2147483647
+  after_signed: 2147483647
+  width: 32
+replay: (none)
+proven — this holds for all inputs (Exact)
+  blind spot: no replay harness was compiled (041 §1.3), so the divergence is
+              chiero's semantics and has not been demonstrated against a compiler
+```
+
+Add `--json` for the same thing as an envelope a program can read. From Rust:
+
 ```rust
 let cfg = chiero_opt::EquivCfg::new("f");     // "f" is the function to compare, in both
 let env = chiero_tool::prove_equivalent(&before, &after, &cfg);
-println!("{}", env.to_json());
-```
-
-`before` and `after` are `chiero_cir::Module`s — the two versions lowered from C. (Until the
-CLI lands, that lowering is a library call; see the note at the end of this page.)
-
-```json
-{
-  "verdict": "differs",
-  "input":   [{ "origin": "parameter 0", "width": 32,
-                "value": "2147483648", "signed": "-2147483648" }],
-  "observation": { "kind": "return_value",
-                   "before_signed": "-2147483648",
-                   "after_signed":  "2147483647" }
-}
 ```
 
 One input out of 2^32. *"Your rewrite is wrong"* is an opinion; *"it returns 2147483647 where
@@ -57,10 +66,13 @@ int f (int x) { return x * 2; }        /* before */
 int f (int x) { return x << 1; }       /* after  */
 ```
 
-```rust
-let env = chiero_tool::prove_equivalent(&double, &shift, &cfg);
-env.proven    // true
-env.fidelity  // Exact
+```console
+$ chiero prove-equivalent double.c shift.c --entry f
+verdict: equivalent
+compared:
+  - return value
+  - termination
+proven — this holds for all inputs (Exact)
 ```
 
 `Exact` means proven over all 2^32 inputs — not sampled, not spot-checked. Try it with `x / 2`
@@ -128,12 +140,19 @@ divergence. It is not built. The response says so, in `blind_spots`, every time:
 
 [Reading the envelope →](05-envelope.md).
 
-## A note on getting your C in here
+## Headers and defines
 
-Everything above takes two `chiero_cir::Module`s. Producing those from C source is a library
-call today — **a `chiero prove-equivalent before.c after.c --entry f` command is planned**, and
-this page will show it once it exists. The fixture under test uses CIR text directly, which is
-what keeps this tutorial honest about the API that exists rather than the one that is coming.
+The command takes the same `-I` and `-D` a compiler does, repeatable:
+
+```console
+$ chiero prove-equivalent old.c new.c --entry ip4_lookup \
+      -I src -I build-root/install/include -DCLIB_DEBUG=1
+```
+
+Everything the frontend refuses is an error rather than an empty answer: a file that does not
+preprocess was never seen, one that does not parse was seen and not understood, and a function
+lowering gives up on is *absent from the module* — so answering about it would be answering
+about a translation unit with a hole in it.
 
 *Reference: [spec 041](../specs/041-optimization-analysis.md). Worked example under test:
 `crates/chiero-tool/tests/tutorials.rs::tutorial_04_prove_equivalent`.*

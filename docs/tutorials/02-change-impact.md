@@ -29,6 +29,37 @@ the most confident possible wrong answer.
 
 ## The example
 
+```console
+$ chiero impact geom-before.c geom-after.c
+completeness: Complete
+count: 3
+entities:
+  - name: SCALE
+    kind: macro
+    class: MacroBodyChanged
+    distance: 0
+    edges:
+    - DirectlyChanged
+  - name: area
+    kind: function
+    class: MacroBodyChanged
+    distance: 1
+    edges:
+    - ExpandsMacro { name: "SCALE" }
+  - name: volume
+    kind: function
+    class: MacroBodyChanged
+    distance: 2
+    edges:
+    - Calls { callee: "area" }
+    - ExpandsMacro { name: "SCALE" }
+proven — this holds for all inputs (Exact)
+  blind spot: the closure is over the translation units given; a caller in a unit
+              chiero was not shown is not in this set
+```
+
+Or from Rust:
+
 ```rust
 use chiero_diff::{Program, impact};
 
@@ -85,6 +116,8 @@ for a complete answer.
 println!("{}", set.render());   // for a human
 println!("{}", set.to_json());  // for a program
 ```
+
+The command prints the first by default and the second with `--json`.
 
 ## Next
 

@@ -87,6 +87,17 @@ reader; `ingest_json` reads `gcov --json-format` output for cases where you have
 Verified across the whole of VPP: **1,895 gcc `.gcno` files and 1,872 clang ones decode, and
 line counts for 322 objects match `gcov` exactly — 0 differences across 156,991 lines.**
 
+## From the command line
+
+Coverage is an *input* to the operations rather than an operation itself, so it appears as a
+flag on the one that consumes it:
+
+```console
+$ chiero select-tests before.c after.c --coverage build/ --stem t
+```
+
+See [tutorial 3](03-test-selection.md).
+
 ## Next
 
 [What a change reaches →](02-change-impact.md), which is where coverage stops being enough.

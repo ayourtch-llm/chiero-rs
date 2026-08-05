@@ -78,6 +78,8 @@ with nothing to read is a bare no, which is the shape that gets misread.
 println!("{}", env.render());
 ```
 
+— which is what every `chiero` command prints unless you pass `--json`.
+
 The rendering is not a bare list either: it never says "no defects found" unqualified. A
 qualification that only exists in JSON is a qualification that gets dropped by the first thing
 that formats it for a person.
