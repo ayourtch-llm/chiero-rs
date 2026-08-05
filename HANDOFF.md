@@ -511,36 +511,20 @@ typing the paths ever would.
 >
 > If `probe_cmds.txt` is gone, rebuild it: `cd $VPPBUILD && ninja -t commands <the .o>` for each.
 >
-> ### 🔴 THE SUITE HAS ONE FAILING TEST, ON PURPOSE — it is the next task
+> ### ✅ THE SUITE IS GREEN — 1744 passed, 0 failed, 4 ignored, clippy clean
 >
-> `differential::an_arrow_through_an_array_is_an_lvalue` is a committed RED with no GREEN yet.
-> Everything else passes (1743 at the last full run).
+> The arrow-through-an-array defect that was open at the last context boundary is fixed in
+> 0d611f6, and `cJSON.c` lowers clean.
 >
-> **The defect, in three lines:**
+> ⚠️ **The trap it hid behind, because it will cost the next reader the same hour.**
+> `record_of` and `field_of` are adjacent in `chiero-lower/src/lib.rs` and their **first five
+> lines are identical**. Every textual edit anchored on those lines — the fix and four rounds of
+> debug printing — landed in `record_of`, which that path never calls. The prints then reported
+> something impossible: `lvalue_addr` reached its `field_of` call, and `field_of` returned `None`
+> without executing its own first statement.
 >
-> ```c
-> struct H { int a; }; struct B { struct H h; };
-> int f(struct H *s) { struct B b[1]; b->h = *s; return b->h.a; }
-> // lower: `f` contains a construct lowering cannot represent
-> // inner: an aggregate assignment to something with no address
-> ```
->
-> `b[0].h = *s` works; the scalar `b->z = 9` works; only an **aggregate** assignment through an
-> arrow on an array name fails. It is `vppinfra/cJSON.c`'s `print`, whose `printbuffer buffer[1]`
-> is the one-element-array idiom.
->
-> ⚠️ **What was tried and is not the answer:** adding an `Ty::Array { elem, .. } if arrow` arm to
-> `field_of` (lower/lib.rs ~4956). Instrumentation showed the contradiction that should be the
-> next reader's starting point:
->
-> - in `lvalue_addr`'s `Member` arm, `self.type_of(base)` prints `Array { elem: TyId(2), len:
->   Fixed(1) }` and `self.field_of(base, field, arrow)` answers `None`;
-> - but a print *inside* the new array arm never fires, and the `find_field` print at the end of
->   `field_of` fires only for the later `.a` access.
->
-> So `field_of` returns `None` without reaching either. Print `bty` and the matched arm at the
-> top of `field_of` itself before changing anything else — one of those two observations is
-> lying, and which one is the whole answer.
+> **Anchor a patch on the signature, not on the body**, and when instrumentation reports the
+> impossible, suspect the instrumentation before the code.
 >
 > ### 📊 THE NUMBER: **1757 of 1871 clean (93.9%)** at 99bc5bd — was 12 of 1871
 >
