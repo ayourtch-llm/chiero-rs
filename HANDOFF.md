@@ -600,6 +600,7 @@ typing the paths ever would.
 > | §6 outcomes, `always_run` | done (32d6005) |
 > | **7** `FAKE` in the solve, out of the queries | done (e48d151) |
 > | **4** arc queries unavailable on a JSON index | done (e48d151) — by *where the method is*: there is no `tests_for_arc` on `CoverageIndex` at all |
+> | §5 `FuncKey`, `MarchResolver` | done (376cd40) — file + name + start line, and the variant is a resolver, never a parse |
 >
 > **Contract 5 is the one that matters and it discriminates.** Replacing the measured `max` line
 > rule with a sum fails it on `loop.c` with the file and line named. A gate that only ran on `t`
@@ -627,10 +628,11 @@ typing the paths ever would.
 >   needs `chiero-span`.
 > - **contract 13, `tests_for_block`**: the union over a CIR block's `gcov_lines`. The bridge to
 >   the rest of the system, and the join 020 §3 computed `gcov_lines` with `expansion_loc` for.
-> - **`FuncKey`**: `ArcCoverage` keys functions by *name* today, which is right for one object and
->   wrong the moment two are merged — 030 §5 wants file, start line and the multiarch variant.
->   Two `static` helpers of the same name in different files currently collide. Fix this before
->   any multi-object ingest, not after.
+> - **the line index needs `FuncKey`'s lesson too.** `CoverageIndex` keys lines by `(file, line)`,
+>   which is right — but `ingest_native_as` merges objects into one index with **no** record of
+>   which object a line came from, so two builds of one source (different `-march`) union silently.
+>   030 §5 puts `march` in the key for exactly this reason. Fix it the same way and for the same
+>   reason: the failure is silent and the fix is invasive later.
 > - **contract 13**: `tests_for_block` over a CIR block's `gcov_lines` — the join to the rest of
 >   the system, and the first thing here that touches `chiero-cir`.
 > - **contract 11**: the memory budget, 1M lines × 5000 tests. `TestBitmap` is a sorted
