@@ -495,3 +495,67 @@ fn a_known_file_with_no_coverage_is_a_coverage_gap() {
         );
     }
 }
+
+/// **Contract 2.** A whitespace-only diff selects only the always-run set.
+///
+/// The chain is what makes this work rather than a special case: 031's fingerprint is the token
+/// spelling, so reformatting produces an *empty* impact set, and an empty impact set intersects
+/// with coverage to nothing. Nothing in 032 has to know what whitespace is.
+#[test]
+fn a_whitespace_only_diff_selects_only_the_always_run_set() {
+    let before = Program::parse("t.c", t_c()).expect("parses");
+    let reformatted =
+        Program::parse("t.c", "int main(void){\n\n\n  M; M;\n  return 0;\n}\n").expect("parses");
+    let sel = select(
+        &impact(&before, &reformatted),
+        &reformatted,
+        &index_with(&[TestId(0)]),
+    );
+
+    assert!(
+        sel.tests.is_empty(),
+        "reformatting is not a change, all the way through: {:?}",
+        sel.tests
+    );
+    assert_eq!(sel.confidence, Confidence::Full);
+}
+
+/// **Contract 14.** A build-config change selects the whole suite, **with that stated as the
+/// reason**.
+///
+/// The second half is the contract. Selecting everything is easy; a report that does it without
+/// saying why is indistinguishable from a tool that has given up, and a maintainer who cannot see
+/// the cause cannot fix it.
+#[test]
+fn a_config_change_selects_the_suite_and_says_why() {
+    let before = Program::parse(
+        "t.c",
+        "#if FOO > 2\nint gated (void) { return 1; }\n#endif\nint main (void)\n{\n  M; M;\n  return 0;\n}\n",
+    )
+    .expect("parses");
+    let after = Program::parse(
+        "t.c",
+        "#if FOO > 3\nint gated (void) { return 1; }\n#endif\nint main (void)\n{\n  M; M;\n  return 0;\n}\n",
+    )
+    .expect("parses");
+
+    let mut idx = index_with(&[TestId(0)]);
+    idx.record_outcome(TestId(1), TestOutcome::Passed);
+    let sel = select(&impact(&before, &after), &after, &idx);
+
+    assert!(
+        sel.tests.contains_key(&TestId(0)) && sel.tests.contains_key(&TestId(1)),
+        "a condition changed, so every test the index knows must run: {:?}",
+        sel.tests
+    );
+    match &sel.confidence {
+        Confidence::Reduced { reasons } => assert!(
+            reasons.iter().any(|r| r.contains("condition")),
+            "and the reason names the condition rather than merely reporting a gap: {reasons:?}"
+        ),
+        other => panic!("a config change cannot be Full confidence, got {other:?}"),
+    }
+    // The report leads with it too.
+    let text = sel.render();
+    assert!(text.contains("CONFIDENCE: Reduced"), "{text}");
+}
