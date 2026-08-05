@@ -854,7 +854,7 @@ typing the paths ever would.
 > | 9, 10, 11, 12, 13, 14 the safety set | ✅ and each states *why*, not merely *that* |
 > | 17, 20 budget and report | ✅ reduction and safety always together |
 > | **19 the mutation gate** | ✅ 100% / 14.3% / 65%, whole pipeline |
-> | 7 reachability refinement | ❌ needs per-test **block** coverage from the native path |
+> | 7 reachability refinement | 🟡 `chiero-gcov` half done (`entered_block`, `line_reached`); the wiring into `select` is left |
 > | 18 historical replay | ❌ needs VPP tests, which need root |
 >
 > ### 🚀 032's FOUNDATION (contracts 1, 3, 9, 11, 15, 16)
@@ -912,8 +912,18 @@ typing the paths ever would.
 >   that defaulted to *attempting* proofs would change the meaning of every existing call.
 >   Wiring 041's real `prove_equivalent` in cannot skip the proof requirement, because there is no
 >   other way to remove a test.
-> - **§3.2, reachability refinement** — block-level, and the one remaining refinement. It needs
->   `CoverageDetail::LinesAndArcs`, which `chiero-gcov`'s native path already provides. Note that
+> - **§3.2, reachability refinement** — the `chiero-gcov` half is done (2c786cb, and the
+>   `line_reached` commit after it): `ArcCoverage::line_reached(file, line)` answers "did flow
+>   reach the code on this line" from the arcs, and `entered_block` underneath it.
+>
+>   ⚠️ **The wiring into `select` needs an API decision, not more analysis.** §3.2 is per *test*,
+>   and `ArcCoverage` accumulates across ingests — so the caller must hold **one `ArcCoverage` per
+>   test** and `select` must take them. `CoverageIndex` alone cannot answer it. Two traps already
+>   paid for in the query itself, both in the direction that *removes* tests:
+>   `line_reached` is `None` — never `false` — for a line the arcs do not mention, and the **entry
+>   block counts as entered** whenever the function ran, since nothing flows into block 0.
+>
+>   Note that
 >   §3.3, observability refinement, is **cut from v1 deliberately** and the spec explains why at
 >   length: it needs a line-granularity bridge between gcc's CFG and chiero's CIR, which is a
 >   research problem rather than an engineering one. Do not resurrect it by accident.
