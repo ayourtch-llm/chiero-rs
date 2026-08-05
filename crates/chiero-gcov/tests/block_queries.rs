@@ -113,7 +113,10 @@ fn a_generated_block_has_no_evidence_either_way() {
 /// A block naming lines the index never recorded answers `None` rather than an empty union.
 #[test]
 fn lines_with_no_record_answer_nothing() {
-    assert_eq!(index().tests_for_block("loop.c", &block(&[9998, 9999])), None);
+    assert_eq!(
+        index().tests_for_block("loop.c", &block(&[9998, 9999])),
+        None
+    );
 }
 
 /// A block naming one recorded line and one unrecorded line answers for the one there is

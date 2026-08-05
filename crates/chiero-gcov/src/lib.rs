@@ -180,6 +180,37 @@ impl CoverageIndex {
         self.line_tests.get(&(file.to_string(), line)).cloned()
     }
 
+    /// The union of the tests for a set of lines of one file, or `None` when the index recorded
+    /// none of them.
+    ///
+    /// **`None` for "no line was recorded", not for "the recorded lines have no tests".** A line
+    /// recorded with no tests is evidence — gcov saw it and nothing ran it — and stays an empty
+    /// contribution to a union that other lines may fill. Absence contributes nothing at all.
+    /// Every query that unions lines goes through here so the distinction is made once.
+    fn union_over_lines(
+        &self,
+        file: &str,
+        lines: impl IntoIterator<Item = u32>,
+    ) -> Option<Vec<TestId>> {
+        let mut out: Vec<TestId> = Vec::new();
+        let mut any = false;
+        for line in lines {
+            let Some(tests) = self.tests_for_line(file, line) else {
+                continue;
+            };
+            any = true;
+            for t in tests {
+                if !out.contains(&t) {
+                    out.push(t);
+                }
+            }
+        }
+        any.then(|| {
+            out.sort_unstable_by_key(|t| t.0);
+            out
+        })
+    }
+
     /// The tests that executed the code a [`Span`] stands for (030 §5).
     ///
     /// **Through `expansion_loc`, never the spelling location** (030 §1, contract 12). A span
@@ -209,24 +240,29 @@ impl CoverageIndex {
             .filter(|h| h.file == lo.file)
             .map_or(lo.line, |h| h.line);
         let file = sm.file(lo.file).path().to_string_lossy().into_owned();
+        self.union_over_lines(&file, lo.line.min(hi)..=lo.line.max(hi))
+    }
 
-        let mut out: Vec<TestId> = Vec::new();
-        let mut any = false;
-        for line in lo.line.min(hi)..=lo.line.max(hi) {
-            let Some(tests) = self.tests_for_line(&file, line) else {
-                continue;
-            };
-            any = true;
-            for t in tests {
-                if !out.contains(&t) {
-                    out.push(t);
-                }
-            }
-        }
-        any.then(|| {
-            out.sort_unstable_by_key(|t| t.0);
-            out
-        })
+    /// The tests that executed a CIR block: the union over its `gcov_lines` (030 contract 13).
+    ///
+    /// **The bridge to the IR**, and the join 030 → 031 → 032 runs through. `gcov_lines` was
+    /// computed at lowering through `expansion_loc` (015 §5) for exactly this reason: both sides
+    /// name the line gcov actually recorded, so the match is an equality rather than a heuristic.
+    ///
+    /// **`file` is a parameter because a `Block` does not carry one.** 015 §5 keys `gcov_lines`
+    /// on "the defining file of the enclosing function" and stores it as a bare `SmallVec<u32>`,
+    /// so the file is implicit and belongs to the function. Hand-written `.cir` fixtures settle
+    /// it: their spans are `Span::DUMMY` and the `.line` directive fills `gcov_lines` directly,
+    /// which 015 §5 introduces so that fixtures can exercise this contract at all — so it must be
+    /// answerable for a block whose span resolves to nothing.
+    ///
+    /// `None` when the index recorded none of those lines, **and when the block has none**: 015
+    /// §5 says a block of only compiler-generated instructions has an empty `gcov_lines` and that
+    /// gcov has no counter for it either. That is an absence of evidence, not evidence that
+    /// nothing ran it, and an empty set here would let 032 skip every test for a change to such a
+    /// block.
+    pub fn tests_for_block(&self, file: &str, b: &chiero_cir::Block) -> Option<Vec<TestId>> {
+        self.union_over_lines(file, b.gcov_lines.iter().copied())
     }
 
     /// The lines of a file gcov **recorded as zero** — seen by the compiler, executed by nothing.
