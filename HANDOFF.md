@@ -446,6 +446,31 @@ have entrenched conventions real lowering then had to match.)
 - [x] `070-testing-and-tdd-protocol.md` — §4.13 + red/green/review loop + the consolidated CI gate table
 - [x] `080-roadmap.md` — M0–M8 with checkable exit gates; M1/M2 run in parallel
 
+### 7.1 Implementation status — what is *built*, not what is written
+>
+| spec | state | evidence |
+|---|---|---|
+| 010–024 frontend | ✅ | **1871 VPP TUs lower, 0 not-run**; the 3 `diagnosed` are VPP's own ISO C divergences |
+| **030 coverage** | ✅ 19/19 contracts | full VPP, gcc: **1895/1895 `.gcno`, 322/322 objects, 0 of 156991 lines differ**. clang: **1872/1872** |
+| **031 change impact** | ✅ 20/20 contracts | incl. the headline — a header macro edit impacts every expansion site while coverage sees nothing |
+| **032 test selection** | 🟡 18/20 | mutation gate: **recall 100%, coverage-only 14.3%, reduction 65%** |
+| **050 tool interface** | 🟡 4 operations | envelope + `select_tests`, `expansion_sites`, `explain_macro_expansion` |
+| 040 checkers, 041 opt, 042 recipes, 060 vpp | partial | `chiero-check`, `chiero-opt`, `chiero-recipe`, `chiero-vpp` exist; `prove_equivalent` does **not** |
+
+**The two 032 contracts left, and why neither is "just work":**
+
+- **7, reachability refinement** — *proven* not to fire at line granularity (a test the line index
+  selects has a non-zero count for the line, so some block carrying it was entered). Needs a
+  line→block bridge on the change side. Both halves are built: `line_reached` and `changed_lines`.
+- **18, historical replay** — §6's ground-truth oracle, "the one that would catch a real design
+  flaw". Needs VPP tests, which need root and network namespaces.
+
+**`prove_equivalent` (041) is the highest-leverage thing not built.** 032 §3.1's `Prover` seam is
+waiting for it — the refinement that removes *entities* rather than tests — and 050 contract 8
+wants it returning a distinguishing input, which is the LLM-facing half of the whole design:
+*"the LLM proposes; chiero adjudicates."* `chiero-exec` (8.4k lines, `ExactWitness`, `seal`) and
+`chiero-solver` (3.4k) are the machinery it would sit on.
+
 **Every spec must end with a `## Testable contracts` section** — numbered, checkable
 assertions. Those become the RED tests. This is what makes the specs actually drive TDD
 rather than decorate it.
