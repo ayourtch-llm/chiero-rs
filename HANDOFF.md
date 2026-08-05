@@ -511,7 +511,35 @@ typing the paths ever would.
 >
 > If `probe_cmds.txt` is gone, rebuild it: `cd $VPPBUILD && ninja -t commands <the .o>` for each.
 >
-> ### 📊 THE NUMBER: **1552 of 1871 clean (83.0%)** at 3180a49 — was 19 of 1871
+> ### 📊 THE NUMBER: **1757 of 1871 clean (93.9%)** at 99bc5bd — was 12 of 1871
+>
+> | sweep | clean | not-run | diagnosed |
+> |---|---|---|---|
+> | 99d92d0, before this wave | 12 | 1852 | 7 |
+> | 3180a49 | 1552 | 312 | 7 |
+> | **99bc5bd** | **1757** | 107 | 7 |
+>
+> Same tree, same 1871 translation units, same lowering-inclusive yardstick 7e9501e introduced.
+> The remaining 107 are a *tail* rather than a blocker — no single cause is more than 70, and
+> the largest is one file.
+>
+> ⏭️ **The tail at 99bc5bd**, most to least. `85f6e49` landed after this sweep and takes the
+> `Int(8)`/`Int(16)` comparison rows with it, so re-measure before working from these counts:
+>
+> | count | where | message |
+> |---|---|---|
+> | 70 | `clib.h:108` `elog_event_type_register` | contains a construct lowering cannot represent |
+> | 12 | `vlib/unix/fuse.c:652` | cast source operand is Ptr |
+> | 7 | `plugins/igmp/igmp_report.c:46` | store value operand is Ptr |
+> | 6 | `plugins/tap/tx_node.c:357` | store value operand is Int(32) |
+> | 3 | `plugins/memif/node.c:158` | Eq operand is Int(16), declared Int(32) |
+> | 2 each | `elf.h` macro redefinition, `fib_node.c:87`, `ip6_forward.c:220`, `session_node.c:1609` | |
+> | 1 | `vec_bootstrap.h:212` | sema: dereference of a pointer to an incomplete type |
+>
+> **`elog_event_type_register` first** — 70 translation units, and the only remaining *lowering
+> gap* rather than a type mismatch. It is in `elog.c`, which is compiled into many variants.
+>
+> ### 📊 SUPERSEDED: 1552 of 1871 clean (83.0%) at 3180a49
 >
 > | sweep | clean | not-run | diagnosed |
 > |---|---|---|---|
