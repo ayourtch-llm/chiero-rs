@@ -205,7 +205,7 @@ struct FnState {
     /// `r` and never gave it back — `return r` after the block read the inner object, and where
     /// the two types differed it read a struct as a `uword`. C 6.2.1p4 ends an inner
     /// declaration's scope with its block; this is what ends it here.
-    shadowed: Vec<Vec<(chiero_span::Symbol, Option<(AllocaId, CTy)>)>>,
+    shadowed: Vec<Vec<Shadowed>>,
     next_alloca: u32,
     next_block: u32,
     /// The scopes currently open, innermost last. Exits are emitted from the top down, so
@@ -246,6 +246,10 @@ type Slot = (
     Option<chiero_span::Symbol>,
     Option<chiero_cir::BitRange>,
 );
+
+/// One name a block-scope declaration displaced, and what it displaced — `None` when the name
+/// was not bound at all, which is the common case and means "remove it again".
+type Shadowed = (chiero_span::Symbol, Option<(AllocaId, CTy)>);
 
 struct Lowerer<'a> {
     ast: &'a Ast,
