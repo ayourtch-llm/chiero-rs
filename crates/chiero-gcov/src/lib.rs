@@ -377,8 +377,16 @@ impl CoverageIndex {
         let vr = self.variant_ref(v)?;
         let e = self.lines.get(&(self.file_ref(file)?, line))?;
         if e.per_variant.is_empty() {
-            // At most one build has been ingested, so the union is that build's set — and a
-            // variant that is not it recorded nothing, which is `None` rather than empty.
+            // **No build recorded tests for this line at all**, so no build may be told it did.
+            // `ingest_json` contributes counts without tests and notes no variant, so a JSON line
+            // reaches here with an empty union — and answering `Some(vec![])` would tell a build
+            // that never compiled the file that it saw the line and ran nothing, which is the
+            // claim 032 skips tests on.
+            if e.tests.is_empty() {
+                return None;
+            }
+            // Otherwise the split is empty because at most one build has contributed tests, and
+            // the union is that build's set. A different build recorded nothing: `None`.
             return (self.variants.first() == Some(v)).then(|| e.tests.clone());
         }
         e.per_variant
