@@ -115,3 +115,52 @@ fn the_determinism_key_tracks_the_result() {
     assert_eq!(a.determinism_key(), b.determinism_key());
     assert_ne!(a.determinism_key(), c.determinism_key());
 }
+
+/// **The human rendering must be readable by a human.**
+///
+/// It interpolated the result `serde_json::Value` with `Display`, which prints compact JSON —
+/// so `chiero prove-equivalent` greeted a reader with a single 300-character brace soup and
+/// then, underneath it, the carefully-worded qualification. The qualification was the part
+/// that got the attention; the answer was the part somebody actually wanted.
+///
+/// The user asked for a command line so the operations could be used *without* programming.
+/// A JSON blob is a programmer's output, and `--json` already exists for that.
+#[test]
+fn the_rendering_is_not_a_json_blob() {
+    let env = Envelope::new(
+        serde_json::json!({
+            "verdict": "differs",
+            "input": [{ "origin": "parameter 0", "width": 32, "signed": "-2147483648" }],
+            "observation": { "kind": "return_value", "before_signed": "-2147483648" },
+            "replay": serde_json::Value::Null,
+        }),
+        Fidelity::Exact,
+    );
+    let r = env.render();
+
+    // Structure, not punctuation: every field on its own line, no object braces.
+    assert!(
+        !r.contains("{\"") && !r.contains("\":"),
+        "the rendering is still JSON:\n{r}"
+    );
+    assert!(
+        r.lines().count() >= 5,
+        "a nested result rendered onto one line is the blob again:\n{r}"
+    );
+    for want in ["verdict", "differs", "origin", "parameter 0", "before_signed"] {
+        assert!(r.contains(want), "`{want}` is missing from:\n{r}");
+    }
+    // A JSON null is "nothing here", and printing the word `null` at a reader is a programmer's
+    // habit. Whatever it says, it must not be that.
+    assert!(!r.contains("null"), "raw JSON null in a human rendering:\n{r}");
+}
+
+/// And an unproven one still leads with what it is worth — the property the blob obscured.
+#[test]
+fn the_rendering_still_qualifies_itself() {
+    let env = Envelope::new(serde_json::json!({ "findings": [] }), Fidelity::Bounded)
+        .with_blind_spot("loops were unrolled to a depth");
+    let r = env.render();
+    assert!(r.contains("not proven"), "{r}");
+    assert!(r.contains("loops were unrolled"), "{r}");
+}
