@@ -5861,3 +5861,98 @@ fn generic_selects_an_enumeration_by_its_integer_type() {
         "enum E e = A; return _Generic(e, enum F: 1, default: 0);",
     );
 }
+
+/// **An aggregate member initialized from an aggregate *value* stores the pointer.**
+///
+/// `struct T t = { .v = s };` where `v` and `s` are both `struct S`. CIR has no aggregate values
+/// (020 §1.4), so `s` lowers to an address — and `init_list`'s slot walk fell through to
+/// `store_init_scalar`, which stored those eight bytes where the member belonged. The verifier
+/// caught it as `store value operand is Ptr, declared Int(32)`, so 015 §7 discarded the whole
+/// function; had the member happened to be pointer-typed it would have run and been wrong.
+///
+/// # The fourth `not-run` cause the corpus sweep found, and again nearly universal
+///
+/// 84 of the first 89 translation units at 99d92d0:
+///
+/// ```text
+/// avx512fp16intrin.h:282:3: `_mm512_castph512_ph128` lowered to CIR the verifier rejects
+///   union { __m128h __a[4]; __m512h __v; } __u = { .__v = __A };
+/// ```
+///
+/// The `union`-and-`.__v` shape is how every `_mm*_cast*` intrinsic in that header is written.
+/// Nothing about it is vector-specific, which is what the plain-`struct` cases below pin: this
+/// is C11 6.7.9p13, "a single expression that has compatible structure or union type".
+///
+/// # Against gcc, not against the verifier
+///
+/// Verifying is the symptom; computing the right number is the contract. A `CopyMem` of the
+/// wrong size, or from the wrong address, verifies perfectly — and this file is the only place
+/// in the suite that can tell the difference.
+#[test]
+fn an_aggregate_member_may_be_initialized_from_an_aggregate_value() {
+    // A designated member, from a value held in a local.
+    agree_with(
+        "struct S { int a[4]; }; struct T { int pad; struct S v; };",
+        "struct S s = {1,2,3,4}; struct T t = { .v = s }; return t.v.a[0]*10 + t.v.a[3];",
+    );
+    // The same through a *parameter*, which is where the AVX headers meet it — `__A` is the
+    // wrapper's argument.
+    agree_with(
+        "struct S { int a[4]; }; struct T { int pad; struct S v; };\n\
+         static int take(struct S s) { struct T t = { .v = s }; return t.v.a[1]; }",
+        "struct S s = {5,6,7,8}; return take(s);",
+    );
+    // An **array** of aggregates, each element an aggregate value: the elision walk has to
+    // hand each one over as a copy rather than consume its scalars.
+    agree_with(
+        "struct S { int a[2]; }; struct T { struct S v[2]; };",
+        "struct S s = {3,4}; struct T t = { { s, s } }; return t.v[0].a[0] + t.v[1].a[1];",
+    );
+    // A **union** member, which is the corpus shape exactly.
+    agree_with(
+        "struct S { int a[4]; }; union U { int p[4]; struct S v; };",
+        "struct S s = {9,8,7,6}; union U u = { .v = s }; return u.p[0]*10 + u.p[2];",
+    );
+    // And a **vector** union, the `_mm512_cast*` shape itself.
+    agree_with(
+        "typedef int v4si __attribute__((vector_size(16)));\n\
+         typedef int v8si __attribute__((vector_size(32)));\n\
+         union V { v4si p[2]; v8si w; };",
+        "v8si a = {1,2,3,4,5,6,7,8}; union V u = { .w = a }; return u.p[0][1] + u.p[1][3];",
+    );
+}
+
+/// **Written as a control; it failed, and it is the worse defect of the two.**
+///
+/// C11 6.7.9p20 lets a subaggregate whose initializer does not begin with `{` take as many
+/// scalars as it needs from the enclosing list. These cases were meant only to stop the fix
+/// above from turning every aggregate-typed slot into a copy — and at **file scope** they were
+/// already wrong:
+///
+/// ```text
+/// static int m[2][3] = {{1,2,3},{4,5,6}};   ->  bytes 01..02..03..04..05..06..   correct
+/// static int m[2][3] = {1,2,3,4,5,6};       ->  Zero                             every byte
+/// static struct Out o = {1,2,3};            ->  Zero                             every byte
+/// ```
+///
+/// The same initializer inside a function is correct, so this is the global folder alone: it
+/// gives up on an elided subaggregate and emits a zeroed object **with no diagnostic**. That is
+/// the failure mode this project exists to not have — the program runs, every read succeeds, and
+/// the answer is 0 where C says 34. A `not-run` at least announces itself.
+#[test]
+fn brace_elision_still_consumes_scalars_from_the_enclosing_list() {
+    agree_with(
+        "static int m[2][3] = {1,2,3,4,5,6};",
+        "return m[0][2]*10 + m[1][0];",
+    );
+    agree_with(
+        "struct In { int a, b; }; struct Out { struct In i; int c; }; \
+         static struct Out o = {1,2,3};",
+        "return o.i.a*100 + o.i.b*10 + o.c;",
+    );
+    // A nested `{...}` inside an elided run is still legal C and still honoured.
+    agree_with(
+        "static int m[2][3] = {{1,2,3},4,5,6};",
+        "return m[0][0] + m[1][2];",
+    );
+}
