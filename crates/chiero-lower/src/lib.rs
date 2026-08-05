@@ -94,6 +94,7 @@ fn lower(
         generated_depth: 0,
         globals: IndexMap::new(),
         strings: IndexMap::new(),
+        consts: None,
     };
     // **Two passes, and the first is not an optimization.** Every function is registered
     // with its real signature before any body is lowered, because a body can call a
@@ -271,6 +272,17 @@ struct Lowerer<'a> {
     /// unspecified in C, but the corpus assumes one object, and two globals would make
     /// the engine report the addresses unequal — a difference no source line asked for.
     strings: IndexMap<Vec<u8>, chiero_cir::GlobalId>,
+    /// The translation unit, prepared once for constant folding.
+    ///
+    /// `chiero_sema::const_eval` walks every declaration in the TU before it evaluates
+    /// anything, and lowering asks it about every integer literal in every body — so
+    /// calling it per expression costs F declarations per function and O(F²) overall.
+    /// That is what made one VPP translation unit take 673 seconds once gcc's 5973
+    /// `always_inline` header wrappers started lowering instead of being discarded.
+    ///
+    /// Built on first use rather than up front: a module with no constant expression at
+    /// all should not pay for the walk, and `declare` runs before any body is lowered.
+    consts: Option<chiero_sema::ConstEvaluator<'a>>,
 }
 
 impl Lowerer<'_> {
@@ -2228,7 +2240,7 @@ impl Lowerer<'_> {
             }
             chiero_ast::ExprKind::Number(_) | chiero_ast::ExprKind::Char { .. } => {
                 let mut diags = Vec::new();
-                let v = chiero_sema::const_eval(self.ast, e, self.names, self.target(), &mut diags);
+                let v = self.consts().eval(e, &mut diags);
                 let bits = self.raw_width_of(e);
                 // **A floating literal is a float constant, not a zero.** The catch-all
                 // below builds `Const::Int { val: 0 }`, which for a float-typed literal is
@@ -5621,7 +5633,7 @@ fn cir_cmpop(op: chiero_ast::BinOp, signed: bool) -> Option<chiero_cir::CmpOp> {
     })
 }
 
-impl Lowerer<'_> {
+impl<'a> Lowerer<'a> {
     /// 015 §3 and contract 18: a `Switch` terminator, cases sorted, ranges expanded.
     ///
     /// **The body's scope is entered on every case edge, not at its lexical top**
@@ -5964,10 +5976,22 @@ impl Lowerer<'_> {
 
     fn const_of(&mut self, e: ExprId) -> Option<i128> {
         let mut diags = Vec::new();
-        match chiero_sema::const_eval(self.ast, e, self.names, self.target(), &mut diags) {
+        match self.consts().eval(e, &mut diags) {
             Some(chiero_sema::ConstVal::Int(v)) => Some(v),
             _ => None,
         }
+    }
+
+    /// The TU's constant evaluator, prepared on first use.
+    ///
+    /// Written out rather than `get_or_insert_with`, because the closure would have to
+    /// borrow `self` while `self.consts` is already borrowed mutably.
+    fn consts(&mut self) -> &mut chiero_sema::ConstEvaluator<'a> {
+        if self.consts.is_none() {
+            let ev = chiero_sema::ConstEvaluator::new(self.ast, self.names, self.target());
+            self.consts = Some(ev);
+        }
+        self.consts.as_mut().expect("just built")
     }
 
     /// Re-scope a jump: `Exit` every scope it leaves, then `Enter` every scope it lands

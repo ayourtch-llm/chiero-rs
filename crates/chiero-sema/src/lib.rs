@@ -1020,6 +1020,14 @@ pub fn analyze_with(
 /// Public because array bounds and bit-field widths need it *during* layout, and because
 /// 013 deliberately leaves every literal unfolded — so this is the only place a written
 /// `0x10` becomes the number 16.
+///
+/// **Each call prepares a fresh context, which costs one walk of the whole translation
+/// unit.** That is the right price for a caller asking about one expression and the wrong
+/// one for a caller asking about thousands — lowering asks once per integer literal, and
+/// paying F declarations for each of F bodies is the O(F²) that made a VPP translation
+/// unit take 673 seconds. Such a caller wants [`ConstEvaluator`], which pays for the walk
+/// once; this entry point stays because a `.cir` fixture or any caller with no
+/// [`Analysis`] must still be able to fold a constant with nothing else in hand.
 pub fn const_eval(
     ast: &Ast,
     expr: ExprId,
@@ -1027,68 +1035,118 @@ pub fn const_eval(
     target: &TargetConfig,
     out: &mut Vec<SemaDiagnostic>,
 ) -> Option<ConstVal> {
-    // A throwaway context, so `sizeof(int)` resolves standalone. `sizeof(struct S)` needs
-    // the TU's tag table and therefore needs `analyze`; that is a real limit and is why
-    // this takes a target rather than pretending sizes are universal.
-    let mut cx = Cx {
-        // A const-eval helper: no dialect-gated rule is reachable from here, so the strict
-        // default is the safe one.
-        dialect: chiero_ast::Dialect::pedantic(),
-        ast,
-        target: target.clone(),
-        names,
-        out: Analysis::default(),
-        typedefs: IndexMap::new(),
-        tags: IndexMap::new(),
-        enums: IndexMap::new(),
-        quiet: 0,
-        next_enum_tag: 0,
-        enumerators: IndexMap::new(),
-        in_progress: Vec::new(),
-        current_ret: None,
-        current_fn: None,
-        read_only: Default::default(),
-        read_only_pointee: Default::default(),
-        register_objects: Default::default(),
-        meanings: Default::default(),
-        body_scope_open: false,
-        automatic_objects: Default::default(),
-        loop_depth: 0,
-        breakable_depth: 0,
-        switches: Vec::new(),
-        labels_defined: Default::default(),
-        labels_used: Vec::new(),
-        declaring: None,
-        defined_tags: Default::default(),
-        declared_enumerators: Default::default(),
-        open_vla_scopes: Vec::new(),
-        switch_vla_depth: Vec::new(),
-        next_vla_scope: 0,
-        label_scopes: Default::default(),
-        prior: Default::default(),
-        values: ScopedTypes::default(),
-        unknown_names: Default::default(),
-        defined_with_init: Default::default(),
-    };
-    // **The declarations are processed first.** An address constant is *about* a declared
-    // object — `&arr[3]` needs `arr`'s element size to scale the offset — and `sizeof`
-    // needs the tag table. Their diagnostics are then discarded, because the caller asked
-    // about one expression and complaints about the surrounding file are not an answer.
-    for &item in ast.items() {
-        cx.item(item);
-    }
-    cx.out.diagnostics.clear();
+    ConstEvaluator::new(ast, names, target).eval(expr, out)
+}
 
-    let v = cx.eval(expr);
-    out.append(&mut cx.out.diagnostics);
-    match v {
-        Some(v) => Some(ConstVal::Int(v.v)),
-        // Not an integer constant: it may still be an **address** constant, which 014 §6
-        // requires because `&arr[3]` and `(char*)&s + offsetof(S, f)` are valid static
-        // initializers and fill VPP's node registration tables.
-        None => cx
-            .addr_of(expr)
-            .map(|(global, off, _)| ConstVal::Addr { global, off }),
+/// One translation unit, prepared once for **repeated** constant evaluation (014 §6).
+///
+/// The preparation [`const_eval`] does per call — a context in which `sizeof(int)`
+/// resolves, and a walk of every declaration so that an address constant can be *about* a
+/// declared object — depends only on the translation unit. Holding it across expressions
+/// is what makes a caller with thousands of constants linear rather than quadratic in the
+/// size of the file.
+///
+/// The evaluator carries no per-expression state: two `eval` calls on the same expression
+/// answer the same thing, in either order, and interleaving expressions from different
+/// functions is fine. What it does accumulate is the declaration knowledge it was built
+/// with plus whatever later lookups resolved, which is a cache and not a history.
+pub struct ConstEvaluator<'a> {
+    cx: Cx<'a>,
+}
+
+// Hand-written because `Cx` holds a `&dyn SymbolText`, which cannot be derived through —
+// and because a prepared context's interesting content is the tables, not the tree.
+impl std::fmt::Debug for ConstEvaluator<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConstEvaluator")
+            .field("items", &self.cx.ast.items().len())
+            .field("typedefs", &self.cx.typedefs.len())
+            .field("tags", &self.cx.tags.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a> ConstEvaluator<'a> {
+    /// Prepare the translation unit. **This is the expensive call** — one pass over every
+    /// declaration in `ast`.
+    pub fn new(ast: &'a Ast, names: &'a dyn SymbolText, target: &TargetConfig) -> Self {
+        let mut cx = Self::context(ast, names, target);
+        // **The declarations are processed first.** An address constant is *about* a
+        // declared object — `&arr[3]` needs `arr`'s element size to scale the offset —
+        // and `sizeof` needs the tag table. Their diagnostics are then discarded, because
+        // the caller asked about one expression and complaints about the surrounding file
+        // are not an answer.
+        for &item in ast.items() {
+            cx.item(item);
+        }
+        cx.out.diagnostics.clear();
+        ConstEvaluator { cx }
+    }
+
+    /// Fold one expression, appending any diagnostics *it* produced to `out`.
+    pub fn eval(&mut self, expr: ExprId, out: &mut Vec<SemaDiagnostic>) -> Option<ConstVal> {
+        // Cleared, not drained: anything still here belongs to an earlier expression, and
+        // reporting it again against this one would make a caller's diagnostics depend on
+        // how many constants it had already folded.
+        self.cx.out.diagnostics.clear();
+        let v = self.cx.eval(expr);
+        out.append(&mut self.cx.out.diagnostics);
+        match v {
+            Some(v) => Some(ConstVal::Int(v.v)),
+            // Not an integer constant: it may still be an **address** constant, which 014
+            // §6 requires because `&arr[3]` and `(char*)&s + offsetof(S, f)` are valid
+            // static initializers and fill VPP's node registration tables.
+            None => self
+                .cx
+                .addr_of(expr)
+                .map(|(global, off, _)| ConstVal::Addr { global, off }),
+        }
+    }
+
+    fn context(ast: &'a Ast, names: &'a dyn SymbolText, target: &TargetConfig) -> Cx<'a> {
+        // A throwaway context, so `sizeof(int)` resolves standalone. `sizeof(struct S)`
+        // needs the TU's tag table and therefore needs `analyze`; that is a real limit and
+        // is why this takes a target rather than pretending sizes are universal.
+        Cx {
+            // A const-eval helper: no dialect-gated rule is reachable from here, so the strict
+            // default is the safe one.
+            dialect: chiero_ast::Dialect::pedantic(),
+            ast,
+            target: target.clone(),
+            names,
+            out: Analysis::default(),
+            typedefs: IndexMap::new(),
+            tags: IndexMap::new(),
+            enums: IndexMap::new(),
+            quiet: 0,
+            next_enum_tag: 0,
+            enumerators: IndexMap::new(),
+            in_progress: Vec::new(),
+            current_ret: None,
+            current_fn: None,
+            read_only: Default::default(),
+            read_only_pointee: Default::default(),
+            register_objects: Default::default(),
+            meanings: Default::default(),
+            body_scope_open: false,
+            automatic_objects: Default::default(),
+            loop_depth: 0,
+            breakable_depth: 0,
+            switches: Vec::new(),
+            labels_defined: Default::default(),
+            labels_used: Vec::new(),
+            declaring: None,
+            defined_tags: Default::default(),
+            declared_enumerators: Default::default(),
+            open_vla_scopes: Vec::new(),
+            switch_vla_depth: Vec::new(),
+            next_vla_scope: 0,
+            label_scopes: Default::default(),
+            prior: Default::default(),
+            values: ScopedTypes::default(),
+            unknown_names: Default::default(),
+            defined_with_init: Default::default(),
+        }
     }
 }
 

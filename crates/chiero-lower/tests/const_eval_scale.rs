@@ -82,7 +82,11 @@ fn lookups_to_lower(n: usize) -> u64 {
         &names,
         chiero_ast::Dialect::gnu(),
     );
-    assert!(analysis.diagnostics.is_empty(), "{:?}", analysis.diagnostics);
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "{:?}",
+        analysis.diagnostics
+    );
     // Only lowering is under measurement: analysis is a single pass over the tree by
     // construction and is not what regressed.
     names.calls.set(0);
