@@ -6702,3 +6702,49 @@ fn an_arrow_through_an_array_name_is_an_lvalue() {
         "struct H s = {8}; struct B b[2]; (b+1)->h = s; return (b+1)->h.a;",
     );
 }
+
+/// **`offsetof` with a non-constant subscript is refused.**
+///
+/// ```text
+/// drivers/iavf/virtchnl_funcs.h:121: `iavf_vc_op_config_vsi_queues` contains a construct
+///   lowering cannot represent
+///   inner: an `__builtin_offsetof` whose member designator does not resolve
+///
+///   #define VIRTCHNL_MSG_SZ(s, e, n) STRUCT_OFFSET_OF (s, e[(n) + 1])
+///   .req_sz = VIRTCHNL_MSG_SZ (virtchnl_vsi_queue_config_info_t, qpair,
+///                              req->num_queue_pairs),
+/// ```
+///
+/// gcc computes it: `offsetof(T, qpair[n])` is address arithmetic, `&((T *)0)->qpair[n]`, and
+/// only the *constant* form is a constant expression. Lowering asks `const_of` and refuses when
+/// the fold declines, which is right for a designator naming something that is not there and
+/// wrong for one whose index is simply a variable.
+///
+/// **12 translation units** — every driver that sizes a variable-length virtchnl message, which
+/// is what the macro exists for.
+#[test]
+fn offsetof_accepts_a_runtime_subscript() {
+    const P: &str = "struct Q { int a; int b; };\nstruct T { int hdr; struct Q qpair[4]; };\n";
+    agree_with(
+        P,
+        "int n = 2; return (int)__builtin_offsetof(struct T, qpair[n]);",
+    );
+    // An expression as the index, which is the macro's `(n) + 1`.
+    agree_with(
+        P,
+        "int n = 2; return (int)__builtin_offsetof(struct T, qpair[n+1]);",
+    );
+    // A member *after* the subscript, so the walk has to continue past it.
+    agree_with(
+        P,
+        "int n = 1; return (int)__builtin_offsetof(struct T, qpair[n].b);",
+    );
+    // The constant forms, which already worked and must keep working.
+    agree_with(P, "return (int)__builtin_offsetof(struct T, qpair[1].b);");
+    agree_with(P, "return (int)__builtin_offsetof(struct T, hdr);");
+    // A two-dimensional walk, where both indices are runtime.
+    agree_with(
+        "struct G { int m[3][5]; };",
+        "int i = 2, j = 3; return (int)__builtin_offsetof(struct G, m[i][j]);",
+    );
+}
