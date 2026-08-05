@@ -35,7 +35,7 @@
 //! one, so it says the one that changes what a caller may do with the rest.
 
 use chiero_gcov::{TestId, Validity};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn corpus() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -65,7 +65,7 @@ fn scratch(stem: &str, dir: &str) -> PathBuf {
 }
 
 /// An index over one object, with its sources hashed from `dir`.
-fn index_of(dir: &PathBuf, stem: &str) -> chiero_gcov::CoverageIndex {
+fn index_of(dir: &Path, stem: &str) -> chiero_gcov::CoverageIndex {
     let mut idx = chiero_gcov::CoverageIndex::default();
     chiero_gcov::ingest_native_as(&mut idx, TestId(0), dir, stem).expect("the fixture decodes");
     idx.record_sources(dir);

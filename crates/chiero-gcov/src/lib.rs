@@ -205,6 +205,51 @@ struct FileRef(u32);
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct VariantRef(u32);
 
+/// Whether an index can still be believed (030 §7).
+///
+/// **A type a caller must pattern-match**, so that "some tests are unaccounted for" and "these
+/// answers are about source that no longer exists" cannot be handled by the same branch. §7 is
+/// explicit that there is no "probably fine" path, and 032 is required to match on this.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Validity {
+    /// Every source hashed at ingest still hashes the same, and every test is accounted for.
+    Fresh,
+    /// A source has changed since ingest. **Nothing in the index is about the current tree**, so
+    /// this outranks [`Validity::Partial`]: a caller that falls back to always-run on `Partial`
+    /// must refuse outright here.
+    Stale { files: Vec<String> },
+    /// Every source matches, and some tests produced no coverage — they crashed, timed out or
+    /// never ran. Selection falls back to running them (§7), which is what
+    /// [`CoverageIndex::always_run`] returns.
+    Partial { missing_tests: Vec<TestId> },
+}
+
+/// The hash of a source that is not there.
+///
+/// **A value, not an absence.** A deleted file must read as a change rather than as "cannot
+/// check", and a `None` here would have to be interpreted at every comparison site.
+const ABSENT: u128 = 0;
+
+/// FNV-1a over 128 bits.
+///
+/// **Not Blake3, which 030 §7 names.** The job is to notice an accidental difference between two
+/// versions of one file, and at 128 bits a chance collision is ~2⁻¹²⁸; the failure mode that
+/// actually happens is having no hash at all, or comparing modification times, which answer "were
+/// these written near each other" instead of "is this the same text". What Blake3 buys on top is
+/// resistance to a *constructed* collision — someone making an edit look covered — and that
+/// threat model is not one this project has adopted anywhere else. It is a private detail of this
+/// crate, so adopting it later is this function and nothing else.
+fn source_hash(bytes: &[u8]) -> u128 {
+    const OFFSET: u128 = 0x6c62272e07bb014262b821756295c58d;
+    const PRIME: u128 = 0x0000000001000000000000000000013b;
+    let mut h = OFFSET;
+    for &b in bytes {
+        h ^= b as u128;
+        h = h.wrapping_mul(PRIME);
+    }
+    h
+}
+
 /// What one ingest read, kept so a report can say where a number came from (030 §7).
 #[derive(Clone, Debug)]
 pub struct IngestRecord {
@@ -255,6 +300,12 @@ pub struct CoverageIndex {
     tests: Vec<TestId>,
     /// What the runner reported about each test, when it reported anything.
     outcomes: IndexMap<TestId, TestOutcome>,
+    /// `file -> the hash of its text when it was ingested` (030 §7).
+    ///
+    /// **Recorded, because nothing in the artifacts pins the source text.** The `.gcno` stamp
+    /// pairs the two artifacts and the per-function checksums cover the CFG, so an edit that
+    /// rewrites a constant or a comment leaves both equal.
+    source_hashes: IndexMap<String, u128>,
     provenance: Vec<IngestRecord>,
 }
 
@@ -349,6 +400,64 @@ impl CoverageIndex {
         self.variants.shrink_to_fit();
         self.tests.shrink_to_fit();
         self.provenance.shrink_to_fit();
+    }
+
+    /// Hash every source this index names, resolving relative to `root` (030 §7).
+    ///
+    /// **A separate call, and the caller's.** Ingest knows the paths gcov wrote, which are
+    /// absolute paths of the machine that built the objects; only the caller knows where that
+    /// tree is now — the same knowledge `CoverageIndex`'s own docs already leave to it. Calling
+    /// this is what makes [`validity`](Self::validity) able to answer at all; an index that never
+    /// records a hash reports `Fresh` for want of any evidence to the contrary, which is why 032
+    /// pattern-matches on the result rather than trusting it blindly.
+    ///
+    /// A file that cannot be read is recorded as absent, so that deleting it later still reads as
+    /// a change rather than as "cannot check".
+    pub fn record_sources(&mut self, root: &Path) {
+        for name in self.file_names.clone() {
+            let path = Self::resolve(root, &name);
+            let h = std::fs::read(&path).map_or(ABSENT, |b| source_hash(&b));
+            self.source_hashes.insert(name, h);
+        }
+    }
+
+    /// Where a recorded path lives under `root`: `root` joined to it, or to its file name when the
+    /// recorded path is absolute — a build tree that has been moved keeps neither.
+    fn resolve(root: &Path, name: &str) -> PathBuf {
+        let p = Path::new(name);
+        let direct = root.join(p.strip_prefix("/").unwrap_or(p));
+        if direct.exists() {
+            return direct;
+        }
+        match p.file_name() {
+            Some(f) => root.join(f),
+            None => direct,
+        }
+    }
+
+    /// Whether this index can still be believed (030 §7, contract 18).
+    ///
+    /// **`Stale` outranks `Partial`**, because they are not the same severity: `Partial` says
+    /// some tests are unaccounted for and selection must run them, while `Stale` says none of the
+    /// answers describe the source in front of you. An enum can report one, so it reports the one
+    /// that changes what a caller may do with the rest.
+    pub fn validity(&self, root: &Path) -> Validity {
+        let mut files: Vec<String> = Vec::new();
+        for (name, &was) in &self.source_hashes {
+            let now = std::fs::read(Self::resolve(root, name)).map_or(ABSENT, |b| source_hash(&b));
+            if now != was {
+                files.push(name.clone());
+            }
+        }
+        if !files.is_empty() {
+            files.sort();
+            return Validity::Stale { files };
+        }
+        let missing_tests = self.always_run();
+        if !missing_tests.is_empty() {
+            return Validity::Partial { missing_tests };
+        }
+        Validity::Fresh
     }
 
     /// The tests that executed a line, in test order, or `None` when nothing recorded the line.
