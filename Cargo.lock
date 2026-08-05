@@ -64,15 +64,22 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chiero-check",
+ "chiero-cir",
  "chiero-diff",
  "chiero-exec",
  "chiero-gcov",
+ "chiero-lex",
+ "chiero-lower",
  "chiero-opt",
+ "chiero-parse",
+ "chiero-pp",
  "chiero-recipe",
  "chiero-select",
+ "chiero-sema",
  "chiero-span",
  "chiero-tool",
  "chiero-vpp",
+ "serde_json",
 ]
 
 [[package]]

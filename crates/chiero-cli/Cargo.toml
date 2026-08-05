@@ -17,7 +17,21 @@ chiero-gcov.workspace = true
 chiero-diff.workspace = true
 chiero-vpp.workspace = true
 chiero-tool.workspace = true
+chiero-cir.workspace = true
+chiero-lex.workspace = true
+chiero-pp.workspace = true
+chiero-parse.workspace = true
+chiero-sema.workspace = true
+chiero-lower.workspace = true
 anyhow.workspace = true
+serde_json.workspace = true
+
+[[bin]]
+name = "chiero"
+path = "src/main.rs"
+
+[dev-dependencies]
+serde_json.workspace = true
 
 [lints]
 workspace = true
