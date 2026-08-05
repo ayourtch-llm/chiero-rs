@@ -299,3 +299,198 @@ pub fn records(path: &Path) -> Result<Vec<Record>, IngestError> {
     }
     Ok(out)
 }
+
+/// Arc flags (030 §4).
+///
+/// A newtype rather than a bare `u32`: `ON_TREE` decides whether a counter exists for the arc and
+/// `FAKE` decides whether it is real control flow, and confusing the two silently changes which
+/// tests an arc-level selection returns.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct ArcFlags(pub u32);
+
+impl ArcFlags {
+    /// gcc's spanning tree: no counter is stored, the count is recovered by conservation.
+    pub const ON_TREE: ArcFlags = ArcFlags(1);
+    /// To the exit block from a call that may not return. Real for conservation, not for
+    /// selection (030 §4.1, contract 7).
+    pub const FAKE: ArcFlags = ArcFlags(2);
+    pub const FALLTHROUGH: ArcFlags = ArcFlags(4);
+
+    pub fn contains(self, other: ArcFlags) -> bool {
+        self.0 & other.0 == other.0
+    }
+}
+
+impl std::ops::BitOr for ArcFlags {
+    type Output = ArcFlags;
+    fn bitor(self, rhs: ArcFlags) -> ArcFlags {
+        ArcFlags(self.0 | rhs.0)
+    }
+}
+
+/// One arc of a function's CFG.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Arc {
+    pub from: u32,
+    pub to: u32,
+    pub flags: ArcFlags,
+}
+
+/// The lines one block came from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockLines {
+    pub block: u32,
+    pub file: String,
+    pub lines: Vec<u32>,
+}
+
+/// One function's notes.
+#[derive(Clone, Debug)]
+pub struct NoteFunction {
+    pub ident: u32,
+    pub lineno_checksum: u32,
+    pub cfg_checksum: u32,
+    pub name: String,
+    /// Compiler-generated. The flag exists between the name and the source file, and a decoder
+    /// that skips it reads the source name out of the next field.
+    pub artificial: bool,
+    pub source: String,
+    pub start_line: u32,
+    pub start_column: u32,
+    pub end_line: u32,
+    pub end_column: u32,
+    pub blocks: u32,
+    pub arcs: Vec<Arc>,
+    pub lines: Vec<BlockLines>,
+}
+
+/// A decoded `.gcno`.
+#[derive(Clone, Debug)]
+pub struct Note {
+    pub header: Header,
+    pub functions: Vec<NoteFunction>,
+}
+
+/// A cursor over a record payload.
+///
+/// **Every read is checked.** A record whose length disagrees with its content is corrupt data,
+/// and 030 contract 6's rule — report it, do not guess — applies as much to a short field as to a
+/// short file.
+struct Cursor<'a> {
+    p: &'a [u8],
+    at: usize,
+}
+
+impl<'a> Cursor<'a> {
+    fn new(p: &'a [u8]) -> Cursor<'a> {
+        Cursor { p, at: 0 }
+    }
+
+    fn u32(&mut self) -> Option<u32> {
+        let b = self.p.get(self.at..self.at + 4)?;
+        self.at += 4;
+        Some(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+
+    /// A length in bytes, then that many bytes, **unpadded**. The trailing NUL is dropped.
+    fn string(&mut self) -> Option<String> {
+        let n = self.u32()? as usize;
+        let b = self.p.get(self.at..self.at + n)?;
+        self.at += n;
+        let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
+        Some(String::from_utf8_lossy(&b[..end]).into_owned())
+    }
+
+    fn done(&self) -> bool {
+        self.at >= self.p.len()
+    }
+}
+
+/// Decode a `.gcno` into its functions, their CFGs and their line sets.
+pub fn read_notes(path: &Path) -> Result<Note, IngestError> {
+    let header = header(path)?;
+    if header.kind != Kind::Notes {
+        return Err(IngestError::Malformed {
+            path: path.to_path_buf(),
+            why: "expected a `.gcno`, found the counters".into(),
+        });
+    }
+    let short = |why: &str| IngestError::Malformed {
+        path: path.to_path_buf(),
+        why: format!("truncated record: {why}"),
+    };
+    let mut functions: Vec<NoteFunction> = Vec::new();
+    for rec in records(path)? {
+        match rec.tag {
+            Tag::Function => {
+                let mut c = Cursor::new(&rec.payload);
+                let f = NoteFunction {
+                    ident: c.u32().ok_or_else(|| short("function ident"))?,
+                    lineno_checksum: c.u32().ok_or_else(|| short("lineno checksum"))?,
+                    cfg_checksum: c.u32().ok_or_else(|| short("cfg checksum"))?,
+                    name: c.string().ok_or_else(|| short("function name"))?,
+                    artificial: c.u32().ok_or_else(|| short("artificial flag"))? != 0,
+                    source: c.string().ok_or_else(|| short("source name"))?,
+                    start_line: c.u32().ok_or_else(|| short("start line"))?,
+                    start_column: c.u32().ok_or_else(|| short("start column"))?,
+                    end_line: c.u32().ok_or_else(|| short("end line"))?,
+                    end_column: c.u32().ok_or_else(|| short("end column"))?,
+                    blocks: 0,
+                    arcs: Vec::new(),
+                    lines: Vec::new(),
+                };
+                functions.push(f);
+            }
+            // **Everything after a `FUNCTION` belongs to it.** The stream is a sequence, not a
+            // tree: `BLOCKS`, `ARCS` and `LINES` attach to the most recent function, and a record
+            // arriving before any function is corrupt rather than global.
+            Tag::Blocks | Tag::Arcs | Tag::Lines => {
+                let Some(f) = functions.last_mut() else {
+                    return Err(IngestError::Malformed {
+                        path: path.to_path_buf(),
+                        why: format!("a {:?} record at {} before any function", rec.tag, rec.at),
+                    });
+                };
+                let mut c = Cursor::new(&rec.payload);
+                match rec.tag {
+                    Tag::Blocks => f.blocks = c.u32().ok_or_else(|| short("block count"))?,
+                    Tag::Arcs => {
+                        let from = c.u32().ok_or_else(|| short("arc source block"))?;
+                        while !c.done() {
+                            let to = c.u32().ok_or_else(|| short("arc destination"))?;
+                            let flags = c.u32().ok_or_else(|| short("arc flags"))?;
+                            f.arcs.push(Arc {
+                                from,
+                                to,
+                                flags: ArcFlags(flags),
+                            });
+                        }
+                    }
+                    Tag::Lines => {
+                        // **A grammar, not fields**: a 0 introduces a file name, anything else is
+                        // a line, and a 0 with an empty name ends the record.
+                        let block = c.u32().ok_or_else(|| short("line block"))?;
+                        let mut file = String::new();
+                        let mut lines = Vec::new();
+                        while let Some(v) = c.u32() {
+                            if v != 0 {
+                                lines.push(v);
+                                continue;
+                            }
+                            let name = c.string().ok_or_else(|| short("line file name"))?;
+                            if name.is_empty() {
+                                break;
+                            }
+                            file = name;
+                        }
+                        f.lines.push(BlockLines { block, file, lines });
+                    }
+                    _ => unreachable!("the arm matched these three tags"),
+                }
+            }
+            // A tag this decoder has no use for costs its own bytes and nothing else.
+            _ => {}
+        }
+    }
+    Ok(Note { header, functions })
+}

@@ -99,7 +99,11 @@ fn each_block_carries_the_lines_it_came_from() {
         .collect();
     assert_eq!(
         main_lines,
-        vec![(2, "t.c", vec![3]), (3, "t.c", vec![3]), (4, "t.c", vec![3])],
+        vec![
+            (2, "t.c", vec![3]),
+            (3, "t.c", vec![3]),
+            (4, "t.c", vec![3])
+        ],
         "three blocks, one line: this is what a twice-expanded macro looks like from inside the \
          format, and why 031 has to join it to the expansion index to say anything about `ADD1`"
     );
