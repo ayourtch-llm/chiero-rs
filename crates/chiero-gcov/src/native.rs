@@ -39,7 +39,23 @@ const MAGIC_DATA: u32 = 0x67636461;
 /// **A list, not a range.** 030 §4 is explicit: chiero decodes the versions it has fixtures for
 /// and an unknown tag falls back to JSON, because a layout nobody has run against is a layout
 /// whose field order is a guess. Adding a version here means adding a fixture that proves it.
-const KNOWN: &[(u8, u8)] = &[(13, 3)];
+const KNOWN: &[(u8, u8)] = &[(13, 3), (4, 8)];
+
+/// Which of the two on-disk layouts a version uses.
+///
+/// **Not a version range.** gcc 12 changed record and string lengths from words to bytes and put
+/// the working directory in the `.gcno` header; clang still writes the older shape and calls it
+/// 4.08. The two are decoded by different code, and [`KNOWN`] stays a list of versions with
+/// fixtures rather than a bound, because a layout nobody has run against is a guess.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Layout {
+    /// gcc 12 and later: lengths in bytes, a working directory in the `.gcno` header, and a
+    /// `FUNCTION` record carrying `artificial`, columns and an end line.
+    Bytes,
+    /// gcc 11 and earlier, and every clang: lengths in words, strings word-counted and
+    /// NUL-padded, records from byte 12, and a `FUNCTION` record of six fields.
+    Words,
+}
 
 /// A parsed artifact header.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -75,16 +91,49 @@ impl Header {
         let b = self.version.to_le_bytes();
         // Stored little-endian, so the tag reads back to front.
         let (tens, ones, minor) = (b[3], b[2], b[1]);
-        if !tens.is_ascii_uppercase() || !ones.is_ascii_digit() || !minor.is_ascii_digit() {
+        if !ones.is_ascii_digit() || !minor.is_ascii_digit() {
             return None;
         }
-        let major = (tens - b'A').checked_mul(10)?.checked_add(ones - b'0')?;
-        Some((major, minor - b'0'))
+        // **The two encodings do not merely differ in the first character — the rest mean
+        // different things.** Once gcc reached 10 it took a letter for the tens and gave the
+        // major two positions, leaving one for the minor; before that the major had one position
+        // and the minor two.
+        //
+        //     "B33*"  ->  B=10s, 3 -> major 13, minor 3      gcc 13.3
+        //     "408*"  ->  4 -> major 4,  "08" -> minor 8      clang, and every gcc before 10
+        //
+        // Reading the older tag with the newer rule gives 40.8 — a plausible number for a
+        // compiler that does not exist, which is the failure mode this whole function was
+        // rewritten once already to avoid.
+        // Checked, because a tag nobody has seen must decode to *nothing* rather than to a
+        // number — and `badversion.gcno` exists to keep that honest. `(Z-A)*10` alone overflows a
+        // `u8`, so an unchecked read of a corrupt tag panics where it should refuse.
+        match tens {
+            b'A'..=b'Z' => Some((
+                (tens - b'A').checked_mul(10)?.checked_add(ones - b'0')?,
+                minor - b'0',
+            )),
+            b'0'..=b'9' => Some((
+                tens - b'0',
+                (ones - b'0').checked_mul(10)?.checked_add(minor - b'0')?,
+            )),
+            _ => None,
+        }
     }
 
     /// Whether this decoder has a fixture for this version.
     pub fn is_known(&self) -> bool {
         self.gcc_version().is_some_and(|v| KNOWN.contains(&v))
+    }
+
+    /// Which on-disk layout this version uses.
+    ///
+    /// The change landed in gcc 12; clang writes the older one and calls it 4.08.
+    pub fn layout(&self) -> Layout {
+        match self.gcc_version() {
+            Some((major, _)) if major >= 12 => Layout::Bytes,
+            _ => Layout::Words,
+        }
     }
 }
 
@@ -230,7 +279,17 @@ pub struct Record {
 /// A `.gcno` carries the working directory as a length-prefixed string plus a flag word after the
 /// four header words; a `.gcda` goes straight to its records. **Measured** — this is exactly the
 /// kind of offset 030 §4 refuses to take from documentation.
-fn records_offset(bytes: &[u8], kind: Kind, path: &Path) -> Result<usize, IngestError> {
+fn records_offset(
+    bytes: &[u8],
+    kind: Kind,
+    layout: Layout,
+    path: &Path,
+) -> Result<usize, IngestError> {
+    // **The older layout has neither the checksum word nor the working directory**, in either
+    // artifact: records start immediately after magic, version and stamp.
+    if layout == Layout::Words {
+        return Ok(12);
+    }
     match kind {
         Kind::Data => Ok(16),
         Kind::Notes => {
@@ -259,7 +318,7 @@ pub fn records(path: &Path) -> Result<Vec<Record>, IngestError> {
         path: path.to_path_buf(),
         why: e.to_string(),
     })?;
-    let mut i = records_offset(&bytes, h.kind, path)?;
+    let mut i = records_offset(&bytes, h.kind, h.layout(), path)?;
     let mut out = Vec::new();
     while i < bytes.len() {
         // **A trailing partial word is not a record.** `t.gcda` ends with four zero bytes after
@@ -292,9 +351,16 @@ pub fn records(path: &Path) -> Result<Vec<Record>, IngestError> {
         // the fixtures written before that build could find it: in all of them, every function
         // ran.
         let raw = i32::from_le_bytes([bytes[i + 4], bytes[i + 5], bytes[i + 6], bytes[i + 7]]);
-        let len = if raw < 0 { 0 } else { raw as usize };
+        // **Words in the older layout, bytes since gcc 12.** Read the wrong way a `FUNCTION`
+        // record of 9 words looks like 9 bytes and the next tag is read out of the middle of a
+        // checksum.
+        let scale = match h.layout() {
+            Layout::Words => 4,
+            Layout::Bytes => 1,
+        };
+        let len = if raw < 0 { 0 } else { raw as usize * scale };
         let elided = if raw < 0 {
-            raw.unsigned_abs() as usize
+            raw.unsigned_abs() as usize * scale
         } else {
             0
         };
@@ -398,11 +464,12 @@ pub struct Note {
 struct Cursor<'a> {
     p: &'a [u8],
     at: usize,
+    layout: Layout,
 }
 
 impl<'a> Cursor<'a> {
-    fn new(p: &'a [u8]) -> Cursor<'a> {
-        Cursor { p, at: 0 }
+    fn new(p: &'a [u8], layout: Layout) -> Cursor<'a> {
+        Cursor { p, at: 0, layout }
     }
 
     fn u32(&mut self) -> Option<u32> {
@@ -411,9 +478,17 @@ impl<'a> Cursor<'a> {
         Some(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     }
 
-    /// A length in bytes, then that many bytes, **unpadded**. The trailing NUL is dropped.
+    /// A length, then that many bytes. The trailing NUL is dropped.
+    ///
+    /// **The length is in bytes since gcc 12 and in words before it**, where the text is also
+    /// NUL-padded up to the word. Both are measured: gcc 13 writes `"cl.c"` as `5` then five
+    /// bytes, clang writes `2` then eight.
     fn string(&mut self) -> Option<String> {
-        let n = self.u32()? as usize;
+        let n = self.u32()? as usize
+            * match self.layout {
+                Layout::Words => 4,
+                Layout::Bytes => 1,
+            };
         let b = self.p.get(self.at..self.at + n)?;
         self.at += n;
         let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
@@ -438,29 +513,53 @@ pub fn read_notes(path: &Path) -> Result<Note, IngestError> {
         path: path.to_path_buf(),
         why: format!("truncated record: {why}"),
     };
+    let layout = header.layout();
     let mut functions: Vec<NoteFunction> = Vec::new();
     for rec in records(path)? {
         match rec.tag {
             Tag::Function => {
-                let mut c = Cursor::new(&rec.payload);
-                let f = NoteFunction {
-                    ident: c.u32().ok_or_else(|| short("function ident"))?,
-                    lineno_checksum: c.u32().ok_or_else(|| short("lineno checksum"))?,
-                    cfg_checksum: c.u32().ok_or_else(|| short("cfg checksum"))?,
-                    name: c.string().ok_or_else(|| short("function name"))?,
-                    artificial: c.u32().ok_or_else(|| short("artificial flag"))? != 0,
-                    // Canonical from the moment it is read, so nothing downstream compares two
-                    // spellings of one path — [`canonical_path`] says why.
-                    source: canonical_path(&c.string().ok_or_else(|| short("source name"))?),
-                    start_line: c.u32().ok_or_else(|| short("start line"))?,
-                    start_column: c.u32().ok_or_else(|| short("start column"))?,
-                    end_line: c.u32().ok_or_else(|| short("end line"))?,
-                    end_column: c.u32().ok_or_else(|| short("end column"))?,
+                let mut c = Cursor::new(&rec.payload, layout);
+                let ident = c.u32().ok_or_else(|| short("function ident"))?;
+                let lineno_checksum = c.u32().ok_or_else(|| short("lineno checksum"))?;
+                let cfg_checksum = c.u32().ok_or_else(|| short("cfg checksum"))?;
+                let name = c.string().ok_or_else(|| short("function name"))?;
+                // **The older layout stops at the start line.** It carries no `artificial` flag
+                // and no columns or end line, so a decoder that reads gcc 12's extra fields takes
+                // the source name out of the flag and the start line out of the source.
+                let artificial = match layout {
+                    Layout::Bytes => c.u32().ok_or_else(|| short("artificial flag"))? != 0,
+                    Layout::Words => false,
+                };
+                // Canonical from the moment it is read, so nothing downstream compares two
+                // spellings of one path — [`canonical_path`] says why.
+                let source = canonical_path(&c.string().ok_or_else(|| short("source name"))?);
+                let start_line = c.u32().ok_or_else(|| short("start line"))?;
+                let (start_column, end_line, end_column) = match layout {
+                    Layout::Bytes => (
+                        c.u32().ok_or_else(|| short("start column"))?,
+                        c.u32().ok_or_else(|| short("end line"))?,
+                        c.u32().ok_or_else(|| short("end column"))?,
+                    ),
+                    // **`end_line` is what `GroupRange` bounds a group member's private table
+                    // by.** Absent, the honest value is the start line, which makes such a range
+                    // hold exactly the function's first line rather than all of them or none.
+                    Layout::Words => (0, start_line, 0),
+                };
+                functions.push(NoteFunction {
+                    ident,
+                    lineno_checksum,
+                    cfg_checksum,
+                    name,
+                    artificial,
+                    source,
+                    start_line,
+                    start_column,
+                    end_line,
+                    end_column,
                     blocks: 0,
                     arcs: Vec::new(),
                     lines: Vec::new(),
-                };
-                functions.push(f);
+                });
             }
             // **Everything after a `FUNCTION` belongs to it.** The stream is a sequence, not a
             // tree: `BLOCKS`, `ARCS` and `LINES` attach to the most recent function, and a record
@@ -472,9 +571,16 @@ pub fn read_notes(path: &Path) -> Result<Note, IngestError> {
                         why: format!("a {:?} record at {} before any function", rec.tag, rec.at),
                     });
                 };
-                let mut c = Cursor::new(&rec.payload);
+                let mut c = Cursor::new(&rec.payload, layout);
                 match rec.tag {
-                    Tag::Blocks => f.blocks = c.u32().ok_or_else(|| short("block count"))?,
+                    // **A count since gcc 12, one word per block before it** — where the record's
+                    // own length is therefore the count.
+                    Tag::Blocks => {
+                        f.blocks = match layout {
+                            Layout::Bytes => c.u32().ok_or_else(|| short("block count"))?,
+                            Layout::Words => (rec.payload.len() / 4) as u32,
+                        }
+                    }
                     Tag::Arcs => {
                         let from = c.u32().ok_or_else(|| short("arc source block"))?;
                         while !c.done() {
@@ -593,7 +699,7 @@ pub fn read_data(path: &Path) -> Result<Data, IngestError> {
     for rec in records(path)? {
         match rec.tag {
             Tag::Function => {
-                let mut c = Cursor::new(&rec.payload);
+                let mut c = Cursor::new(&rec.payload, header.layout());
                 functions.push(DataFunction {
                     ident: c.u32().ok_or_else(|| short("function ident"))?,
                     lineno_checksum: c.u32().ok_or_else(|| short("lineno checksum"))?,
