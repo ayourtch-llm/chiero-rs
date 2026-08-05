@@ -15,6 +15,7 @@
 //! through the preprocessor's expansion index.
 
 pub mod native;
+pub mod prefix;
 
 #[cfg(test)]
 mod memory_budget;

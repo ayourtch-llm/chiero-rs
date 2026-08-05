@@ -58,12 +58,25 @@ fn objects() -> Vec<PathBuf> {
             "{BUILD}/vppinfra/CMakeFiles/vppinfra{march}.dir/vector.c.gcda"
         )));
     }
+    // **Two subtrees holding an identically-named target.** The component directly below the
+    // build directory is the only thing that tells these apart, so they are what makes a strip of
+    // one too many collide — and without them it does not. The first version of this fixture had
+    // no such pair, `one_component_too_many_collides` failed, and the no-collision assertion
+    // above was therefore proving nothing about over-stripping at all.
+    for top in ["vlib", "vnet"] {
+        v.push(PathBuf::from(format!(
+            "{BUILD}/{top}/CMakeFiles/common.dir/node.c.gcda"
+        )));
+    }
     v
 }
 
 fn tree_for(test: u32, strip: u32) -> Vec<PathBuf> {
     let prefix = PathBuf::from(format!("/cov/{test}"));
-    objects().iter().map(|o| reroot(&prefix, strip, o)).collect()
+    objects()
+        .iter()
+        .map(|o| reroot(&prefix, strip, o))
+        .collect()
 }
 
 /// **Contract 17.** 100 tests, every object, no two destinations equal.
