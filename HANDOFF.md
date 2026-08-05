@@ -466,6 +466,14 @@ Commit message prefixes: `red:`, `green:`, `review:`, `spec:`, `chore:`.
 The user authorized subagents specifically for these reviews. (General standing
 instruction otherwise discourages unrequested subagent use — this is the carve-out.)
 
+### 8.2 ⚠️ Never `git add -A` while another agent has the tree
+
+It swept a reviewer's throwaway test files into a commit once and mixed a finished fix into the
+*next* RED commit twice — a commit labelled `red:` that contains the green is a lie to whoever
+reads this history next, and this history is the record. Stage the paths you edited:
+`git add crates/chiero-lower/src/lib.rs …`. Rebuilding three commits to undo it cost more than
+typing the paths ever would.
+
 ### 8.1 Subagent rules the user set 2026-07-27 — standing
 
 - **Max 2–3 concurrent agents.** Not more. The user asked for this explicitly after I
