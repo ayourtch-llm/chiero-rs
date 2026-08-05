@@ -9,17 +9,32 @@ deciding whether two functions agree. **The LLM proposes; chiero adjudicates.**
 
 ## The rewrite that looks right
 
+An LLM is asked to make this safer:
+
 ```c
-int f (int x) { return x < 0 ? -x : x; }        // before
+int f (int x) { return x < 0 ? -x : x; }              /* before */
 ```
 
-An LLM notices that `-INT_MIN` overflows and proposes a version that saturates instead. Sound
-reasoning, defensible change, different function.
+It notices — correctly — that `-x` overflows when `x == INT_MIN`, and proposes:
+
+```c
+int f (int x) {                                       /* after */
+  if (x < 0)
+    return x == INT_MIN ? INT_MAX : -x;
+  return x;
+}
+```
+
+Sound reasoning, defensible change, **different function**. Ask:
 
 ```rust
-let cfg = chiero_opt::EquivCfg::new("f");
+let cfg = chiero_opt::EquivCfg::new("f");     // "f" is the function to compare, in both
 let env = chiero_tool::prove_equivalent(&before, &after, &cfg);
+println!("{}", env.to_json());
 ```
+
+`before` and `after` are `chiero_cir::Module`s — the two versions lowered from C. (Until the
+CLI lands, that lowering is a library call; see the note at the end of this page.)
 
 ```json
 {
@@ -37,8 +52,12 @@ the original returns -2147483648 when `x == INT_MIN`"* ends the discussion.
 
 ## The agreeing direction
 
+```c
+int f (int x) { return x * 2; }        /* before */
+int f (int x) { return x << 1; }       /* after  */
+```
+
 ```rust
-// int f (int x) { return x * 2; }   vs   { return x << 1; }
 let env = chiero_tool::prove_equivalent(&double, &shift, &cfg);
 env.proven    // true
 env.fidelity  // Exact
@@ -79,7 +98,10 @@ Refusals are the useful half of this operation, so they are specific:
 ## Side effects are compared too
 
 ```c
-p (1); p (2);     vs     p (2); p (1);
+void p (int);
+
+int f (int x) { p (1); p (2); return x; }      /* before */
+int f (int x) { p (2); p (1); return x; }      /* after  */
 ```
 
 `Differs`, with `SideEffect { index: 0 }`. The order of two extern calls is observable — C
@@ -105,6 +127,13 @@ divergence. It is not built. The response says so, in `blind_spots`, every time:
 ## Next
 
 [Reading the envelope →](05-envelope.md).
+
+## A note on getting your C in here
+
+Everything above takes two `chiero_cir::Module`s. Producing those from C source is a library
+call today — **a `chiero prove-equivalent before.c after.c --entry f` command is planned**, and
+this page will show it once it exists. The fixture under test uses CIR text directly, which is
+what keeps this tutorial honest about the API that exists rather than the one that is coming.
 
 *Reference: [spec 041](../specs/041-optimization-analysis.md). Worked example under test:
 `crates/chiero-tool/tests/tutorials.rs::tutorial_04_prove_equivalent`.*

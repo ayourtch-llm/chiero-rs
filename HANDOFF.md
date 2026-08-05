@@ -537,6 +537,19 @@ guard fires.
 
 **Left to build, in rough order of value:**
 
+0. **⭐ `chiero-cli` — the user asked for it, 2026-08-05.** *"add the CLI to trigger all those
+   great cases without the user having to do too much programming; and update the tutorials
+   with how they are used."* `crates/chiero-cli/src/main.rs` is still a 5-line stub that prints
+   a version. Every operation in `chiero-tool` is reachable only from Rust, so the tutorials
+   teach a library API to someone who wants a command. Wanted, at least:
+   `chiero prove-equivalent before.c after.c --entry f`, `chiero select-tests`,
+   `chiero impact`, `chiero expansion-sites`, `chiero explain-macro`. 050 §1 says `chiero-cli`
+   is "a thin wrapper over the identical" operation surface, so the shape is settled.
+
+   Also from the same message, and already applied: **every tutorial must show the data it
+   talks about.** Tutorial 4 described an LLM's rewrite in prose and never showed the `after`
+   C, which is exactly the thing a reader stops to ask about. Audited all five.
+
 1. **§1.3's replay harness** (contracts 10, 11) — the half of 050 contract 8 that is missing.
    *"Your rewrite is wrong" is an opinion; "here is the program" ends the discussion.* Nothing
    in the tree emits a C replay harness yet — 040 §3 wants one too.

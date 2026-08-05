@@ -9,12 +9,18 @@ gap someone forgot to fill.
 ## The problem, in four lines of C
 
 ```c
-#define SCALE(x) ((x) * 2)
+#define SCALE(x) ((x) * 2)                         /* geom.c, before */
 int area   (int w) { return SCALE (w) * w; }
 int volume (int w) { return area (w) * w; }
 ```
 
-Change `* 2` to `* 3`. Which tests should you re-run?
+```c
+#define SCALE(x) ((x) * 3)                         /* geom.c, after — one character */
+int area   (int w) { return SCALE (w) * w; }
+int volume (int w) { return area (w) * w; }
+```
+
+Which tests should you re-run?
 
 gcov records the **`.c` line a macro was used on** and nothing at all about the macro itself.
 So a coverage index has no entry for the header line you edited, and asking it "which tests
@@ -26,8 +32,8 @@ the most confident possible wrong answer.
 ```rust
 use chiero_diff::{Program, impact};
 
-let before = Program::parse("geom.c", V1).unwrap();
-let after  = Program::parse("geom.c", V2).unwrap();
+let before = Program::parse("geom.c", BEFORE).unwrap();   // the two sources above
+let after  = Program::parse("geom.c", AFTER).unwrap();
 let set = impact(&before, &after);
 
 let names: Vec<&str> = set.entities.keys().map(|e| e.name()).collect();

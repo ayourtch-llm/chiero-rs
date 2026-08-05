@@ -9,11 +9,21 @@ distinction holding.
 
 ## The example
 
+You have a build compiled with `--coverage` and a test that has been run:
+
+```
+build/
+  t.gcno      # structure, written at compile time
+  t.gcda      # counts, written when the test ran
+```
+
 ```rust
 use chiero_gcov::{CoverageIndex, TestId, TestOutcome};
+use std::path::Path;
 
+let build_dir = Path::new("build");
 let mut index = CoverageIndex::default();
-chiero_gcov::ingest_native_as(&mut index, TestId(0), &build_dir, "t")?;
+chiero_gcov::ingest_native_as(&mut index, TestId(0), build_dir, "t")?;
 index.record_outcome(TestId(0), TestOutcome::Passed);
 ```
 

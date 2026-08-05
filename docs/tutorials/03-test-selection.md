@@ -10,10 +10,18 @@ that broke a test was caught), against **14.3%** for a coverage-only baseline, w
 
 ## The example
 
+The inputs are the two tutorials before this one: an index from
+[tutorial 1](01-coverage.md) and an impact set from [tutorial 2](02-change-impact.md).
+
 ```rust
 use chiero_select::{Suite, select_with};
 
-let suite = Suite { tests: all_test_ids, validity: index.validity(&repo_root) };
+// Every test in the tree, not only the ones the index has heard of — see "the always-run
+// set" below.
+let suite = Suite {
+    tests: vec![TestId(0), TestId(1), TestId(2)],
+    validity: index.validity(&repo_root),
+};
 let selection = select_with(&impact(&before, &after), &after, &index, &suite);
 
 for t in selection.ranked() {
