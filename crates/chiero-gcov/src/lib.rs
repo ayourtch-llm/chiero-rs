@@ -251,10 +251,21 @@ impl CoverageIndex {
         seen.into_iter()
     }
 
-    /// Merge one line's count, taking the **maximum** where a line already has one.
+    /// Merge one line's count across *objects*, taking the **maximum** where a line already has
+    /// one.
     ///
-    /// Max rather than sum, for the reason `line_counts` in `native` records: several blocks on
-    /// one line report the largest, which is what gcov does and what `loop.c` measures.
+    /// ⚠️ This doc used to justify the max by "which is what gcov does", citing the line rule.
+    /// That rule was wrong (see `tests/line_rule.rs`) and this was never what it did within an
+    /// object anyway: gcov accumulates a source's lines across every function and then overwrites
+    /// them with a graph count. `native::ObjectLines` now does that merge, and what reaches here
+    /// is one already-correct number per object.
+    ///
+    /// What is left for this method is the question the merge does *not* answer: the same header
+    /// line reported by two different builds — VPP compiles many, one per `CLIB_MARCH_VARIANT`.
+    /// Summing those would report a line as executed more often than any build executed it. The
+    /// maximum is a claim about the busiest build, which is the conservative direction for 032:
+    /// too-high a count never causes a test to be skipped. Per-variant answers, which is what a
+    /// caller should ask when the distinction matters, come from `tests_for_line_in`.
     pub(crate) fn add_line(&mut self, file: String, line: u32, count: u64) {
         let slot = self.line_counts.entry((file, line)).or_insert(0);
         *slot = (*slot).max(count);

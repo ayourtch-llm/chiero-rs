@@ -893,13 +893,21 @@ impl ObjectLines {
     }
 }
 
-/// Each block's outgoing arcs in gcov's order: declaration order reversed by the prepend in
-/// `read_graph_file`, then stably sorted by destination. The order is not cosmetic —
-/// [`handle_cycle`](cycles_count) subtracts each cycle's bottleneck from its arcs, so which cycle
-/// is enumerated first can change what later ones are worth.
+/// Each block's outgoing arcs in gcov's order: **declaration order**, stably sorted by
+/// destination.
+///
+/// The order is not cosmetic — [`handle_cycle`](cycles_count) subtracts each cycle's bottleneck
+/// from its arcs, so which cycle is enumerated first can change what the later ones are worth. It
+/// can only matter between *parallel* arcs, two with the same source and destination, since the
+/// sort separates every other pair.
+///
+/// `read_graph_file` builds each list by prepending, which reverses it, and `solve_flow_graph`
+/// reverses it back before anything reads it — "The arcs were built in reverse order. Fix that
+/// now." (`gcc/gcov.cc` ~2131). The sort by destination happens after that and is stable, so what
+/// survives is declaration order within each destination.
 fn succ_lists(f: &NoteFunction) -> Vec<Vec<usize>> {
     let mut out: Vec<Vec<usize>> = vec![Vec::new(); f.blocks as usize];
-    for (i, a) in f.arcs.iter().enumerate().rev() {
+    for (i, a) in f.arcs.iter().enumerate() {
         if let Some(slot) = out.get_mut(a.from as usize) {
             slot.push(i);
         }
