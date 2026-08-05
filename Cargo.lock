@@ -80,7 +80,9 @@ name = "chiero-diff"
 version = "0.1.0"
 dependencies = [
  "chiero-ast",
+ "chiero-gcov",
  "chiero-parse",
+ "chiero-pp",
  "chiero-sema",
  "chiero-span",
  "indexmap",
