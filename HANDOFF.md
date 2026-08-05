@@ -489,8 +489,34 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 > ### ⏭️ START HERE (wave 480) — M1 268/268 by contract
 >
-> ### 🔴 DO THIS FIRST: re-run the corpus sweep. Everything below was measured *before* the
-> ### initializer work, so the tree's current standing is unknown.
+> ### 🚀 THE METHOD THAT MADE THIS WAVE FAST — use it before touching anything
+>
+> **`$SCRATCH/probe.sh [binary]` — five representative VPP translation units, ~7 seconds.**
+> It replays the exact `ninja -t commands` lines for `vlib/main.c`, `vppinfra/format.c`,
+> `vnet/interface.c`, `vlib/node_cli.c` and `vppinfra/mem_dlmalloc.c` through the release
+> `xtask`, and prints one line per TU.
+>
+> Every `not-run` cause found so far has been in a header the whole tree includes, so **all five
+> fail on the same message and the probe reproduces the 2-hour sweep's verdict in seconds.**
+> Four sweeps were burned this wave learning that. Fix, probe, fix, probe; run the full sweep
+> only when the probe comes back clean, and then for the *number*, not for the next cause.
+>
+> If `probe_cmds.txt` is gone, rebuild it: `cd $VPPBUILD && ninja -t commands <the .o>` for each.
+>
+> ### ⏭️ THE QUEUE, as the probe reports it at dba4b35 — three causes, each its own defect
+>
+> | where | message | shape |
+> |---|---|---|
+> | `vppinfra/pool.h:308:42` `_pool_alloc` | store value operand is Int(64), declared Int(32) | `clib_bitmap_validate (ph->free_bitmap, (len + n_elts) ?: 1)` — a GNU elvis `?:` with operands of different widths |
+> | `vppinfra/format.c:211:6` `do_percent` | store value operand is Int(32), declared Int(64) | `fi.width[i] = va_arg (*va, int);` |
+> | `vppinfra/mem_dlmalloc.c:212:3` `format_clib_mem_heap` | store value operand is Int(32), declared Ptr | not yet reduced |
+>
+> Reduce each to four lines with `target/release/xtask cc -c x.c -o x.o` and read `x.o.chiero`;
+> that is how all six causes this wave were found, and none of them looked like what the message
+> first suggested.
+>
+> ### 🔴 THEN re-run the corpus sweep. Everything below was measured *before* the
+> ### initializer and shift work, so the tree's current standing is unknown.
 >
 > **The last complete sweep, at 99d92d0: 1871 TUs, 1852 `not-run`, 12 clean, 7 diagnosed.**
 > That number is the *before* for five commits' worth of initializer fixes — the dominant cause
@@ -556,13 +582,20 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > - **Over-long lists**: sema errors where gcc only warns. A strictness divergence to calibrate,
 >   not a defect — but it should be *decided*, since 042 owns exactly this kind of question.
 >
-> ### 📉 FOUR not-run CAUSES CLOSED THIS WAVE — the sweep drove all of them
+> ### 📉 SIX not-run CAUSES CLOSED THIS WAVE — each one universal, each one four lines
+>
+> **The pattern is the finding.** Every cause is in a header the whole tree includes, so each one
+> hides the next: 015 §7 reports one function per translation unit, and `compress_init` sat in
+> front of `u64_bit_set` in the same file. Expect the next fix to reveal another, and do not read
+> "one cause, 98% of TUs" as bad news — it is one bug.
 >
 > | commit | defect | share of `not-run` when found |
 > |---|---|---|
 > | 0968cdf | two `static` locals of one name in sibling scopes collide (`<owner>.<name>`) | 175 of 240 |
 > | 99d92d0 | `__builtin_shuffle` has no type, so a vector init copies from a scalar | 26 of 27, then 1300 of 1317 |
 > | a5e4a56 | `union { … } __u = { .__v = __A };` stored the pointer, not the bytes | 84 of 89, then 1852 of 1871 |
+> | 86505bd | a shift count **wider** than its value (`1 << i`, `i` a `uword`) | 170 of 179 |
+> | dba4b35 | a shift count **narrower** than `int`, widened from the pre-promotion width | 192 of 207 |
 > | 75bfada | (not a corpus cause) a reused `ConstEvaluator` swallowed a diagnostic | — |
 >
 > The second measurement — 1317 records, 1300 `not-run` — is the honest **before** for the
