@@ -432,6 +432,15 @@ fn a_complete_type_is_required_exactly_where_c_requires_one() {
         // Declaring — not defining, and not calling — is legal.
         "struct I; struct I g(void);",
         "struct I; int f(struct I v);",
+        // **`typeof` does not evaluate its operand**, so dereferencing to an incomplete type
+        // inside one needs no size and designates no object — gcc 13.3.0 is silent on all four
+        // of these, and errors on the plain `struct I x = *p;` two rows below. VPP's
+        // `vec_foreach_pointer` is `typeof (**v) **__ep = (v)`, so this is every `vec_end`
+        // walk over a vector of opaque pointers.
+        "struct I; int f(struct I **v) { typeof (**v) **p = v; return p != 0; }",
+        "struct I; int f(struct I *v) { typeof (*v) *p = v; return p != 0; }",
+        "struct I; int f(struct I **v) { __typeof__ (**v) **p = v; return p != 0; }",
+        "struct I; struct I **g(void); int f(void) { typeof (**g()) **p = g(); return p != 0; }",
         // The complete cases must stay silent, or the check is just noise.
         "struct C { int a; }; struct C c;",
         "struct C { int a; }; struct C arr[10]; int f(void) { return (int)sizeof(arr); }",
