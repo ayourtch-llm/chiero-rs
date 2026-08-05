@@ -6748,3 +6748,41 @@ fn offsetof_accepts_a_runtime_subscript() {
         "int i = 2, j = 3; return (int)__builtin_offsetof(struct G, m[i][j]);",
     );
 }
+
+/// **`offsetof` in an initializer resolves its type in a throwaway context.**
+///
+/// ```text
+/// drivers/iavf/virtchnl_funcs.h:162: `iavf_vc_op_config_rss_key` contains a construct
+///   lowering cannot represent
+///   .req_sz = VIRTCHNL_MSG_SZ (virtchnl_rss_key_t, key, req->key_len),
+/// ```
+///
+/// The same `offsetof` in a `return` lowers fine — 2640083 taught the walk to compute a runtime
+/// subscript. In an *initializer* the value is offered to `const_of` first, which folds it in
+/// `ConstEvaluator`'s own context, and that context records the resolved type of the `TypeName`
+/// operand in **its** analysis rather than in the real one. Lowering then asks
+/// `ty_of_syntactic`, gets nothing, and the walk has no root to start from.
+///
+/// Six functions in `virtchnl_funcs.h` size their message this way, across 12 translation
+/// units — the last multi-translation-unit cause in the tree.
+#[test]
+fn offsetof_in_an_initializer_knows_its_type() {
+    const P: &str = "typedef struct { unsigned short n; unsigned char key[1]; } rk_t;\n\
+                     typedef struct { unsigned long sz; int tag; } vr_t;\n";
+    agree_with(
+        P,
+        "unsigned k = 3; vr_t vr = { .sz = __builtin_offsetof(rk_t, key[k]), .tag = 1 }; \
+         return (int)vr.sz * 10 + vr.tag;",
+    );
+    // Through a pointer member, which is the corpus shape.
+    agree_with(
+        P,
+        "rk_t r = { .n = 4 }; const rk_t *req = &r; \
+         vr_t vr = { .sz = __builtin_offsetof(rk_t, key[(req->n) + 1]) }; return (int)vr.sz;",
+    );
+    // The constant form in an initializer, which already worked.
+    agree_with(
+        P,
+        "vr_t vr = { .sz = __builtin_offsetof(rk_t, key[2]) }; return (int)vr.sz;",
+    );
+}
