@@ -491,3 +491,184 @@ entry:
         panic!("the same call spelled two ways is not a divergence: {observation:?}");
     }
 }
+
+// =========================================================================================
+// Third review. **Two of these are earlier defects back through a different door**, which is
+// the finding that matters more than either fixture: both earlier fixes were point fixes at
+// the site where the defect was demonstrated, not at the level the rule lives.
+// =========================================================================================
+
+/// **A truncated search, one fidelity tier up.**
+///
+/// `blessable`'s `Bounded` arm refuses a run truncated by anything other than a loop bound —
+/// a dropped fork is not a bound on inputs. But it only ever ran when the *verdict* fidelity
+/// was `Bounded`. Add one unmodeled call and the run degrades to `Approximated`, whose arm
+/// screens only `Approximated`-fidelity assumptions, so the `Bounded` `BudgetHit` sits in the
+/// verdict unexamined. The module's own completeness argument — "rests on both runs being
+/// exhaustive" — collapses.
+///
+/// This is the fork-truncation defect from the first review, recurring because the fix was
+/// attached to a fidelity rather than to the assumption.
+#[test]
+fn a_truncated_search_is_not_a_proof_at_any_fidelity() {
+    let Some(base) = cfg() else { return };
+    let pick = |v: &str| {
+        format!(
+            "\
+func @tick(%0: i32) -> void
+
+func @f(%0: i32) -> i32 {{
+entry:
+  .line 1
+  call @tick(0i32)
+  %1 = cmp eq i32 %0, 0i32
+  br %1, bb1, bb2
+bb1:
+  .line 2
+  ret 0i32
+bb2:
+  .line 3
+  ret {v}i32
+}}"
+        )
+    };
+    let (a, b) = (m(&pick("1")), m(&pick("2")));
+
+    let mut forks = base.clone();
+    forks.budget.max_forks = 0;
+    must_not_bless(
+        "max_forks = 0 with an unmodeled call in the way",
+        prove_equivalent(&a, &b, &forks),
+    );
+
+    let mut states = base.clone();
+    states.budget.max_states = 1;
+    must_not_bless(
+        "max_states = 1 with an unmodeled call in the way",
+        prove_equivalent(&a, &b, &states),
+    );
+}
+
+/// **A block copy *from* caller-visible memory.**
+///
+/// The previous review's fix refused a `load` through a non-local address and left
+/// `CopyMem`'s **source** unguarded — only its destination was checked. Reading a global into
+/// a local either side of a call that may write it is the same divergence as before, spelled
+/// `memcpy` instead of `=`.
+///
+/// The global-read defect back through a different door, for the same reason as the fixture
+/// above: the fix named the instruction it was found on rather than the rule.
+#[test]
+fn copying_out_of_a_global_is_a_read_of_it() {
+    let Some(cfg) = cfg() else { return };
+    let f = |before: bool| {
+        let (first, second) = if before {
+            ("  copymem %1 <- %2, 4i64 align 4", "  call @tick(%0)")
+        } else {
+            ("  call @tick(%0)", "  copymem %1 <- %2, 4i64 align 4")
+        };
+        format!(
+            "\
+global @g : size 4 align 4 bytes 01000000
+
+func @tick(%0: i32) -> void
+
+func @f(%0: i32) -> i32 {{
+  alloca %0 : i32 x 1 align 4 scope 0 lifetime scope \"t\"
+entry:
+  .line 1
+  .scope enter 0
+  %1 = addrlocal %0
+  %2 = addrglobal @g
+{first}
+{second}
+  %3 = load i32, %1 align 4
+  .scope exit 0
+  ret %3
+}}"
+        )
+    };
+    must_not_bless(
+        "a block copy out of a global either side of a call",
+        prove_equivalent(&m(&f(true)), &m(&f(false)), &cfg),
+    );
+}
+
+/// **A function must be equivalent to itself.**
+///
+/// `malloc` is modeled, and the model forks into a success path and a NULL path whose guards
+/// are unconstrained — solver-indistinguishable, and not linked between the two runs, because
+/// the model *overwrites* the extern-return symbol that linking works on. So the pairing loop
+/// pairs one run's success against the other's failure and reports a divergence between a
+/// function and itself.
+///
+/// Reflexivity is the cheapest property this operation has, and the first one worth asserting:
+/// a `Differs` between `f` and `f` is wrong under any definition of equivalence.
+#[test]
+fn a_function_is_equivalent_to_itself_even_when_it_allocates() {
+    let Some(cfg) = cfg() else { return };
+    let f = "\
+func @malloc(%0: i64) -> ptr
+
+func @f(%0: i32) -> i32 {
+entry:
+  .line 1
+  %1 = call @malloc(8i64)
+  %2 = cmp ne %1, null
+  br %2, bb1, bb2
+bb1:
+  .line 2
+  ret 1i32
+bb2:
+  .line 3
+  ret 0i32
+}";
+    if let Equivalence::Differs {
+        input, observation, ..
+    } = prove_equivalent(&m(f), &m(f), &cfg)
+    {
+        panic!("a function differs from itself: {observation:?} at {input:?}");
+    }
+}
+
+/// **Deleting a dead `memcpy` between two locals is not a divergence.**
+///
+/// The effect is pushed for every `Body::Declared` call *before* the model registry is
+/// consulted, so a call chiero models exactly is recorded as observable I/O — contradicting
+/// `EffectKind::Call`'s own documented contract, "a call chiero can see through is not here".
+/// The structural-mismatch path then reaches a definite `Differs` before the
+/// pointer-argument refusal that would have caught it.
+///
+/// A wrong `Differs` kills a correct rewrite. `Unknown` is the conservative direction here;
+/// `Differs` is not.
+#[test]
+fn deleting_a_dead_local_memcpy_is_not_a_divergence() {
+    let Some(cfg) = cfg() else { return };
+    let f = |copy: &str| {
+        format!(
+            "\
+func @memcpy(%0: ptr, %1: ptr, %2: i64) -> ptr
+
+func @f(%0: i32) -> i32 {{
+  alloca %0 : i32 x 1 align 4 scope 0 lifetime scope \"a\"
+  alloca %1 : i32 x 1 align 4 scope 0 lifetime scope \"b\"
+entry:
+  .line 1
+  .scope enter 0
+  %2 = addrlocal %0
+  %3 = addrlocal %1
+  store i32 %0 -> %2 align 4
+{copy}
+  .scope exit 0
+  ret %0
+}}"
+        )
+    };
+    let with = f("  %4 = call @memcpy(%3, %2, 4i64)");
+    let without = f("");
+    if let Equivalence::Differs { observation, .. } =
+        prove_equivalent(&m(&with), &m(&without), &cfg)
+    {
+        panic!("a dead copy between two locals is not observable I/O: {observation:?}");
+    }
+}
