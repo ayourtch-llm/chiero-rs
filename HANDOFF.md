@@ -569,10 +569,33 @@ typing the paths ever would.
 > LINES×2`, ending exactly at byte 617. `t.gcda`: `OBJECT_SUMMARY FUNCTION COUNTER_ARCS FUNCTION
 > COUNTER_ARCS`.
 >
+> ### 🔢 THE FLOW SOLVE AND THE LINE RULE — measured, and one reading refuted
+>
+> `.gcda` holds `u64` counters for the **non-tree arcs only**, in arc order, per function
+> (matched to the notes by `ident`). `t.gcno`'s `main` has 7 arcs, 4 of them `ON_TREE`, and the
+> `.gcda` carries exactly 3 counters. Conservation recovers the rest, as 030 §4.1 describes.
+>
+> **The line rule is `max`, and `loop.c` is the fixture that proves it.** When several blocks
+> carry one line, gcov reports the *maximum* of their counts:
+>
+> ```
+> loop.c:1   block counts [1, 4, 5, 1, 1]   gcov says 5
+> ```
+>
+> Sum would be 12 and first-block would be 1, so both are refuted rather than merely
+> not-contradicted. `t.c`'s blocks are all 1 and cannot tell the three apart — which is why the
+> second fixture exists and why it is worth its bytes.
+>
 > ⏭️ **Next in 030**, in the order the spec gives them:
-> - the record **payloads**: `FUNCTION`'s ident/checksums/name/source/line, `BLOCKS`, `ARCS`
->   (destination + flags), `LINES` (block, file, line numbers). The stream reader is done and
->   tested; nothing reads inside a record yet.
+> - ~~the record payloads~~ — done (cd558c1). `read_notes` gives functions, blocks, arcs with
+>   flags, and per-block line sets, all pinned against the fixture.
+> - **the `.gcda` counters and the flow solve**, which is the next increment and has no code yet.
+>   Everything it needs is measured and written above: non-tree counters in arc order keyed by
+>   `ident`, conservation to fixpoint, then `max` per line. ⚠️ A naive propagation loop is easy to
+>   get wrong — the throwaway Python that took the measurement produced a `-1` for one arc from
+>   an ordering bug, while still getting every block count right. Iterate to a fixpoint over *all*
+>   blocks rather than trusting one pass, and refuse the data if anything is still unknown
+>   (contract 6: report it, do not guess).
 > - contract 5, the cross-validation gate: native decode must produce line counts *identical* to
 >   `gcov --json-format` on the same files. Both artifacts and the JSON are committed, so the
 >   gate can be written the moment the payloads decode — and it is the gate that makes the flow
