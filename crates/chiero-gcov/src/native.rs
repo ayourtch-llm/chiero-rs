@@ -735,7 +735,12 @@ fn line_counts(f: &NoteFunction, blocks: &[u64]) -> Vec<(String, u32, u64)> {
 /// The counters are matched to the notes by `ident`; a function in one and not the other is
 /// corrupt rather than skippable, because a missing function is a set of lines that will read as
 /// "no test covered this".
-pub fn ingest(dir: &Path, stem: &str) -> Result<crate::CoverageIndex, IngestError> {
+pub fn ingest_into(
+    idx: &mut crate::CoverageIndex,
+    test: Option<crate::TestId>,
+    dir: &Path,
+    stem: &str,
+) -> Result<(), IngestError> {
     let notes_path = dir.join(format!("{stem}.gcno"));
     let data_path = dir.join(format!("{stem}.gcda"));
     for p in [&notes_path, &data_path] {
@@ -748,7 +753,9 @@ pub fn ingest(dir: &Path, stem: &str) -> Result<crate::CoverageIndex, IngestErro
     let notes = read_notes(&notes_path)?;
     let data = read_data(&data_path)?;
 
-    let mut idx = crate::CoverageIndex::default();
+    if let Some(t) = test {
+        idx.note_test(t);
+    }
     for f in &notes.functions {
         let Some(d) = data.functions.iter().find(|d| d.ident == f.ident) else {
             return Err(IngestError::Malformed {
@@ -774,7 +781,10 @@ pub fn ingest(dir: &Path, stem: &str) -> Result<crate::CoverageIndex, IngestErro
         let arcs = solve_arcs(f, &d.counters, &data_path)?;
         let blocks = block_counts(f, &arcs);
         for (file, line, count) in line_counts(f, &blocks) {
-            idx.add_line(file, line, count);
+            match test {
+                Some(t) => idx.add_line_for(t, file, line, count),
+                None => idx.add_line(file, line, count),
+            }
         }
     }
     idx.set_detail(CoverageDetail::LinesAndArcs);
@@ -786,7 +796,7 @@ pub fn ingest(dir: &Path, stem: &str) -> Result<crate::CoverageIndex, IngestErro
         },
         format_version: notes.header.version_tag(),
     });
-    Ok(idx)
+    Ok(())
 }
 
 use crate::CoverageDetail;

@@ -34,6 +34,24 @@ pub enum CoverageDetail {
     LinesAndArcs,
 }
 
+/// A test whose run produced coverage.
+///
+/// **An index, not a name.** 030 §5 keeps the test list dense and ordered so a line's test set is
+/// a bitmap rather than a set of strings: VPP has thousands of tests and ~1M lines, and the
+/// difference is whether the index fits in memory at all. The name belongs to whoever assigned
+/// the id.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TestId(pub u32);
+
+/// The tests that executed one line.
+///
+/// **A sorted `Vec` today, roaring eventually.** 030 §5 specifies roaring bitmaps and contract 11
+/// puts a memory budget on 1M lines × 5000 tests, which this representation will not meet — it is
+/// here because the *semantics* (union, membership, ordered answers) are what everything
+/// downstream depends on, and they do not change when the representation does. The type is
+/// private to the crate so that swap stays an implementation detail.
+type TestBitmap = Vec<TestId>;
+
 /// What one ingest read, kept so a report can say where a number came from (030 §7).
 #[derive(Clone, Debug)]
 pub struct IngestRecord {
@@ -58,6 +76,13 @@ pub struct CoverageIndex {
     /// cannot see this" into "nothing ran this", which is the misreading 030 §1 exists to
     /// prevent.
     line_counts: IndexMap<(String, u32), u64>,
+    /// `(file, line) -> the tests that executed it`.
+    line_tests: IndexMap<(String, u32), TestBitmap>,
+    /// Every test that contributed an ingest, in the order they arrived.
+    ///
+    /// Kept even when a test covered nothing, so a selection can tell "ran and covered nothing"
+    /// from "never ran" — 032 does different things about those.
+    tests: Vec<TestId>,
     provenance: Vec<IngestRecord>,
 }
 
@@ -91,6 +116,19 @@ impl CoverageIndex {
         &self.provenance
     }
 
+    /// The tests that executed a line, in test order, or `None` when nothing recorded the line.
+    ///
+    /// **`None` rather than an empty set.** An empty set is the claim "no test covers this", which
+    /// 032 acts on by running nothing; a line gcov never recorded supports no such claim (030 §1).
+    pub fn tests_for_line(&self, file: &str, line: u32) -> Option<Vec<TestId>> {
+        self.line_tests.get(&(file.to_string(), line)).cloned()
+    }
+
+    /// Every test that contributed an ingest, in arrival order.
+    pub fn tests(&self) -> Vec<TestId> {
+        self.tests.clone()
+    }
+
     /// Every file the index holds coverage for, in ingest order.
     pub fn files(&self) -> impl Iterator<Item = &str> {
         let mut seen: Vec<&str> = Vec::new();
@@ -109,6 +147,26 @@ impl CoverageIndex {
     pub(crate) fn add_line(&mut self, file: String, line: u32, count: u64) {
         let slot = self.line_counts.entry((file, line)).or_insert(0);
         *slot = (*slot).max(count);
+    }
+
+    /// The same, attributed to a test.
+    ///
+    /// **A line is recorded for the test even when its count is 0.** gcov writing `0` means it
+    /// *saw* the line and the test did not execute it, which is a different fact from the line
+    /// being absent — and it is the fact 032 needs to not re-run a test for a line it demonstrably
+    /// never reached.
+    pub(crate) fn add_line_for(&mut self, test: TestId, file: String, line: u32, count: u64) {
+        self.add_line(file.clone(), line, count);
+        let set = self.line_tests.entry((file, line)).or_default();
+        if !set.contains(&test) {
+            set.push(test);
+        }
+    }
+
+    pub(crate) fn note_test(&mut self, test: TestId) {
+        if !self.tests.contains(&test) {
+            self.tests.push(test);
+        }
     }
 
     pub(crate) fn set_detail(&mut self, d: CoverageDetail) {
@@ -204,7 +262,22 @@ impl std::error::Error for IngestError {}
 /// name is the first-day mistake 030 contract 3 pins, and it is an error naming the file that was
 /// looked for rather than an empty index.
 pub fn ingest_native(dir: &Path, stem: &str) -> Result<CoverageIndex, IngestError> {
-    native::ingest(dir, stem)
+    let mut idx = CoverageIndex::default();
+    native::ingest_into(&mut idx, None, dir, stem)?;
+    Ok(idx)
+}
+
+/// The same, attributing every line it reads to `test` and merging into an existing index.
+///
+/// One object's coverage from one test run. A test that touches several objects calls this once
+/// per object with the same [`TestId`]; the union is what makes that correct.
+pub fn ingest_native_as(
+    idx: &mut CoverageIndex,
+    test: TestId,
+    dir: &Path,
+    stem: &str,
+) -> Result<(), IngestError> {
+    native::ingest_into(idx, Some(test), dir, stem)
 }
 
 /// Ingest `gcov --json-format` output for one object stem.
