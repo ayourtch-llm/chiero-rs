@@ -1070,10 +1070,25 @@ typing the paths ever would.
 > `Exact` here would be the failure 050 §2 exists to prevent, committed by the crate that
 > enforces it.
 >
-> ⏭️ **Next in 050**: wrap `expansion_sites`, which predates the envelope and reports truncation
-> in its own shape — contract 7 wants it in the envelope's. Then `explain_macro_expansion`
-> (contract 6). Both are assembly; the judgement is what fidelity each may claim, and the answer
-> is rarely `Exact`.
+> ### 📄 CONTRACT 7 IS GREEN, AND IT IS THE FIRST `Exact` OPERATION (129a038)
+>
+> `expansion_sites_envelope` wraps the existing function rather than changing it: `SiteSummary`
+> reporting its own truncation is right for a Rust caller, and wrong for the JSON surface, where
+> §2 puts every qualification in one place so a consumer reads one place.
+>
+> **The sites are the preprocessor's own expansion table**, not a scan — so the answer is complete
+> for the TU it was given, and a macro that expands nowhere is **proven empty**. That is the one
+> place in this system an empty answer may be read plainly; everywhere else `findings: []` needs
+> its qualification.
+>
+> ⚠️ **A truncated page is not proven**, and this is the subtle one: the *operation* is exact, the
+> *response* is a page of it. Nothing about the page is approximate, which is exactly why marking
+> it proven would be easy and wrong — a caller holding 50 of 1043 sites does not hold the answer.
+>
+> ⏭️ **Next in 050**: `explain_macro_expansion` (contract 6), which also already exists and needs
+> the same wrapping. Then the operations that need work behind them rather than assembly —
+> `prove_equivalent` (contract 8, and the thing 032 §3.1's `Prover` seam is waiting for),
+> `find_bugs` (contract 3), `check_reachable` (contract 5).
 >
 > ### ⏭️ AFTER THAT — 032, test selection
 >
