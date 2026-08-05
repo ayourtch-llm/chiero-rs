@@ -660,6 +660,55 @@ typing the paths ever would.
 > `Fresh` for want of evidence to the contrary. That is why §7 makes 032 pattern-match on
 > `validity()` rather than trust it.
 >
+> ### 🟡 CLANG IS DECODED — 107 of 108 objects, and the last one is diagnosed
+>
+> VPP's cmake defaults to clang, so this was the difference between chiero reading a default VPP
+> build and refusing every object of it. `*804` is **4.08, and a different layout**, not a
+> different number — `Header::layout()` selects between `Words` and `Bytes` and the reader
+> branches in five places. All of it measured from the bytes; the table is in
+> `crates/chiero-gcov/tests/clang_native.rs`.
+>
+> ```
+> cargo run --release -p chiero-gcov --example scale -- $SCRATCH/covbuild    # clang
+> cargo run --release -p chiero-gcov --example scale -- $SCRATCH/covgcc      # gcc
+> ```
+>
+> | | |
+> |---|---|
+> | clang vppinfra | **107 of 108 objects ingest** (was 0, then 42) |
+> | gcc vppinfra | 98/98, 0 of 30133 lines — unchanged throughout |
+>
+> Two bugs, and **the second was found by the scale run after four fixtures passed** — the same
+> way round as the gcc side, for the fourth time:
+>
+> 1. the version tag's two encodings mean different things in *every* position, not just the
+>    first: `"B33*"` is 13.3 but `"408*"` is 4.08, because before gcc 10 the major had one digit
+>    and the minor two. Reading the old tag with the new rule gives 40.8.
+> 2. **an empty side of a conservation equation is three things.** Entry and exit conserve
+>    nothing; a block with no arcs *into* it is unreachable, and its outgoing arcs are **zero**.
+>    Reading the third case as the first refused 66 of 108 objects.
+>
+> #### ⏭️ THE ONE THAT IS LEFT, already diagnosed — do not re-derive it
+>
+> `dlmalloc.c`, `internal_memalign`, block 23. Its shape:
+>
+> ```
+> into 23:     (17 -> 23, non-tree, so it has a counter)
+> out of 23:   (23 -> 24, ON_TREE)   (23 -> 25, ON_TREE)
+> block 22:    unreachable, its only arc (22 -> 25) is therefore 0
+> ```
+>
+> Two unknowns out of one block, so 23 needs a second equation — which has to come from 24's and
+> 25's own conservation. The solve instead reaches a state where the flow into a block exceeds the
+> flow out and reports it. Start by dumping the solved values around blocks 22–25 and finding the
+> first one that is wrong; the error is a *symptom*, and the bad value is upstream of it.
+>
+> ⚠️ **`scale` cannot cross-validate a clang object's counts.** `llvm-cov gcov` emits no JSON, so
+> the harness can only report whether an object ingests; the four committed fixtures are checked
+> against `llvm-cov`'s `.gcov` text by hand in `clang_native.rs`. Teaching `scale` to parse that
+> text would turn 107 ingests into 107 *verified* ingests, and is worth doing before trusting the
+> clang path the way the gcc path is trusted.
+>
 > ### ⏭️ WHAT IS NEXT — 031, change impact
 >
 > 030 is done. The next vertical is [031](docs/specs/031-change-impact.md), which diffs two
