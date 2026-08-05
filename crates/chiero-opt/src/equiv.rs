@@ -854,9 +854,17 @@ fn link_inputs(a: &mut TermArena, sb: &State, sa: &State) -> Option<Link> {
     // value independent of the arguments.
     //
     // The sequence position counts one thing: every declared call is in it, pure ones
-    // included, exactly so this ordinal is unambiguous. And `compare_effects` runs *before*
-    // any return is linked, so by the time position `n` is used as a key the two runs' `n`th
-    // calls have been shown to be the same callee with the same arguments.
+    // included, exactly so this ordinal is unambiguous.
+    //
+    // **A correction to what this comment used to claim.** It said `compare_effects` runs
+    // *before* any return is linked, so position `n` is only used as a key once the two `n`th
+    // calls are shown to be the same call. That is false as written — the equalities are built
+    // here, to form the pair's path condition, and `compare_effects` runs after. What is
+    // actually true is weaker and still sufficient: the equalities range over *fresh* return
+    // variables, so they cannot make a genuinely divergent pair's argument-disagreement query
+    // `Unsat`, and for any before-path some after-path pair stays feasible — so a structural
+    // mismatch is always reached and refused. Recorded rather than quietly reworded, because a
+    // rationale that sounds right and is not is the failure mode this file has had three times.
     let params = |s: &State| -> Vec<(InputKey, Term)> {
         s.inputs()
             .iter()

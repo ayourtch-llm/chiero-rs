@@ -498,6 +498,27 @@ review, every one of which reproduced. `crates/chiero-opt/tests/adversarial.rs` 
 | termination differing at exactly `{(0,200), (3,7)}` | witness `(0, 7)`, where both return 32 |
 | the same as a return difference | `Unknown`, with a real model thrown away |
 
+**A third review found six more, and the finding that matters is not any of them: two were
+earlier defects back through a different door.** Each earlier fix had been attached to the
+*site* where the defect was demonstrated rather than to the level the rule lives at.
+
+| what came back | how |
+|---|---|
+| a truncated search is not a proof | the screen lived in `blessable`'s `Bounded` arm; one unmodeled call degrades the run to `Approximated` and the `Bounded` `BudgetHit` sails past |
+| a read of caller-visible memory | the guard named `Load`; `CopyMem`'s **source** is a read too |
+
+Both fixes moved: the truncation screen now runs over every assumption before any fidelity is
+considered, and the memory guard is written about the *role* an address plays rather than the
+instruction that spells it. **When a review finds a defect, the question to ask is what rule it
+violates, not what line to change.**
+
+The third new one was worse and unrelated: `malloc` is modeled, the model forks into a success
+path and a NULL path on a guard nothing links between the two runs, and it *overwrites* the
+extern-return symbol linking works on — so one run's success paired with the other's failure
+and **a function differed from itself**. Reflexivity is the cheapest property this operation
+has and nothing was asserting it. `EffectKind::ModeledCall` now refuses a modeled call rather
+than aligning it, which also stops a dead `memcpy` between two locals reading as observable I/O.
+
 **A second review, after contract 6 landed, found five more** — three of them again false
 `Equivalent`, and this time the wrong reasoning was reasoning *I had written down as the
 justification*:
