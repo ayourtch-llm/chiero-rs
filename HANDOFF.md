@@ -893,8 +893,17 @@ typing the paths ever would.
 >   coverage fraction, execution count, duration, and *weights the report must print*. What is
 >   there is ordered so adding the rest refines it rather than reversing it — but a report that
 >   claims to rank by §5's inputs today would be overstating.
-> - **§3's refinement** (contracts 5–8), which needs the solver and is where precision finally
->   comes from — §3.2: "not from pretending the impact is smaller".
+> - ~~**§3.1's refinement discipline**~~ — done (bf7ae8a), contracts 5, 6, 8. ⚠️ **The rule is
+>   the type**: `select_refined` takes a `Prover`, and one match arm of `Equivalence` spends while
+>   five keep. `NoProver` is the default and proves nothing, so nothing is dropped today — a seam
+>   that defaulted to *attempting* proofs would change the meaning of every existing call.
+>   Wiring 041's real `prove_equivalent` in cannot skip the proof requirement, because there is no
+>   other way to remove a test.
+> - **§3.2, reachability refinement** — block-level, and the one remaining refinement. It needs
+>   `CoverageDetail::LinesAndArcs`, which `chiero-gcov`'s native path already provides. Note that
+>   §3.3, observability refinement, is **cut from v1 deliberately** and the spec explains why at
+>   length: it needs a line-granularity bridge between gcc's CFG and chiero's CIR, which is a
+>   research problem rather than an engineering one. Do not resurrect it by accident.
 >
 > ### 🎯 THE MUTATION GATE PASSES — the premise, measured (54a7ef6)
 >
