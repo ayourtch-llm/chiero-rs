@@ -1788,6 +1788,24 @@ impl Cx<'_> {
     }
 
     /// Whether `callee` names `__builtin_offsetof`.
+    /// Type the **subscript expressions** inside an `offsetof` member designator, and nothing
+    /// else.
+    ///
+    /// `offsetof(T, a.b[i].c)` names members with `a`, `b` and `c` — identifiers that are not
+    /// objects and must not be typed — while `i` is an ordinary expression that C evaluates.
+    /// Typing the whole thing reports "`b` was not declared"; typing none of it leaves `i`
+    /// without a typed node, which lowering reads as `undef`.
+    fn type_designator_indices(&mut self, path: ExprId) {
+        match self.ast.expr(path).kind.clone() {
+            ExprKind::Member { base, .. } => self.type_designator_indices(base),
+            ExprKind::Index { base, index } => {
+                self.type_designator_indices(base);
+                self.type_expr(index);
+            }
+            _ => {}
+        }
+    }
+
     fn is_offsetof(&self, callee: ExprId) -> bool {
         let ExprKind::Ident(n) = self.ast.expr(callee).kind else {
             return false;
@@ -6099,6 +6117,28 @@ impl Cx<'_> {
                 // not objects — typing it is what reported "`b` was not declared" and refused
                 // every function that used `offsetof`.
                 if self.is_offsetof(*callee) && args.len() == 2 {
+                    // **The type name is still resolved, even though nothing here is typed.**
+                    // `ty_of` records it in `syntactic_types`, which is where lowering reads the
+                    // root of the designator from when it has to compute a runtime subscript.
+                    // Without this the only writer was whichever *fold* got there first — and a
+                    // fold inside `ConstEvaluator` writes to that evaluator's own analysis, so
+                    // `return offsetof(T, m[i])` was resolvable and
+                    // `s = { .x = offsetof(T, m[i]) }` was not. The same expression, answerable
+                    // or not depending on the context that folded it.
+                    //
+                    // **Quietly**: the fold reports a bad type name where a reader expects it,
+                    // and a second report here is contract 20 broken by bookkeeping.
+                    if let ExprKind::TypeName(t) = self.ast.expr(args[0]).kind {
+                        self.re_resolving(|cx| cx.ty_of(t));
+                    }
+                    // **A subscript's index *is* an expression, and must be typed.** The
+                    // designator's identifiers name members and are rightly left alone, but
+                    // `offsetof(T, key[(req->n) + 1])` evaluates `(req->n) + 1` — gcc does, and
+                    // it is the whole reason the result is not a constant. Untyped, it reached
+                    // lowering with no typed node, the member read became `undef`, and the
+                    // offset was computed from nothing at all: CIR that verifies, runs, and
+                    // answers with an unknown where C has a number.
+                    self.type_designator_indices(args[1]);
                     let bits = (self.target.sizes.long_ * 8) as u32;
                     let ty = self.intern(Ty::Int {
                         signed: false,
