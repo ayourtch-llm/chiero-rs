@@ -114,6 +114,26 @@ fn a_truncated_gcda_produces_no_partial_index() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// **A function that never ran** — the case a real build is full of and no earlier fixture had.
+///
+/// gcc compresses an all-zero counter set to a **negative length with no payload**: `unrun.gcda`
+/// holds `16`, `8` and `-16`, and the last belongs to `never_called`. Read as a `u32` that length
+/// is 4294967280, and the decoder refused the file — which is how 83 of 98 objects in a
+/// `--coverage` build of `vppinfra` failed to ingest at all.
+///
+/// The counts must come out as gcov's: line 1 recorded **as zero**, not absent, because gcov saw
+/// the line and nothing executed it. That is the distinction this whole crate turns on, arriving
+/// this time from the format rather than from the API.
+#[test]
+fn a_function_that_never_ran_decodes_as_zeros() {
+    let json = chiero_gcov::ingest_json(&corpus(), "unrun").expect("json");
+    let native = chiero_gcov::ingest_native(&corpus(), "unrun").expect("native");
+    assert_eq!(json.line_count("unrun.c", 1), Some(0), "gcov: seen, never executed");
+    assert_eq!(native.line_count("unrun.c", 1), Some(0));
+    assert_eq!(native.line_count("unrun.c", 2), Some(1));
+    assert_eq!(native.line_count("unrun.c", 3), Some(1));
+}
+
 /// **Contract 4's other half.** The native path recovers arcs, so it says so — and that is what
 /// makes `tests_for_arc` available on this index and unavailable on a JSON one.
 #[test]
