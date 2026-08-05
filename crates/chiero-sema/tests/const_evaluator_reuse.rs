@@ -99,6 +99,9 @@ fn shared_evaluator_matches_fresh_const_eval_in_any_order() {
     // One shared evaluator, forward order, each expression evaluated twice in a row.
     let names = Names(&parsed);
     let mut ev = ConstEvaluator::new(ast, &names, &target);
+    // The index is the `ExprId` as well as the position in `fresh`, so iterating the slice
+    // would still need it.
+    #[allow(clippy::needless_range_loop)]
     for i in 0..n {
         let e = chiero_ast::ExprId(i as u32);
         for pass in 0..2 {

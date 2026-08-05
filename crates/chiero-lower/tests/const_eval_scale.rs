@@ -121,6 +121,26 @@ fn lowering_does_not_rewalk_the_translation_unit_per_constant() {
     );
 }
 
+/// **An absolute ceiling, because both ratios above measure a correlate.**
+///
+/// The counter is `SymbolText::text`, and an implementation that walked the translation unit by
+/// `Symbol` id — fetching text only for diagnostics — would keep both ratios flat while staying
+/// quadratic in time. A fixed budget per function cannot be satisfied that way: `return x + k;`
+/// is a handful of names, and it measures 6.00 lookups per function at every size tried (40, 80,
+/// 160, 320). Eight leaves room for an honest change and none for a walk.
+#[test]
+fn a_trivial_function_costs_a_handful_of_symbol_lookups() {
+    for n in [40usize, 160] {
+        let per = lookups_to_lower(n) as f64 / n as f64;
+        assert!(
+            per <= 8.0,
+            "lowering `static int f(int x) {{ return x + k; }}` took {per:.2} symbol lookups \
+             in a {n}-function file. That is a body of five names; anything larger is a walk \
+             over something it should not be looking at."
+        );
+    }
+}
+
 /// **The same file, lowered function by function, must cost the same per function.**
 ///
 /// The ratio test above can be satisfied by making the *whole* pass cheaper while leaving

@@ -1046,12 +1046,24 @@ pub fn const_eval(
 /// is what makes a caller with thousands of constants linear rather than quadratic in the
 /// size of the file.
 ///
-/// The evaluator carries no per-expression state: two `eval` calls on the same expression
-/// answer the same thing, in either order, and interleaving expressions from different
-/// functions is fine. What it does accumulate is the declaration knowledge it was built
-/// with plus whatever later lookups resolved, which is a cache and not a history.
+/// Two `eval` calls on the same expression answer the same thing, in either order, and
+/// interleaving expressions from different functions is fine — in **values and
+/// diagnostics** both. That is a property the type has to maintain rather than one it gets
+/// for free: a context outliving the expression it was built for turns everything it
+/// accumulates into a channel between evaluations, and `eval` rewinds the two that are
+/// histories (the diagnostic list and the once-per-name report dedup). What remains is
+/// declaration knowledge and resolved lookups, which are a cache.
 pub struct ConstEvaluator<'a> {
     cx: Cx<'a>,
+    /// How many names the *preparation* walk had already reported as undeclared.
+    ///
+    /// `Cx::unknown_names` reports each name once per context, which is right for one
+    /// `const_eval` and wrong for a context that outlives the expression: the first `eval`
+    /// would report `loc` and every later one — even for another expression in another
+    /// function — would be silent. Rewinding to this mark before each `eval` is what makes a
+    /// reused evaluator answer what a fresh one would. A length, not a copy of the set,
+    /// because `IndexSet` keeps insertion order and `eval` only ever appends.
+    prepared_unknown: usize,
 }
 
 // Hand-written because `Cx` holds a `&dyn SymbolText`, which cannot be derived through —
@@ -1080,7 +1092,11 @@ impl<'a> ConstEvaluator<'a> {
             cx.item(item);
         }
         cx.out.diagnostics.clear();
-        ConstEvaluator { cx }
+        let prepared_unknown = cx.unknown_names.len();
+        ConstEvaluator {
+            cx,
+            prepared_unknown,
+        }
     }
 
     /// Fold one expression, appending any diagnostics *it* produced to `out`.
@@ -1089,6 +1105,9 @@ impl<'a> ConstEvaluator<'a> {
         // reporting it again against this one would make a caller's diagnostics depend on
         // how many constants it had already folded.
         self.cx.out.diagnostics.clear();
+        // And the once-per-name dedup is rewound for the same reason, in the other
+        // direction: without this an earlier `eval` *suppresses* a later one's diagnostic.
+        self.cx.unknown_names.truncate(self.prepared_unknown);
         let v = self.cx.eval(expr);
         out.append(&mut self.cx.out.diagnostics);
         match v {
