@@ -854,7 +854,7 @@ typing the paths ever would.
 > | 9, 10, 11, 12, 13, 14 the safety set | ✅ and each states *why*, not merely *that* |
 > | 17, 20 budget and report | ✅ reduction and safety always together |
 > | **19 the mutation gate** | ✅ 100% / 14.3% / 65%, whole pipeline |
-> | 7 reachability refinement | 🟡 `chiero-gcov` half done (`entered_block`, `line_reached`); the wiring into `select` is left |
+> | 7 reachability refinement | 🟡 both halves ready — `line_reached` (gcov) and `changed_lines` (diff); only the `select` wiring is left |
 > | 18 historical replay | ❌ needs VPP tests, which need root |
 >
 > ### 🚀 032's FOUNDATION (contracts 1, 3, 9, 11, 15, 16)
@@ -915,6 +915,12 @@ typing the paths ever would.
 > - **§3.2, reachability refinement** — the `chiero-gcov` half is done (2c786cb, and the
 >   `line_reached` commit after it): `ArcCoverage::line_reached(file, line)` answers "did flow
 >   reach the code on this line" from the arcs, and `entered_block` underneath it.
+>
+>   **031 now supplies the other half**: `Justification::changed_lines`, the lines of an entity
+>   whose text differs. Without it the refinement could not fire *at all* — it drops a test that
+>   never entered the block containing **the change**, and an impact set located only to entities
+>   means any test that entered the function has reached some of its lines. That was found by
+>   trying to wire the refinement, not by reading the spec.
 >
 >   ⚠️ **The wiring into `select` needs an API decision, not more analysis.** §3.2 is per *test*,
 >   and `ArcCoverage` accumulates across ingests — so the caller must hold **one `ArcCoverage` per
