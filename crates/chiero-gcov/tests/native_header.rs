@@ -82,3 +82,28 @@ fn a_file_that_is_not_an_artifact_says_so() {
         "the message must be about the magic, not about a version read out of source text: {msg}"
     );
 }
+
+/// **An LTO `.wpa.gcno` holds a second artifact where its records should be.**
+///
+/// Found by decoding every `.gcno` of a full VPP build: 1894 of 1895 read, and the one that did
+/// not was `libvppinfra.so.26.10.wpa.gcno`, written by gcc's whole-program analysis pass. Its
+/// header is ordinary — magic, `*33B`, stamp, working directory, flag — and then, where the first
+/// record should begin, there is another complete `oncg*33B` header.
+///
+/// Read as a record, that magic is a tag whose length word is 1110651690, and the file looks
+/// truncated. gcov reports `no functions found` and moves on, which is the right answer: this
+/// unit has no records of its own.
+///
+/// **Stopping at an embedded magic is not a guess about LTO** — it is the one place a `.gcno` can
+/// contain the start of another artifact, and a length read out of a magic is never a length.
+#[test]
+fn a_whole_program_notes_file_has_no_functions_of_its_own() {
+    let n = chiero_gcov::native::read_notes(&corpus().join("wpa.gcno"))
+        .expect("an LTO notes file reads, it is simply empty");
+    assert!(
+        n.functions.is_empty(),
+        "gcov says `no functions found`, and so must this: {:?}",
+        n.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+    );
+    assert_eq!(n.header.version_tag(), "*33B");
+}
