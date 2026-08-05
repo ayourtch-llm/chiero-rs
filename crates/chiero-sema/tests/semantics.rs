@@ -432,6 +432,17 @@ fn a_complete_type_is_required_exactly_where_c_requires_one() {
         // Declaring — not defining, and not calling — is legal.
         "struct I; struct I g(void);",
         "struct I; int f(struct I v);",
+        // **A block-scope declaration with *linkage* may be repeated** (C 6.7p3 restricts the
+        // "no more than one declaration" rule to identifiers with **no** linkage; 6.2.2p5 gives
+        // a block-scope function declaration external linkage, and `extern` gives an object
+        // one). gcc 13.3.0 is silent on all three, with `-Wall -Wextra`; `int x; int x;` in one
+        // block stays an error and `generated_rejection.rs` still pins it.
+        //
+        // `vnet/l2/l2_api.c:1243` declares `vnet_l2_patch_add_del` twice in one block, once with
+        // `extern` and once without.
+        "int f(void){ extern int fn(unsigned, int); int fn(unsigned, int); return fn(1,2); }",
+        "int f(void){ int fn(unsigned, int); int fn(unsigned, int); return fn(1,2); }",
+        "int f(void){ extern int x; extern int x; return x; }",
         // **`typeof` does not evaluate its operand**, so dereferencing to an incomplete type
         // inside one needs no size and designates no object — gcc 13.3.0 is silent on all four
         // of these, and errors on the plain `struct I x = *p;` two rows below. VPP's
