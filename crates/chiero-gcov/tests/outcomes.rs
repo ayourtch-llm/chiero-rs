@@ -125,5 +125,8 @@ fn a_failed_ingest_leaves_no_trace_of_its_test() {
         idx.always_run().contains(&TestId(4)),
         "so it must run whatever the change is — this is the safety set 032 depends on"
     );
-    assert!(idx.variants().is_empty(), "and no build was recorded either");
+    assert!(
+        idx.variants().is_empty(),
+        "and no build was recorded either"
+    );
 }
