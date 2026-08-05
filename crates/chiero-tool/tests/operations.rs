@@ -404,3 +404,78 @@ fn every_operation_is_deterministic() {
         }
     }
 }
+
+/// **050 contract 14: no operation writes to the analysed repository.**
+///
+/// > 14. No operation writes to the analysed repository — verified by hashing the tree before
+/// >     and after.
+///
+/// The contract's own method, over every registered operation rather than a chosen one. This
+/// is the contract that would be quietly broken by a cache, a scratch file written "next to
+/// the input", or a `.gcda` merged in place — none of which look like writing to a repository
+/// at the call site where they are added.
+///
+/// Path, length and modification time rather than content: a write changes at least one of
+/// the three, and reading every file in the tree on every test run would make this the
+/// slowest test in the workspace for no extra strength.
+#[test]
+fn no_operation_writes_to_the_tree() {
+    fn stamp(root: &std::path::Path, out: &mut Vec<String>) {
+        let Ok(rd) = std::fs::read_dir(root) else {
+            return;
+        };
+        let mut entries: Vec<_> = rd.filter_map(Result::ok).map(|e| e.path()).collect();
+        entries.sort();
+        for p in entries {
+            let name = p
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            // `target` and `.git` churn for reasons that have nothing to do with an
+            // operation, and hashing them would make the test flake rather than fail.
+            if name == "target" || name == ".git" {
+                continue;
+            }
+            match std::fs::symlink_metadata(&p) {
+                Ok(md) if md.is_dir() => stamp(&p, out),
+                Ok(md) => out.push(format!(
+                    "{} {} {:?}",
+                    p.display(),
+                    md.len(),
+                    md.modified().ok()
+                )),
+                Err(_) => {}
+            }
+        }
+    }
+
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+
+    let mut before = Vec::new();
+    stamp(&root, &mut before);
+    assert!(
+        before.len() > 100,
+        "the stamp found {} files, which means it is walking the wrong tree",
+        before.len()
+    );
+
+    for op in OPS {
+        let _ = (op.samples)();
+    }
+
+    let mut after = Vec::new();
+    stamp(&root, &mut after);
+
+    let changed: Vec<&String> = after.iter().filter(|a| !before.contains(a)).collect();
+    let vanished: Vec<&String> = before.iter().filter(|b| !after.contains(b)).collect();
+    assert!(
+        changed.is_empty() && vanished.is_empty(),
+        "an operation touched the tree.\n  new or modified: {changed:?}\n  gone: {vanished:?}"
+    );
+}
