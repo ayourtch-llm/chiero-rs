@@ -511,6 +511,36 @@ typing the paths ever would.
 >
 > If `probe_cmds.txt` is gone, rebuild it: `cd $VPPBUILD && ninja -t commands <the .o>` for each.
 >
+> ### 📊 THE NUMBER: **1552 of 1871 clean (83.0%)** at 3180a49 — was 19 of 1871
+>
+> | sweep | clean | not-run | diagnosed |
+> |---|---|---|---|
+> | 99d92d0, before the initializer work | 12 | 1852 | 7 |
+> | **3180a49** | **1552** | 312 | 7 |
+>
+> Same tree, same 1871 translation units, same lowering-inclusive yardstick 7e9501e introduced.
+> This is the first honest corpus number the project has ever had that is not mostly `not-run`.
+>
+> ⚠️ **And it understates the tree.** 207 of those 312 are the CFG defect fixed in **99bc5bd**,
+> which landed *after* that sweep started: `clib_memcpy_u32` (170) and
+> `ipsec_sa_anti_replay_and_sn_advance` (37), both "branches to unknown BlockId". A sweep at
+> 99bc5bd was launched immediately and its number belongs here — expect roughly 94%.
+>
+> ### ⏭️ THE TAIL, once 99bc5bd's sweep confirms
+>
+> | count | where | message |
+> |---|---|---|
+> | 70 | `clib.h:108` `elog_event_type_register` | contains a construct lowering cannot represent |
+> | 8 | `vlib/unix/fuse.c:652` | cast source operand is Ptr, declared Int(32) |
+> | 7 | `plugins/igmp/igmp_report.c:46` | store value operand is Ptr |
+> | 4 | `plugins/tap/tx_node.c:357` | store value operand is Int(32) |
+> | 2 | `plugins/memif/node.c:158` | Eq operand is Int(16), declared Int(32) |
+> | 2 | `/usr/include/elf.h:1312` | pp: redefinition of macro `ELF_NOTE_ABI` |
+>
+> `elog_event_type_register` is the one worth doing first — it is 70 TUs and it is the only
+> remaining *lowering gap* rather than a type mismatch. Reduce it the way the other twelve were
+> reduced: `target/release/xtask cc -c x.c -o x.o`, read `x.o.chiero`, cut until it is four lines.
+>
 > ### ✅ THE PROBE IS CLEAN AT 3180a49 — all five translation units analyse
 >
 > `vlib/main.c`, `vppinfra/format.c`, `vnet/interface.c`, `vlib/node_cli.c` and
