@@ -7403,6 +7403,41 @@ impl Cx<'_> {
     /// The signal is an aggregate element initialised by something that is not itself a list.
     /// When that happens the flat sequence is distributed across the sub-objects and positions no
     /// longer line up with items, so the counting rules above stop applying.
+    /// Whether this item begins a **brace-elided run** for a slot of type `slot`.
+    ///
+    /// `elides_braces` asks the question of the whole list and of its *first* slot only, which is
+    /// the shape wave 356 needed. C11 6.7.9p20 lets a run start anywhere: `struct { int a;
+    /// struct { int b, c; } in; int d; } s = {1,2,3,4}` elides at the *second* member, and
+    /// `int m[2][3] = {[1]=5,6}` elides inside the row a designator just selected. Both were
+    /// reported as "excess elements" — valid C refused, and the refusal kept lowering's own
+    /// (correct) walk from ever running on them.
+    ///
+    /// **A string is not a run.** `char s[4] = "ab"` initializes the array from the literal, and
+    /// treating it as a run would skip the too-long check that belongs to it.
+    ///
+    /// **A compatible aggregate value is not a run either.** `{s, 3}` with `s` a whole
+    /// `struct V`, and `{ .s = (U)a }` with `U` a union, initialize the slot directly — C11
+    /// 6.7.9p13. The type is what says so, so the value is typed **quietly** to ask: the real
+    /// typing still happens on the path taken, and doing it here without `re_resolving` reported
+    /// every pedantic sentence in those operands twice.
+    fn starts_elided_run(&mut self, slot: TyId, item: &chiero_ast::InitItem) -> bool {
+        if !matches!(
+            self.out.types[slot.0 as usize],
+            Ty::Array { .. } | Ty::Record(_) | Ty::Vector { .. }
+        ) {
+            return false;
+        }
+        if matches!(
+            self.ast.expr(item.value).kind,
+            ExprKind::InitList(_) | ExprKind::Str { .. }
+        ) {
+            return false;
+        }
+        let node = self.re_resolving(|cx| cx.type_expr(item.value));
+        let vty = self.out.typed.ty_of(node);
+        self.out.unqualified(vty) != self.out.unqualified(slot)
+    }
+
     fn elides_braces(&self, elem: TyId, items: &[chiero_ast::InitItem]) -> bool {
         // **A designator that descends is not elision, it is the opposite.** `{[0][5] = 1}` writes
         // a scalar into an aggregate element, which is exactly the signal below — and it is not
@@ -7601,7 +7636,7 @@ impl Cx<'_> {
                     _ => None,
                 };
                 let mut at = 0u64;
-                for item in &items {
+                for (i, item) in items.iter().enumerate() {
                     // **Whether an index was *written* is the difference between two mistakes.**
                     // The walk uses `at` as a cursor, and reporting the cursor told a reader of
                     // `int a[2] = {1,2,3};` to look for a designator the program does not
@@ -7618,6 +7653,14 @@ impl Cx<'_> {
                             continue;
                         };
                         at = pos.unwrap_or(at);
+                        // The same rule as the record arm: `{[0][1] = 1, 2}` designates a
+                        // sub-object and then fills it from the enclosing list.
+                        if self.starts_elided_run(inner, item) {
+                            for rest in &items[i..] {
+                                self.type_expr(rest.value);
+                            }
+                            return;
+                        }
                         self.check_init(inner, None, item.value);
                         at += 1;
                         continue;
@@ -7651,6 +7694,18 @@ impl Cx<'_> {
                         self.error(dspan, msg);
                         break;
                     }
+                    // **A run may start here** — including inside the row a designator just
+                    // selected, which is what `{[1]=5,6}` means. The rest of the list belongs to
+                    // it, so the items are typed and the walk ends: distributing a flat list
+                    // across sub-objects is the hard part `elides_braces` declines to do, and
+                    // this declines it in the same direction rather than reporting an excess
+                    // that is not there.
+                    if self.starts_elided_run(elem, item) {
+                        for rest in &items[i..] {
+                            self.type_expr(rest.value);
+                        }
+                        return;
+                    }
                     self.check_init(elem, syn_elem, item.value);
                     at += 1;
                 }
@@ -7667,7 +7722,7 @@ impl Cx<'_> {
                 }
                 let is_union = self.out.records[r.0 as usize].is_union;
                 let mut at = 0usize;
-                for item in &items {
+                for (i, item) in items.iter().enumerate() {
                     let mut named = None;
                     // The same descent the array arm takes, for the same reason: this loop keeps
                     // the *last* component, so `.p.x` looked for `x` in the outer record.
@@ -7681,6 +7736,15 @@ impl Cx<'_> {
                             continue;
                         };
                         at = pos.unwrap_or(at as u64) as usize;
+                        // **The designated object can itself be elided into**: `{.in = 1, 2}`
+                        // names the member and then fills it from the enclosing list, so the run
+                        // starts *at* the designator rather than after it.
+                        if self.starts_elided_run(inner, item) {
+                            for rest in &items[i..] {
+                                self.type_expr(rest.value);
+                            }
+                            return;
+                        }
                         self.check_init(inner, None, item.value);
                         at += 1;
                         continue;
@@ -7714,6 +7778,12 @@ impl Cx<'_> {
                         let what = if is_union { "a union" } else { "a struct" };
                         self.error(dspan, format!("excess elements in {what} initializer"));
                         break;
+                    }
+                    if self.starts_elided_run(fields[at].ty, item) {
+                        for rest in &items[i..] {
+                            self.type_expr(rest.value);
+                        }
+                        return;
                     }
                     self.check_init(fields[at].ty, None, item.value);
                     at += 1;

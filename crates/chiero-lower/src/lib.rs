@@ -836,16 +836,11 @@ impl Lowerer<'_> {
                     let Ty::Record(r) = self.analysis.ty(cur).clone() else {
                         return None;
                     };
-                    let layout = self.analysis.layout(r).clone();
-                    let i = layout.fields.iter().position(|f| f.name == Some(*name))?;
-                    let f = &layout.fields[i];
-                    if f.bits.is_some() {
-                        return None;
-                    }
-                    off += f.offset;
-                    cur = f.ty;
+                    let (foff, fty, top) = self.field_path(r, *name)?;
+                    off += foff;
+                    cur = fty;
                     if k == 0 {
-                        first = i;
+                        first = top;
                     }
                 }
                 // A GNU range `[1 ... 2] =` designates several objects, not one, so there is
@@ -998,10 +993,9 @@ impl Lowerer<'_> {
         relocs: &mut Vec<chiero_cir::Reloc>,
     ) -> Option<usize> {
         let value = items[used].value;
-        let braced = matches!(
-            self.ast.expr(value).kind,
-            chiero_ast::ExprKind::InitList(_) | chiero_ast::ExprKind::Str { .. }
-        );
+        let braced = matches!(self.ast.expr(value).kind, chiero_ast::ExprKind::InitList(_))
+            || (matches!(self.ast.expr(value).kind, chiero_ast::ExprKind::Str { .. })
+                && self.takes_string(ty));
         if !braced && self.is_aggregate(ty) {
             // `max(1)` so an empty subaggregate advances rather than spinning.
             return Some(
@@ -1021,6 +1015,32 @@ impl Lowerer<'_> {
         out: &mut [u8],
         relocs: &mut Vec<chiero_cir::Reloc>,
     ) -> Option<()> {
+        // **Braces round a scalar are allowed and mean nothing** (C11 6.7.9p11: "the initializer
+        // for a scalar shall be a single expression, optionally enclosed in braces"). The scalar
+        // arms below hand the *list* to `const_of`, which answers `None` for it — and the caller
+        // reads `None` as `GlobalInit::Zero`, so `static int x = {5};` was zero and said nothing.
+        // sema accepts the shape explicitly, and the local path has always handled it.
+        //
+        // One item and no designator: `{[0] = 5}` on a scalar is not C, and `{}` has nothing to
+        // unwrap to, so both keep whatever answer they had.
+        //
+        // **A braced *string* unwraps for the same reason**: `char g[4] = {"ab"};` is C11
+        // 6.7.9p14's array-from-literal with one redundant brace pair, and the array walk below
+        // would otherwise hand the literal to a `char` element and fold the object to zeros.
+        let e = match self.ast.expr(e).kind.clone() {
+            chiero_ast::ExprKind::InitList(items)
+                if items.len() == 1
+                    && items[0].designators.is_empty()
+                    && (!self.is_aggregate(ty)
+                        || (matches!(
+                            self.ast.expr(items[0].value).kind,
+                            chiero_ast::ExprKind::Str { .. }
+                        ) && self.takes_string(ty))) =>
+            {
+                items[0].value
+            }
+            _ => e,
+        };
         // **An address, wherever it appears.** Checked before the type-directed walk, so a
         // pointer slot inside a struct or an array element is the same case as a whole
         // global initialized to one — and `&g`, `ga + 2`, a cast and a string literal all
@@ -1107,11 +1127,15 @@ impl Lowerer<'_> {
                             // `encode_into` answered `None`, and the caller turns `None` into
                             // `GlobalInit::Zero` — so every byte of the object was zero and
                             // nothing said so. The local path has done this since wave 140.
+                            let str_here = matches!(
+                                self.ast.expr(it.value).kind,
+                                chiero_ast::ExprKind::Str { .. }
+                            ) && self.takes_string(elem);
                             if self.is_aggregate(elem)
+                                && !str_here
                                 && !matches!(
                                     self.ast.expr(it.value).kind,
                                     chiero_ast::ExprKind::InitList(_)
-                                        | chiero_ast::ExprKind::Str { .. }
                                 )
                             {
                                 let rest = run_from(&items, taken - 1);
@@ -1163,7 +1187,18 @@ impl Lowerer<'_> {
                     // `.field` repositions the cursor, and the walk continues from there —
                     // the same rule as the array case above and as `init_list`.
                     if let Some(chiero_ast::Designator::Field(name)) = it.designators.first() {
-                        cursor = fields.iter().position(|f| f.name == Some(*name))?;
+                        match fields.iter().position(|f| f.name == Some(*name)) {
+                            Some(i) => cursor = i,
+                            // **A member an anonymous struct or union promotes.** It is not in
+                            // this layout's field list, so it is placed by offset and the cursor
+                            // moves past the anonymous member that carries it.
+                            None => {
+                                let (off, fty, top) = self.field_path(r, *name)?;
+                                self.encode_into(it.value, fty, at + off, out, relocs)?;
+                                cursor = top + 1;
+                                continue;
+                            }
+                        }
                     } else if !it.designators.is_empty() {
                         return None;
                     }
@@ -1173,11 +1208,16 @@ impl Lowerer<'_> {
                     // reached `encode_into` with a scalar against an aggregate type, which
                     // answers `None` — and the caller reads `None` as `GlobalInit::Zero`, so
                     // `static struct Out o = {1,2,3};` was every byte zero with no diagnostic.
+                    let str_here = matches!(
+                        self.ast.expr(it.value).kind,
+                        chiero_ast::ExprKind::Str { .. }
+                    ) && self.takes_string(f.ty);
                     if f.bits.is_none()
                         && self.is_aggregate(f.ty)
+                        && !str_here
                         && !matches!(
                             self.ast.expr(it.value).kind,
-                            chiero_ast::ExprKind::InitList(_) | chiero_ast::ExprKind::Str { .. }
+                            chiero_ast::ExprKind::InitList(_)
                         )
                     {
                         let rest = run_from(&items, taken - 1);
@@ -6819,6 +6859,87 @@ impl Lowerer<'_> {
     /// **Lifted so `init_flat` uses the same store rather than a second one.** Wave 142 added
     /// the bit-field branch in front of the conversion instead of beside it and the new path
     /// silently skipped it; one function is one thing to get right.
+    /// Find a member by name, **through anonymous members** (C11 6.7.2.1p13).
+    ///
+    /// `struct { union { int a; unsigned f; }; int c; }` promotes `a` and `f` into the enclosing
+    /// struct, so `.a = 5` names a member the outer layout does not list. The folder answered
+    /// `None` to that and the caller turned it into `GlobalInit::Zero` — the whole object, both
+    /// designators, silently.
+    ///
+    /// Answers the byte offset from the start of the record, the member's type, and the index of
+    /// the **top-level** field the path goes through, which is the cursor for whatever follows.
+    fn field_path(
+        &mut self,
+        r: chiero_sema::RecordId,
+        name: chiero_span::Symbol,
+    ) -> Option<(u64, TyId, usize)> {
+        let fields = self.analysis.layout(r).fields.clone();
+        for (i, f) in fields.iter().enumerate() {
+            if f.name == Some(name) {
+                return f.bits.is_none().then_some((f.offset, f.ty, i));
+            }
+        }
+        for (i, f) in fields.iter().enumerate() {
+            if f.name.is_none()
+                && let Ty::Record(inner) = self.analysis.ty(f.ty).clone()
+                && let Some((off, ty, _)) = self.field_path(inner, name)
+            {
+                return Some((f.offset + off, ty, i));
+            }
+        }
+        None
+    }
+
+    /// Whether a string literal initializes `ty` **directly** rather than starting an elided run.
+    ///
+    /// C11 6.7.9p14: an array of character type may be initialized by a string literal. Anywhere
+    /// else a string is an ordinary expression, so `{"ab", 1, "cd", 2}` filling an array *of
+    /// structs* means the literal initializes the first struct's `char[4]` member and begins a
+    /// run — which is why "a string always takes the slot whole" was too broad and folded those
+    /// objects to zeros.
+    fn takes_string(&mut self, ty: TyId) -> bool {
+        let Ty::Array { elem, .. } = self.analysis.ty(ty).clone() else {
+            return false;
+        };
+        matches!(self.analysis.ty(elem), Ty::Int { .. })
+    }
+
+    /// A `char` array member initialized from a string literal: the bytes, then zeros.
+    ///
+    /// Built to the *slot's* size and interned at that size, so truncation and padding are one
+    /// step and the `CopyMem` is exactly the object. `char s[8] = "ab"` is `"ab\0"` and five more
+    /// zero bytes — C11 6.7.9p21 — and without this the literal's address reached a scalar store
+    /// and the verifier refused the function.
+    fn init_string_into(&mut self, addr: Operand, ty: TyId, value: ExprId, span: Span) -> bool {
+        if !matches!(self.ast.expr(value).kind, chiero_ast::ExprKind::Str { .. })
+            || !self.takes_string(ty)
+        {
+            return false;
+        }
+        let Some(size) = self.analysis.size_of(ty) else {
+            return false;
+        };
+        let Some(mut bytes) = self.string_bytes(value) else {
+            return false;
+        };
+        bytes.resize(size as usize, 0);
+        let g = self.intern_string(bytes, span);
+        let align = self.analysis.align_of(ty).unwrap_or(1).max(1);
+        self.emit(
+            InstKind::CopyMem {
+                dst: addr,
+                src: Operand::Const(Const::GlobalAddr { g, off: 0 }),
+                size: Operand::Const(Const::Int {
+                    bits: 64,
+                    val: size as i128,
+                }),
+                align,
+            },
+            span,
+        );
+        true
+    }
+
     /// A member initialized from a **whole aggregate value** — `struct T t = { .v = s };`.
     ///
     /// C11 6.7.9p13: the initializer for a structure or union member may be "a single expression
@@ -6993,7 +7114,9 @@ impl Lowerer<'_> {
                 }
                 continue;
             }
-            if self.copy_aggregate_init(addr.clone(), fty, value, span) {
+            if self.init_string_into(addr.clone(), fty, value, span)
+                || self.copy_aggregate_init(addr.clone(), fty, value, span)
+            {
                 used += 1;
                 if is_union {
                     break;
@@ -7095,7 +7218,9 @@ impl Lowerer<'_> {
                 self.init_list(addr, fty, item.value, span);
                 continue;
             }
-            if self.copy_aggregate_init(addr.clone(), fty, item.value, span) {
+            if self.init_string_into(addr.clone(), fty, item.value, span)
+                || self.copy_aggregate_init(addr.clone(), fty, item.value, span)
+            {
                 continue;
             }
             // **Brace elision** (C11 6.7.9p20): a subaggregate whose initializer does not
