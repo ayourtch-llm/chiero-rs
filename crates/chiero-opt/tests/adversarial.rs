@@ -456,12 +456,9 @@ entry:
   %4 = sub i32 %2, %3
   ret %4
 }";
-    match prove_equivalent(&m(&ab), &m(ba), &cfg) {
-        Equivalence::Differs { input, .. } => {
-            panic!("these compute the same thing; a Differs here is fabricated, witness {input:?}")
-        }
-        // Equivalent or Unknown are both defensible. A wrong Differs is not.
-        _ => {}
+    // Equivalent or Unknown are both defensible here. A wrong `Differs` is not.
+    if let Equivalence::Differs { input, .. } = prove_equivalent(&m(&ab), &m(ba), &cfg) {
+        panic!("these compute the same thing; a Differs here is fabricated, witness {input:?}");
     }
 }
 
@@ -488,10 +485,9 @@ entry:
 }}"
         )
     };
-    match prove_equivalent(&m(&call("memset")), &m(&call("__builtin_memset")), &cfg) {
-        Equivalence::Differs { observation, .. } => {
-            panic!("the same call spelled two ways is not a divergence: {observation:?}")
-        }
-        _ => {}
+    if let Equivalence::Differs { observation, .. } =
+        prove_equivalent(&m(&call("memset")), &m(&call("__builtin_memset")), &cfg)
+    {
+        panic!("the same call spelled two ways is not a divergence: {observation:?}");
     }
 }

@@ -460,7 +460,18 @@ pub fn prove_equivalent(before: &Module, after: &Module, cfg: &EquivCfg) -> Equi
         }
     }
     let fidelity = rb.fidelity().degrade(ra.fidelity());
-    if let Err(why) = blessable(fidelity, &assumptions) {
+    // Whether either side has an input this comparison could not match — an extern's return.
+    // `link_inputs` already refused such a pair, so reaching here means neither has one; the
+    // check is recomputed rather than assumed because `blessable`'s third channel depends on
+    // it and a refusal that moves would silently widen the blessing.
+    let no_returns = [&rb, &ra].iter().all(|r| {
+        r.states().iter().all(|s| {
+            s.inputs()
+                .iter()
+                .all(|(_, o)| matches!(o, InputOrigin::Param { .. }))
+        })
+    });
+    if let Err(why) = blessable(fidelity, &assumptions, no_returns) {
         return unknown(why);
     }
     Equivalence::Equivalent {
@@ -581,6 +592,20 @@ fn observable_inst(
         InstKind::Opaque { .. } => {
             Some("contains inline asm or an unmodeled construct".to_string())
         }
+        // **A read of caller-visible memory is claim 2 as much as a write is**, and refusing
+        // only writes was the first review's defect one indirection out: `tick(x); return g`
+        // against `r = g; tick(x); return r` reads the global on opposite sides of a call
+        // that may write it, and the two versions return different values. The effect
+        // sequence says the call happened in the same place; it says nothing about how the
+        // callee's writes interleave with this function's reads. Found by review.
+        InstKind::Assign {
+            rv: RValue::Load { addr, .. },
+            ..
+        } if escapes(addr) => Some("loads through an address that is not a local".to_string()),
+        InstKind::Assign {
+            rv: RValue::LoadBits { addr, .. },
+            ..
+        } if escapes(addr) => Some("loads bits through an address that is not a local".to_string()),
         InstKind::VaStart { .. } | InstKind::VaCopy { .. } | InstKind::VaEnd { .. } => {
             Some("manipulates a variadic argument list".to_string())
         }
@@ -637,7 +662,7 @@ fn observable_inst(
 ///
 /// Keyed on the assumption's own text, which is fragile in the direction that fails *closed*:
 /// a rename in the engine turns a would-be `Bounded` blessing into an `Unknown`.
-fn blessable(f: Fidelity, assumptions: &[Assumption]) -> Result<(), String> {
+fn blessable(f: Fidelity, assumptions: &[Assumption], no_returns: bool) -> Result<(), String> {
     match f {
         Fidelity::Exact => Ok(()),
         Fidelity::Bounded => {
@@ -652,28 +677,36 @@ fn blessable(f: Fidelity, assumptions: &[Assumption]) -> Result<(), String> {
             }
             Ok(())
         }
-        // **An unmodeled call is a shared approximation, and that is what a relational
-        // proof can carry that an absolute one cannot.**
+        // **An unmodeled call can be a shared approximation — under conditions much narrower
+        // than the ones first written here, which were wrong twice over.**
         //
         // The engine degrades to `Approximated` when it calls something with no body and no
-        // model: it cannot say what that function did. Neither can this. It does not have to.
-        // Reaching this point means the effect sequences were compared position by position
-        // and agreed, so every call in the degradation is one of two things:
+        // model: it cannot say what that function did. The relational question is narrower —
+        // did it do the *same* thing to both sides — and there are exactly three channels by
+        // which a callee can reach this comparison:
         //
-        // - **non-pure**, and therefore in the sequence — same callee, same arguments, same
-        //   position on both sides. Whatever it did, it did to both.
-        // - **pure**, and therefore declared to do nothing observable, so a one-sided one
-        //   changes nothing there is to compare.
+        // 1. **The effect sequence.** Compared position by position, callee and arguments,
+        //    before this point is reached. Same call, same arguments, same place.
+        // 2. **Memory.** `observable_beyond_the_return` refuses any load *or* store through an
+        //    address that is not provably a local, and `compare_effects` refuses a pointer
+        //    argument outright — so the callee has no caller-visible object it can reach, and
+        //    this comparison no way to fail to notice one.
+        // 3. **Its return value**, which is where both earlier attempts failed. An extern
+        //    return is an input `link_inputs` cannot match, so `no_returns` is the condition:
+        //    if either side has one the pair was already refused there, and if neither does
+        //    there is nothing left for the callee to differ through.
         //
-        // Neither leaves an asymmetry, which is the whole content of the claim. Note what
-        // this does *not* say: nothing here proved anything about the callee, so the verdict
-        // stays `Approximated` and 032 §3.1 still refuses to drop a test on it. The blessing
-        // is "these two agree", not "chiero understands this code".
+        // The two claims removed: that a matching effect sequence alone suffices — it does
+        // not, the callee's writes interleave with this function's reads — and that a `pure`
+        // callee is harmless — it is not, `pure` means no side effects, not a return value
+        // independent of the arguments. `abs` is pure.
+        //
+        // What this still does not say: nothing here proved anything about the callee. The
+        // verdict stays `Approximated`, envelope `proven` stays false, and 032 §3.1 refuses to
+        // drop a test on it. The blessing is "these two agree", not "chiero understands this".
         //
         // Only for assumption kinds that account for a call. `OpaqueCode` is deliberately
-        // absent — inline asm is not a call, has no argument list to compare, and the
-        // observability guard refuses it upstream.
-        Fidelity::Approximated => {
+        Fidelity::Approximated if no_returns => {
             for a in assumptions {
                 if a.fidelity == Fidelity::Approximated
                     && !matches!(
@@ -756,11 +789,9 @@ type Link = (Vec<(Term, Term)>, Vec<Term>);
 /// What makes an input on one side *the same input* as one on the other.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum InputKey {
-    /// An entry parameter, by position.
+    /// An entry parameter, by position. **The only thing matched today** — `link_inputs` says
+    /// why §1.2's extern-return symbols are not.
     Param(usize),
-    /// The return of the *n*th call to a named function along this path — §1.2's shared
-    /// extern-return symbols.
-    Extern(String, usize),
 }
 
 /// Pair up the two paths' symbolic inputs, returning one equality per matched pair.
@@ -771,37 +802,31 @@ enum InputKey {
 /// dropping it silently would prove equivalence over a smaller input space than the caller
 /// asked about.
 fn link_inputs(a: &mut TermArena, sb: &State, sa: &State) -> Option<Link> {
-    // **§1.2's "the same extern-return symbols", keyed by (function, nth call).**
+    // **§1.2's "the same extern-return symbols" is *not* matched here, and the attempt is
+    // worth recording.** It was keyed by (function, nth call along the path), on the stated
+    // grounds that "the ordinal is the same thing the effect sequence orders by". It is not:
+    // `InputOrigin::ExternReturn` is minted only for a call that has a destination, so the
+    // input list counts *result-bearing* calls while the effect sequence counts *all* calls.
+    // A discarded result shifts the numbering, and one version's `p(2)` was equated with the
+    // other's `p(1)` — two functions returning the results of different calls, blessed.
     //
-    // Not by span: the two versions are different modules and their spans are unrelated, so
-    // a span key would match nothing and refuse every function with a callee. The ordinal is
-    // the same thing the effect sequence orders by, which is what makes the two consistent —
-    // if the *n*th call to `f` on this path is a different call on the other side, the
-    // effect comparison says so and the pair diverges there rather than here.
-    let keys = |s: &State| -> Vec<(InputKey, Term)> {
-        let mut nth: Vec<(String, usize)> = Vec::new();
+    // For a *pure* callee it was worse: those never enter the effect sequence, so nothing
+    // checked that the nth call on each side was even passed the same arguments, and
+    // `p(x) == p(x + 1)` was asserted outright. `pure` means no side effects, not a return
+    // value independent of the arguments.
+    //
+    // A sound key is the call's position in the **effect sequence**, which needs an ordinal
+    // the origin does not carry. Until it does, an extern return is an unmatched input, and
+    // an unmatched input is a refusal.
+    let params = |s: &State| -> Vec<(InputKey, Term)> {
         s.inputs()
             .iter()
             .filter_map(|(t, o)| match o {
                 InputOrigin::Param { index, .. } => Some((InputKey::Param(*index), *t)),
-                InputOrigin::ExternReturn { func, .. } | InputOrigin::ModelReturn { func, .. } => {
-                    let n = match nth.iter_mut().find(|(f, _)| f == func) {
-                        Some((_, c)) => {
-                            *c += 1;
-                            *c
-                        }
-                        None => {
-                            nth.push((func.clone(), 0));
-                            0
-                        }
-                    };
-                    Some((InputKey::Extern(func.clone(), n), *t))
-                }
                 _ => None,
             })
             .collect()
     };
-    let params = keys;
     let (pb, pa) = (params(sb), params(sa));
     // **`index` is not a key.** `chiero_make_symbolic` mints `InputOrigin::Param { index }`
     // where the index is a *byte offset within a buffer*, so two symbolized buffers give two
@@ -1103,7 +1128,13 @@ fn minimized_witness_with(
             None => break,
         }
     }
-    (fixed.clone(), witness_for(arena, sb, link, &fixed))
+    // **The link is truncated to what was actually minimized.** The loop above can stop
+    // early — a model that will not evaluate, a re-solve the solver cannot decide — and the
+    // comment there says it "leaves a shorter witness rather than a wrong one". That was true
+    // of `fixed` and not of the witness: `witness_for` indexed one entry per *link* and
+    // panicked on the shorter vector. Found by review.
+    let w = witness_for(arena, sb, &link[..fixed.len()], &fixed);
+    (fixed.clone(), w)
 }
 
 /// Equalities pinning the already-minimized inputs to their chosen values.

@@ -3845,7 +3845,16 @@ impl<'m> Engine<'m> {
                 s.effects.push(Effect {
                     kind: EffectKind::Call,
                     span,
-                    detail: name.to_string(),
+                    // **The resolved name.** gcc emits the `__builtin_` spelling for
+                    // everything it recognises, so an optimized translation unit and its
+                    // unoptimized original disagree on the name of every libc call they
+                    // share. Recording the spelling made two byte-identical programs a
+                    // definite divergence to any consumer comparing sequences — on exactly
+                    // the before/after pairs 041 §1 is for. The lookup below already
+                    // resolves it for the model registry; this is the same resolution one
+                    // statement earlier so the record and the dispatch agree. Found by
+                    // review.
+                    detail: resolve_builtin(&name).to_string(),
                     args: arg_vals.clone(),
                 });
             }
