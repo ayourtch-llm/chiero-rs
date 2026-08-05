@@ -6312,3 +6312,50 @@ fn the_atomic_families_take_their_type_from_the_pointee() {
         "int v = 1, *p = &v; return _Generic(__sync_bool_compare_and_swap(p, 1, 2), _Bool: 1, default: 0);",
     );
 }
+
+/// **A declaration in an inner block replaces the outer binding for the rest of the function.**
+///
+/// ```text
+/// vlib/node_funcs.h:639: `vlib_process_yield` lowered to CIR the verifier rejects
+///   (returns Ptr but `vlib_process_yield` is declared -> Int(64))
+///
+///   uword r;                                   /* the one `return r` means */
+///   ...
+///   if (r == …) { vlib_process_restore_t r = {…}; … }
+///   return r;
+/// ```
+///
+/// The inner `r` is a different object of a different type, scoped to the `if`. Lowering keeps
+/// locals in one map keyed by symbol, so the inner declaration overwrote the outer binding and
+/// never gave it back — and `return r` resolved to a struct.
+///
+/// **The verifier only catches it when the types differ.** Two `int`s shadowing each other
+/// produce CIR that verifies perfectly and returns the wrong number, which is why the same-type
+/// cases are here first: they are the ones nothing would have reported.
+#[test]
+fn an_inner_declaration_does_not_outlive_its_block() {
+    // Same type: verifies either way, so only the value says which object was read.
+    agree_with("", "int r = 1; { int r = 2; (void)r; } return r;");
+    agree_with("", "int r = 1; if (1) { int r = 2; (void)r; } return r;");
+    agree_with(
+        "",
+        "int r = 1; for (int i=0;i<1;i++) { int r = 9; (void)r; } return r;",
+    );
+    // Written through, so a fix that merely re-reads the outer slot at the end is not enough.
+    agree_with("", "int r = 1; { int r = 2; r = 5; (void)r; } return r;");
+    // Nested two deep, and the middle one restored as well.
+    agree_with(
+        "",
+        "int r = 1; { int r = 2; { int r = 3; (void)r; } r += 10; } return r;",
+    );
+    // Different types, which is the shape the corpus fails on.
+    agree_with(
+        "struct S { int a; };",
+        "unsigned long r = 1; if (1) { struct S r = {2}; (void)r; } return (int)r;",
+    );
+    // A parameter shadowed by a block-scope declaration.
+    agree_with(
+        "static int take(int r) { { long r = 7; (void)r; } return r; }",
+        "return take(4);",
+    );
+}
