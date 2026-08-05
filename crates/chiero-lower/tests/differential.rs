@@ -5956,3 +5956,58 @@ fn brace_elision_still_consumes_scalars_from_the_enclosing_list() {
         "return m[0][0] + m[1][2];",
     );
 }
+
+/// **What the adversarial review of a5e4a56 found**, all five against gcc.
+///
+/// The reviewer's brief was the failure mode a5e4a56's own commit message named: `encode_into`
+/// answering `None` becomes `GlobalInit::Zero` at the caller, so every gap in that walk is a
+/// silently wrong program rather than a refused one. Three of these are in the new code and two
+/// are older drift the new code made one-sided.
+///
+/// 1. `copy_aggregate_init` fires one nesting level too shallow. Its guard asks whether the
+///    initializer is *an* aggregate, where C11 6.7.9p13 asks whether it is a *compatible* one —
+///    so a value matching the subaggregate's **first member** was copied over the whole
+///    subaggregate instead of starting an elided run one level deeper, and the `min(size)` clamp
+///    hid the mismatch by copying 8 of 12 bytes.
+/// 2. A designated item whose value starts an elided run is dropped. The run is handed
+///    `items[taken - 1..]` with the designator still on it, `encode_flat` stops at designators by
+///    its own rule, returns 0, and `.max(1)` steps past the item without writing it.
+/// 3. A union whose first member is a bit-field takes a second initializer: the bit-field arm's
+///    `continue` skips the "a union takes one initializer" break.
+/// 4. The **local** `init_flat` has neither stopping rule. Pre-existing, but a5e4a56 fixed the
+///    file-scope walk alone, so the two mirrors now disagree — which is how this whole class of
+///    defect got in.
+/// 5. Only `designators.first()` is ever consulted, so `.in.b = 5` writes `in.a`. sema resolves
+///    the full path; lowering never descends past the first component.
+#[test]
+fn the_review_of_the_initializer_walk() {
+    // 1. An aggregate value that matches the *inner* member, not the slot.
+    agree_with(
+        "struct V { int a, b; }; struct In { struct V v; int m; }; struct T { struct In in; int z; };",
+        "struct V s = {7,8}; struct T t = {s, 3, 9}; \
+         return t.in.v.a + t.in.v.b + t.in.m*10 + t.z*100;",
+    );
+    // 2. A designated item that then elides.
+    agree_with("static int m[2][3] = {[1]=5};", "return m[1][0];");
+    agree_with("static int m[2][3] = {[1][2]=9};", "return m[1][2];");
+    // 3. A union whose first member is a bit-field.
+    agree_with(
+        "union U { int a:4; int b; }; static struct { union U u; int y; } s = {1,2};",
+        "return s.u.a*10 + s.y;",
+    );
+    // 4. The same union rule, and the designator rule, for a **local**.
+    agree_with(
+        "union U { int a; int b; };",
+        "struct { union U u; int y; } s = {1,2}; return s.u.a*10 + s.y;",
+    );
+    agree_with("", "int m[2][3] = {1, [1]=9}; return m[0][1]*10 + m[1][0];");
+    // 5. A multi-component designator, at file scope and in a body.
+    agree_with(
+        "static struct { struct { int a, b; } in; } s = {.in.b=5};",
+        "return s.in.b*10 + s.in.a;",
+    );
+    agree_with(
+        "struct O { struct { int a, b; } in; };",
+        "struct O s = {.in.b=5}; return s.in.b*10 + s.in.a;",
+    );
+}
