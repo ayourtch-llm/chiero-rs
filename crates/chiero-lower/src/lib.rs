@@ -2230,6 +2230,21 @@ impl Lowerer<'_> {
         // the declaration's only effect is to make it visible here. Treating it as an ordinary
         // local gave it a fresh uninitialised slot, and reading it produced no value at all.
         if storage.extern_ {
+            // **Unless nothing else in the translation unit mentions it.** The reasoning above
+            // holds when a file-scope declaration exists; `vlib_call_init_function` is the case
+            // where the object is defined in *another* unit and named only here, so nothing had
+            // ever registered it and every reference lowered to a 32-bit fallback — a `Ptr`
+            // store the verifier refused, and for an `int` a well-formed reference to an object
+            // that does not exist.
+            //
+            // `declare_global` is the same routine the file-scope walk uses and returns early on
+            // a name already in the table, so the ordinary case is untouched and one object
+            // stays one object.
+            if let Some(n) = name
+                && !self.globals.contains_key(&n)
+            {
+                self.declare_global(d);
+            }
             return;
         }
         if storage.static_ {
