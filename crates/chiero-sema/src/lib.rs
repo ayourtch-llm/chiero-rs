@@ -1333,6 +1333,73 @@ fn has_no_size(out: &Analysis, ty: TyId) -> bool {
 /// C 6.2.2p4: `static` is internal; a plain file-scope declaration is external; and `extern`
 /// takes whatever the prior declaration had. Only the last of those needs `was` at all, and it
 /// is the whole reason this is a function rather than a field.
+/// What one of the atomic builtins returns (014 §6, measured against gcc 13.3.0).
+///
+/// These are 46 of the 82 names `builtins.rs` deliberately omits: a row there records a constant
+/// return type, and "the pointee of operand 1" is not one. They are answered here, per call,
+/// beside `__builtin_shuffle` — including the members whose result *is* constant, because
+/// splitting one family across two mechanisms is how the next reader gets it wrong.
+///
+/// Measured by passing the call to `void take(struct Z)` and reading the type back out of gcc's
+/// diagnostic, exactly as `builtins.rs` documents; the `void` group is the one that answers
+/// "invalid use of void expression" instead.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum AtomicResult {
+    /// The unqualified pointee of operand 1.
+    Pointee,
+    Bool,
+    Void,
+}
+
+fn atomic_result(name: &str) -> Option<AtomicResult> {
+    use AtomicResult::*;
+    Some(match name {
+        "__atomic_load_n"
+        | "__atomic_exchange_n"
+        | "__atomic_add_fetch"
+        | "__atomic_sub_fetch"
+        | "__atomic_and_fetch"
+        | "__atomic_or_fetch"
+        | "__atomic_xor_fetch"
+        | "__atomic_nand_fetch"
+        | "__atomic_fetch_add"
+        | "__atomic_fetch_sub"
+        | "__atomic_fetch_and"
+        | "__atomic_fetch_or"
+        | "__atomic_fetch_xor"
+        | "__atomic_fetch_nand"
+        | "__sync_lock_test_and_set"
+        | "__sync_val_compare_and_swap"
+        | "__sync_add_and_fetch"
+        | "__sync_sub_and_fetch"
+        | "__sync_and_and_fetch"
+        | "__sync_or_and_fetch"
+        | "__sync_xor_and_fetch"
+        | "__sync_nand_and_fetch"
+        | "__sync_fetch_and_add"
+        | "__sync_fetch_and_sub"
+        | "__sync_fetch_and_and"
+        | "__sync_fetch_and_or"
+        | "__sync_fetch_and_xor"
+        | "__sync_fetch_and_nand" => Pointee,
+        "__atomic_compare_exchange"
+        | "__atomic_compare_exchange_n"
+        | "__atomic_test_and_set"
+        | "__atomic_is_lock_free"
+        | "__sync_bool_compare_and_swap" => Bool,
+        "__atomic_store"
+        | "__atomic_store_n"
+        | "__atomic_load"
+        | "__atomic_exchange"
+        | "__atomic_clear"
+        | "__atomic_thread_fence"
+        | "__atomic_signal_fence"
+        | "__sync_lock_release"
+        | "__sync_synchronize" => Void,
+        _ => return None,
+    })
+}
+
 /// Whether a name is one gcc declares intrinsically, with no header.
 ///
 /// **Three families, because gcc has three.** The exemption began as `__builtin_` alone, for the
@@ -1819,6 +1886,29 @@ impl Cx<'_> {
         // the unmodeled-builtin arm in lowering requires.
         if self.values.get(&n).is_some() {
             return None;
+        }
+        // **The atomics are answered before `first_arg` is required**, because the `void` and
+        // `_Bool` members of those families have a constant result and no operand to read it
+        // from — `__sync_synchronize()` takes none at all.
+        if let Some(kind) = atomic_result(self.text(n)?) {
+            return match kind {
+                AtomicResult::Void => Some(self.intern(Ty::Void)),
+                AtomicResult::Bool => Some(self.intern(Ty::Int {
+                    signed: false,
+                    bits: 1,
+                })),
+                // **Unqualified**, which is the half a plain "pointee" rule gets wrong:
+                // `__atomic_load_n` of a `const volatile unsigned long *` is an `unsigned long`,
+                // and VPP's counters are declared exactly that way. An array argument is the
+                // same pointer after decay, which is why it is answered here rather than left to
+                // a caller that may not have decayed yet.
+                AtomicResult::Pointee => match self.out.ty(first_arg?).clone() {
+                    Ty::Ptr(inner) | Ty::Array { elem: inner, .. } => {
+                        Some(self.out.unqualified(inner))
+                    }
+                    _ => None,
+                },
+            };
         }
         let first = first_arg?;
         match self.text(n)? {
