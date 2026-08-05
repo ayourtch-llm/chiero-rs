@@ -103,3 +103,39 @@ fn arcs_inside_the_line_are_not_entries() {
 fn a_line_with_one_block_is_that_blocks_count() {
     assert_eq!(count("t", "t.c", 3), Some(1));
 }
+
+/// **The attribution is to the greatest line of a block's group, not the last one written.**
+///
+/// gcov sorts each block's line list before anything reads it (`gcc/gcov.cc` ~1413, in the pass
+/// that sizes each source's line vector), and only then attributes the block to the group's last
+/// entry. The two are the same for straight-line code and differ wherever a call is inlined: the
+/// block holding the call at `nonmono.c:21` also carries the callee's lines 10–13, so it reads
+/// `[21, 10, 11, 12, 13]` and its last entry is 13 — a line inside a function that block is not
+/// in.
+///
+/// Getting this wrong is quiet. The block lands on some lower line, the line it belongs to is
+/// left with no blocks at all and falls back to the accumulated sum, and both numbers stay
+/// plausible. On `compress.h:90` of a real VPP build it reports 30 against gcov's 10.
+///
+/// It is pinned here on the decode rather than on a count because a count hides it: two blocks of
+/// equal weight make the sum and the graph answer agree, which is exactly what this fixture's own
+/// line 21 does.
+#[test]
+fn a_blocks_lines_are_sorted_as_gcov_sorts_them() {
+    let n = chiero_gcov::native::read_notes(&corpus().join("nonmono.gcno")).expect("nonmono.gcno");
+    let main = n
+        .functions
+        .iter()
+        .find(|f| f.name == "main")
+        .expect("`main` is in the fixture");
+    let group = main
+        .lines
+        .iter()
+        .find(|bl| bl.lines.contains(&21) && bl.lines.contains(&10))
+        .expect("the block holding the inlined call at line 21 carries the callee's lines too");
+    assert_eq!(
+        group.lines,
+        vec![10, 11, 12, 13, 21],
+        "the block belongs to line 21, the greatest line it carries"
+    );
+}
