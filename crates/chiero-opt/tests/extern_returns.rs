@@ -180,7 +180,7 @@ entry:
         "pure p(x + 0) against pure p(x + 0)",
         prove_equivalent(
             &m(&arg("  %1 = add i32 %0, 0i32")),
-            &m(&arg("  %1 = use i32 %0")),
+            &m(&arg("  %1 = or i32 %0, 0i32")),
             &cfg,
         ),
     );

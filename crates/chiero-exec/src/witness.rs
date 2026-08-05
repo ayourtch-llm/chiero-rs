@@ -30,9 +30,24 @@ pub enum InputOrigin {
     /// A load that produced no value: uninitialized, or bytes chiero cannot read.
     Load { span: Span },
     /// The return value of a call with no body and no model (023 §5).
-    ExternReturn { func: String, span: Span },
-    /// A model that ran and produced no value (024 §2).
-    ModelReturn { func: String, span: Span },
+    ///
+    /// `seq` is the call's **index in the state's effect sequence**, which is what makes two
+    /// runs' extern returns matchable (041 §1.2). It has to be the sequence position and not
+    /// "the nth call to this function": the return input exists only for a call that has a
+    /// destination, so a discarded result would shift a by-name numbering and equate one
+    /// run's `p(2)` with the other's `p(1)`. Every declared call is in the sequence,
+    /// including `pure` ones, precisely so this ordinal counts one thing.
+    ExternReturn {
+        func: String,
+        span: Span,
+        seq: usize,
+    },
+    /// A model that ran and produced no value (024 §2). `seq` as for `ExternReturn`.
+    ModelReturn {
+        func: String,
+        span: Span,
+        seq: usize,
+    },
     /// An output of `InstKind::Opaque` — inline asm and friends (020 §4.3).
     Opaque { span: Span },
     /// A `Volatility::Volatile` load — a device register, whose value the program did

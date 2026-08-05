@@ -405,7 +405,15 @@ pub fn prove_equivalent(before: &Module, after: &Module, cfg: &EquivCfg) -> Equi
             // §1.1's third claim, decided before the return: two versions that made
             // different calls are not equivalent whatever they went on to return, and the
             // effect is the more legible finding of the two.
-            if !sb.effects().is_empty() || !sa.effects().is_empty() {
+            // Only a genuinely observable one counts towards §1.1's third claim: a pure call
+            // is in the sequence for its ordinal, and claiming `SideEffects` because one was
+            // compared would name a claim nobody made.
+            let observable = |s: &State| {
+                s.effects()
+                    .iter()
+                    .any(|e| e.kind != chiero_exec::EffectKind::PureCall)
+            };
+            if observable(sb) || observable(sa) {
                 compared_effects = true;
             }
             match compare_effects(&mut solver, &mut arena, &mut pc, sb, sa, &link) {
@@ -460,18 +468,7 @@ pub fn prove_equivalent(before: &Module, after: &Module, cfg: &EquivCfg) -> Equi
         }
     }
     let fidelity = rb.fidelity().degrade(ra.fidelity());
-    // Whether either side has an input this comparison could not match — an extern's return.
-    // `link_inputs` already refused such a pair, so reaching here means neither has one; the
-    // check is recomputed rather than assumed because `blessable`'s third channel depends on
-    // it and a refusal that moves would silently widen the blessing.
-    let no_returns = [&rb, &ra].iter().all(|r| {
-        r.states().iter().all(|s| {
-            s.inputs()
-                .iter()
-                .all(|(_, o)| matches!(o, InputOrigin::Param { .. }))
-        })
-    });
-    if let Err(why) = blessable(fidelity, &assumptions, no_returns) {
+    if let Err(why) = blessable(fidelity, &assumptions) {
         return unknown(why);
     }
     Equivalence::Equivalent {
@@ -662,7 +659,7 @@ fn observable_inst(
 ///
 /// Keyed on the assumption's own text, which is fragile in the direction that fails *closed*:
 /// a rename in the engine turns a would-be `Bounded` blessing into an `Unknown`.
-fn blessable(f: Fidelity, assumptions: &[Assumption], no_returns: bool) -> Result<(), String> {
+fn blessable(f: Fidelity, assumptions: &[Assumption]) -> Result<(), String> {
     match f {
         Fidelity::Exact => Ok(()),
         Fidelity::Bounded => {
@@ -677,36 +674,42 @@ fn blessable(f: Fidelity, assumptions: &[Assumption], no_returns: bool) -> Resul
             }
             Ok(())
         }
-        // **An unmodeled call can be a shared approximation — under conditions much narrower
-        // than the ones first written here, which were wrong twice over.**
+        // **An unmodeled call is a shared approximation — and this is the third version of
+        // that sentence, the first two having been wrong.** Both earlier ones are recorded
+        // here because the failure mode was a *plausible rationale*, and a plausible
+        // rationale is harder to check than none.
         //
-        // The engine degrades to `Approximated` when it calls something with no body and no
-        // model: it cannot say what that function did. The relational question is narrower —
-        // did it do the *same* thing to both sides — and there are exactly three channels by
-        // which a callee can reach this comparison:
+        // The relational question is not "what did the callee do" but "did it do the same to
+        // both sides". A callee reaches this comparison through exactly three channels, and
+        // each is now closed by a mechanism rather than by an argument:
         //
-        // 1. **The effect sequence.** Compared position by position, callee and arguments,
-        //    before this point is reached. Same call, same arguments, same place.
-        // 2. **Memory.** `observable_beyond_the_return` refuses any load *or* store through an
+        // 1. **The effect sequence.** `compare_effects` walks it position by position, callee
+        //    and arguments, and every declared call is in it — `pure` ones included, which is
+        //    the point of `EffectKind::PureCall`. A mismatch at any position refuses.
+        // 2. **Memory.** `observable_beyond_the_return` refuses a load *or* a store through an
         //    address that is not provably a local, and `compare_effects` refuses a pointer
-        //    argument outright — so the callee has no caller-visible object it can reach, and
-        //    this comparison no way to fail to notice one.
-        // 3. **Its return value**, which is where both earlier attempts failed. An extern
-        //    return is an input `link_inputs` cannot match, so `no_returns` is the condition:
-        //    if either side has one the pair was already refused there, and if neither does
-        //    there is nothing left for the callee to differ through.
+        //    argument outright — so the callee has no caller-visible object to reach, and no
+        //    havoc of one can go unnoticed.
+        // 3. **Its return value.** `link_inputs` matches extern returns by effect-sequence
+        //    position, and that key is only used after (1) has shown the two calls at that
+        //    position are the same call with the same arguments.
         //
-        // The two claims removed: that a matching effect sequence alone suffices — it does
-        // not, the callee's writes interleave with this function's reads — and that a `pure`
-        // callee is harmless — it is not, `pure` means no side effects, not a return value
-        // independent of the arguments. `abs` is pure.
+        // **What was wrong before.** Version one said a matching effect sequence sufficed —
+        // false, because reads interleave with the callee's writes, and global *loads* were
+        // permitted (channel 2 was open). Version two added "and a `pure` callee is harmless"
+        // — false, because `pure` means no side effects, not a return value independent of
+        // the arguments; `abs` is pure, and pure calls were outside the sequence entirely
+        // (channels 1 and 3 both open). Each hole is now named above by the thing that closes
+        // it, which is the only form of this argument worth writing down.
         //
-        // What this still does not say: nothing here proved anything about the callee. The
+        // What it still does not say: nothing here proved anything about the callee. The
         // verdict stays `Approximated`, envelope `proven` stays false, and 032 §3.1 refuses to
         // drop a test on it. The blessing is "these two agree", not "chiero understands this".
         //
         // Only for assumption kinds that account for a call. `OpaqueCode` is deliberately
-        Fidelity::Approximated if no_returns => {
+        // absent — inline asm is not a call, has no argument list to compare, and the
+        // observability guard refuses it upstream.
+        Fidelity::Approximated => {
             for a in assumptions {
                 if a.fidelity == Fidelity::Approximated
                     && !matches!(
@@ -789,9 +792,12 @@ type Link = (Vec<(Term, Term)>, Vec<Term>);
 /// What makes an input on one side *the same input* as one on the other.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum InputKey {
-    /// An entry parameter, by position. **The only thing matched today** — `link_inputs` says
-    /// why §1.2's extern-return symbols are not.
+    /// An entry parameter, by position.
     Param(usize),
+    /// The return of the call at this position in the **effect sequence** — §1.2's shared
+    /// extern-return symbols. See `link_inputs` for why it is the sequence position and not
+    /// the nth call to a named function.
+    CallReturn(usize),
 }
 
 /// Pair up the two paths' symbolic inputs, returning one equality per matched pair.
@@ -802,27 +808,33 @@ enum InputKey {
 /// dropping it silently would prove equivalence over a smaller input space than the caller
 /// asked about.
 fn link_inputs(a: &mut TermArena, sb: &State, sa: &State) -> Option<Link> {
-    // **§1.2's "the same extern-return symbols" is *not* matched here, and the attempt is
-    // worth recording.** It was keyed by (function, nth call along the path), on the stated
-    // grounds that "the ordinal is the same thing the effect sequence orders by". It is not:
-    // `InputOrigin::ExternReturn` is minted only for a call that has a destination, so the
-    // input list counts *result-bearing* calls while the effect sequence counts *all* calls.
-    // A discarded result shifts the numbering, and one version's `p(2)` was equated with the
-    // other's `p(1)` — two functions returning the results of different calls, blessed.
+    // **§1.2's "the same extern-return symbols", keyed by the call's position in the effect
+    // sequence.**
     //
-    // For a *pure* callee it was worse: those never enter the effect sequence, so nothing
-    // checked that the nth call on each side was even passed the same arguments, and
-    // `p(x) == p(x + 1)` was asserted outright. `pure` means no side effects, not a return
+    // The obvious key — "the nth call to this function" — is wrong, and cost two false
+    // `Equivalent`s to learn. `InputOrigin::ExternReturn` exists only for a call that has a
+    // destination, so a discarded result shifts a by-name numbering and one run's `p(2)` gets
+    // equated with the other's `p(1)`. And a `pure` callee never entered the sequence at all,
+    // so nothing checked that the two nth calls were even passed the same arguments —
+    // `p(x) == p(x + 1)` asserted outright, and `pure` means no side effects, not a return
     // value independent of the arguments.
     //
-    // A sound key is the call's position in the **effect sequence**, which needs an ordinal
-    // the origin does not carry. Until it does, an extern return is an unmatched input, and
-    // an unmatched input is a refusal.
+    // The sequence position counts one thing: every declared call is in it, pure ones
+    // included, exactly so this ordinal is unambiguous. And `compare_effects` runs *before*
+    // any return is linked, so by the time position `n` is used as a key the two runs' `n`th
+    // calls have been shown to be the same callee with the same arguments.
     let params = |s: &State| -> Vec<(InputKey, Term)> {
         s.inputs()
             .iter()
             .filter_map(|(t, o)| match o {
                 InputOrigin::Param { index, .. } => Some((InputKey::Param(*index), *t)),
+                InputOrigin::ExternReturn { seq, .. } | InputOrigin::ModelReturn { seq, .. } => {
+                    // Keyed by position in the *comparable* sequence, not the raw one:
+                    // dropping an unused pure call from one side shifts every later raw
+                    // index, and that shift is exactly the class of defect this key exists
+                    // to rule out.
+                    return_slot(s, *seq).map(|slot| (InputKey::CallReturn(slot), *t))
+                }
                 _ => None,
             })
             .collect()
@@ -937,6 +949,41 @@ fn compare_returns(
     }
 }
 
+/// The declared calls that this comparison must line up, and where each sits in that list.
+///
+/// Every declared call is in the state's effect sequence — `pure` ones too, because that is
+/// what gives the ordinal one meaning (see [`link_inputs`]). But a pure call whose result
+/// nobody uses is genuinely unobservable: `pure` says no side effect, and an unread return is
+/// no return. Dropping one is a refactor, and refusing it would make the sequence stricter
+/// than C is.
+///
+/// So the kept list is every non-pure call, plus the pure calls whose return this path
+/// actually bound. Returns `(raw sequence index, effect)` pairs in order, and the *position in
+/// this list* is the key both sides are matched on — the raw index cannot be, because dropping
+/// an unused pure call from one side would shift every later one.
+fn comparable_effects(s: &State) -> Vec<(usize, &chiero_exec::Effect)> {
+    let used: Vec<usize> = s
+        .inputs()
+        .iter()
+        .filter_map(|(_, o)| match o {
+            InputOrigin::ExternReturn { seq, .. } | InputOrigin::ModelReturn { seq, .. } => {
+                Some(*seq)
+            }
+            _ => None,
+        })
+        .collect();
+    s.effects()
+        .iter()
+        .enumerate()
+        .filter(|(i, e)| e.kind != chiero_exec::EffectKind::PureCall || used.contains(i))
+        .collect()
+}
+
+/// Where each declared call's return sits in [`comparable_effects`], by raw sequence index.
+fn return_slot(s: &State, seq: usize) -> Option<usize> {
+    comparable_effects(s).iter().position(|(i, _)| *i == seq)
+}
+
 /// **041 §1.1's third claim**: the ordered sequence of observable side effects.
 ///
 /// Positional, because it is a *sequence*: §1.1 settles that "the order of two independent
@@ -950,6 +997,7 @@ fn compare_returns(
 /// whether any argument can differ under this pair's input constraint — because the question
 /// is whether the two calls agree for *every* input, which no concrete pair of values
 /// answers.
+#[allow(clippy::too_many_arguments)]
 fn compare_effects(
     solver: &mut TieredSolver,
     arena: &mut TermArena,
@@ -958,10 +1006,10 @@ fn compare_effects(
     sa: &State,
     link: &[(Term, Term)],
 ) -> Result<Divergent, String> {
-    let (eb, ea) = (sb.effects().to_vec(), sa.effects().to_vec());
+    let (eb, ea) = (comparable_effects(sb), comparable_effects(sa));
     let n = eb.len().max(ea.len());
     for i in 0..n {
-        let (x, y) = (eb.get(i), ea.get(i));
+        let (x, y) = (eb.get(i).map(|(_, e)| *e), ea.get(i).map(|(_, e)| *e));
         let describe = |e: Option<&chiero_exec::Effect>| e.map(|e| e.detail.clone());
         // A length difference, or two different events at the same point in the sequence.
         // Neither needs the solver: the pair is already known feasible, so any input
@@ -970,7 +1018,23 @@ fn compare_effects(
             (None, _) | (_, None) => true,
             (Some(p), Some(q)) => p.kind != q.kind || p.detail != q.detail,
         };
+        // **A pure call is in the sequence for its ordinal, not because it is observable.**
+        // A difference at a pure position is not a side-effect divergence — `pure` says there
+        // is no side effect — but it does mean the two runs' `n`th calls are not the same
+        // call, so their returns cannot be linked and nothing downstream may assume they can.
+        // Refusing is the honest answer: whether the two programs differ depends on what the
+        // callee does with the argument, which is exactly what chiero does not know.
+        let touches_pure = |e: Option<&chiero_exec::Effect>| {
+            e.is_some_and(|e| e.kind == chiero_exec::EffectKind::PureCall)
+        };
         if structural {
+            if touches_pure(x) || touches_pure(y) {
+                return Err(format!(
+                    "the two versions' {}th declared calls are not the same call, so their \
+                     return values cannot be matched (041 §1.2)",
+                    i + 1
+                ));
+            }
             let m = match solver.check_path(arena, pc, &[]) {
                 CheckResult::Sat(m) => m,
                 _ => return Err("a pair known feasible stopped being feasible".to_string()),
@@ -1029,6 +1093,14 @@ fn compare_effects(
                 ));
             }
             CheckResult::Sat(m) => {
+                if p.kind == chiero_exec::EffectKind::PureCall {
+                    return Err(format!(
+                        "the two versions pass different arguments to the pure function \
+                         `{}`, so its two return values cannot be matched — `pure` means no \
+                         side effect, not a return value independent of its arguments",
+                        p.detail
+                    ));
+                }
                 let (key, w) = minimized_witness_with(solver, arena, pc, sb, link, m, &[d]);
                 return Ok(Some((
                     key,

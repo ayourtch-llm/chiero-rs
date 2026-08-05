@@ -370,7 +370,8 @@ fn a_load_with_no_value_and_an_extern_return_are_both_inputs() {
     assert!(
         origins.iter().any(|o| matches!(
             o,
-            InputOrigin::ExternReturn { func, span } if func == "some_extern" && *span == at(60)
+            InputOrigin::ExternReturn { func, span, .. }
+                if func == "some_extern" && *span == at(60)
         )),
         "the extern return, named: {origins:?}"
     );

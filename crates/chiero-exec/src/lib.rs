@@ -134,6 +134,17 @@ pub struct Effect {
 pub enum EffectKind {
     /// A `Volatility::Volatile` store.
     VolatileStore,
+    /// A call to a function whose body chiero does not have and which **is** marked pure.
+    ///
+    /// Not an observable event — that is what `pure` means — and in the sequence anyway,
+    /// because the sequence is what gives every declared call a **stable ordinal**.
+    /// `InputOrigin::ExternReturn` carries that ordinal so a relational comparison (041 §1.2)
+    /// can match the two runs' extern-return symbols; a numbering that skipped pure calls
+    /// would have the two sides counting different things the moment one of them is dropped.
+    ///
+    /// A consumer looking for observable effects filters this out. A consumer matching calls
+    /// between two runs must not.
+    PureCall,
     /// A call to a function whose body chiero does not have and which is not marked pure —
     /// 041 §1.1's "calls to unmodeled or effectful externs".
     ///
@@ -524,6 +535,14 @@ pub struct State {
     ub: Vec<UbEvent>,
     /// 020 §4.2's observable effects, in program order.
     effects: Vec<Effect>,
+    /// The effect-sequence index of the declared call currently being dispatched.
+    ///
+    /// A declared call has no body, so it cannot nest, and this is set immediately after the
+    /// call's own effect entry is pushed. It exists because `InputOrigin::ModelReturn` is
+    /// minted several frames away from the push and needs the same ordinal
+    /// `InputOrigin::ExternReturn` gets — a second, independently-derived numbering is
+    /// exactly how the two would come to disagree.
+    call_seq: Option<usize>,
     /// **Every symbolic input this path ever created**, in creation order (023 §9). The
     /// witness is an assignment to exactly these, so a symbol minted without landing here
     /// is a value the replay harness would leave to chance.
@@ -641,6 +660,7 @@ impl State {
             witness_requires: Vec::new(),
             ub: Vec::new(),
             effects: Vec::new(),
+            call_seq: None,
             replay_used: 0,
             witness: None,
             unwitnessed: None,
@@ -2086,6 +2106,7 @@ impl<'m> Engine<'m> {
                 witness_requires: Vec::new(),
                 ub: Vec::new(),
                 effects: Vec::new(),
+                call_seq: None,
                 replay_used: 0,
                 witness: None,
                 unwitnessed: None,
@@ -2248,6 +2269,7 @@ impl<'m> Engine<'m> {
             witness_requires: Vec::new(),
             ub: Vec::new(),
             effects: Vec::new(),
+            call_seq: None,
             replay_used: entry_replay_used,
             witness: None,
             unwitnessed: None,
@@ -3841,9 +3863,18 @@ impl<'m> Engine<'m> {
             // a model which faults cannot lose it: the outside world saw the call either
             // way. The arguments travel with it because contract 6's rewrite swaps two
             // calls to *one* function, where the name sequence does not change.
-            if !pure {
+            // **Every declared call, pure or not** — see `EffectKind::PureCall` for why the
+            // pure ones are here. `call_seq` is this call's index in the sequence, which is
+            // the ordinal both return-value origins below are stamped with.
+            let call_seq = s.effects.len();
+            s.call_seq = Some(call_seq);
+            {
                 s.effects.push(Effect {
-                    kind: EffectKind::Call,
+                    kind: if pure {
+                        EffectKind::PureCall
+                    } else {
+                        EffectKind::Call
+                    },
                     span,
                     // **The resolved name.** gcc emits the `__builtin_` spelling for
                     // everything it recognises, so an optimized translation unit and its
@@ -3876,6 +3907,7 @@ impl<'m> Engine<'m> {
                     InputOrigin::ExternReturn {
                         func: name.to_string(),
                         span,
+                        seq: call_seq,
                     },
                 );
                 s.set_local(d, Value::Scalar(t));
@@ -7313,6 +7345,7 @@ impl<'m> Engine<'m> {
                 InputOrigin::ModelReturn {
                     func: name.to_string(),
                     span,
+                    seq: s.call_seq.unwrap_or(0),
                 },
             );
             s.set_local(d, Value::Scalar(t));

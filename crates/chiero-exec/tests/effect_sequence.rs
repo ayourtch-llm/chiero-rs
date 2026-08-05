@@ -177,11 +177,20 @@ entry:
     );
 }
 
-/// **`no_side_effects` is honoured.** A declared function the frontend marked pure is not an
-/// observable event, which is what makes the sequence usable on real code — VPP's headers are
-/// full of them.
+/// **`no_side_effects` is honoured — as a *kind*, not as an absence.**
+///
+/// A pure declared call is not an observable event, which is what makes the sequence usable on
+/// real code: VPP's headers are full of them. It is nonetheless *in* the sequence, as
+/// `EffectKind::PureCall`, because that is what gives every declared call one stable ordinal
+/// for `InputOrigin::ExternReturn` to name (041 §1.2). A numbering that skipped pure calls
+/// would have two runs counting different things the moment one of them dropped a call.
+///
+/// So the contract is sharper than "not recorded": a consumer looking for observable effects
+/// filters this kind out, and a consumer matching calls between two runs must not. This test
+/// asserts both halves — it used to assert the sequence was empty, which was the same claim
+/// while there was only one kind in it.
 #[test]
-fn a_declared_function_marked_pure_is_not_an_effect() {
+fn a_declared_function_marked_pure_is_not_an_observable_effect() {
     let module = m("\
 func @clean(%0: i32) -> i32 pure
 
@@ -192,9 +201,14 @@ entry:
   ret %1
 }");
     let (r, _) = run(&module, "f");
+    let es = effects(&r);
+    assert_eq!(
+        es,
+        vec![(EffectKind::PureCall, "clean".to_string())],
+        "the call is in the sequence, for its ordinal"
+    );
     assert!(
-        effects(&r).is_empty(),
-        "a pure extern is not observable: {:?}",
-        effects(&r)
+        es.iter().all(|(k, _)| *k != EffectKind::Call),
+        "and none of it is observable: {es:?}"
     );
 }
