@@ -755,3 +755,67 @@ fn divergence_json(d: &chiero_opt::Divergence) -> serde_json::Value {
         }),
     }
 }
+
+/// [031](../../../docs/specs/031-change-impact.md)'s change impact in 050 §2's envelope.
+///
+/// 050 §3's "Change analysis" row. The operation `select_tests` consumes internally, exposed on
+/// its own because the question *"what does this change reach"* is one a caller asks without
+/// wanting a test list — and because the answer is the one that makes the macro case legible.
+///
+/// # The fidelity, which is the whole judgement here
+///
+/// **`Exact` when the analysis is complete, and never otherwise.** The impact set is computed
+/// from the two token streams and 014's computed layouts, not sampled or estimated, so a
+/// complete one is a complete answer about this translation unit. That is a narrower claim than
+/// it sounds and the blind spot says so: the closure is over *this* unit, and a caller of the
+/// changed function from a unit chiero was not given is not in it.
+///
+/// `Completeness::Partial` means a file did not parse cleanly. Its entities are still in the
+/// set — 031 §4 widens every gap rather than narrowing it — and that is exactly why the
+/// fidelity must drop: an over-reported set is safe to act on and is not a proof of anything.
+pub fn impact_envelope(before: &chiero_diff::Program, after: &chiero_diff::Program) -> Envelope {
+    let set = chiero_diff::impact(before, after);
+    let entities: Vec<serde_json::Value> = set
+        .entities
+        .iter()
+        .map(|(e, j)| {
+            serde_json::json!({
+                "name": e.name(),
+                "file": e.file(),
+                "kind": entity_kind(e),
+                "class": format!("{:?}", j.class),
+                "root": j.root.name(),
+                "distance": j.distance,
+                "changed_lines": j.changed_lines,
+                "edges": j.edges.iter().map(|x| format!("{x:?}")).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+
+    let result = serde_json::json!({
+        "entities": entities,
+        "count": set.entities.len(),
+        "completeness": format!("{:?}", set.completeness),
+    });
+
+    let env = match &set.completeness {
+        chiero_diff::Completeness::Complete => Envelope::new(result, Fidelity::Exact),
+        other => Envelope::new(result, Fidelity::Bounded)
+            .with_assumption("incomplete_analysis", &format!("{other:?}")),
+    };
+    env.with_blind_spot(
+        "the closure is over the translation units given; a caller in a unit chiero was not \
+         shown is not in this set",
+    )
+}
+
+fn entity_kind(e: &chiero_diff::Entity) -> &'static str {
+    match e {
+        chiero_diff::Entity::Function { .. } => "function",
+        chiero_diff::Entity::Global { .. } => "global",
+        chiero_diff::Entity::Typedef { .. } => "typedef",
+        chiero_diff::Entity::Macro { .. } => "macro",
+        chiero_diff::Entity::Record { .. } => "record",
+        chiero_diff::Entity::EnumConst { .. } => "enum_const",
+    }
+}

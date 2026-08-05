@@ -46,8 +46,12 @@ fn run(args: &[&str]) -> Run {
 }
 
 fn json(r: &Run) -> serde_json::Value {
-    serde_json::from_str(&r.out)
-        .unwrap_or_else(|e| panic!("stdout is not JSON ({e}):\n{}\n--- stderr ---\n{}", r.out, r.err))
+    serde_json::from_str(&r.out).unwrap_or_else(|e| {
+        panic!(
+            "stdout is not JSON ({e}):\n{}\n--- stderr ---\n{}",
+            r.out, r.err
+        )
+    })
 }
 
 /// **No arguments prints usage and fails**, rather than succeeding at nothing.
@@ -71,10 +75,7 @@ fn bare_invocation_names_the_operations() {
 /// writing any Rust.
 #[test]
 fn prove_equivalent_from_two_c_files() {
-    let before = write(
-        "abs_before.c",
-        "int f (int x) { return x < 0 ? -x : x; }\n",
-    );
+    let before = write("abs_before.c", "int f (int x) { return x < 0 ? -x : x; }\n");
     let after = write(
         "abs_after.c",
         "int f (int x) {\n  if (x < 0)\n    return x == (-2147483647 - 1) ? 2147483647 : -x;\n  return x;\n}\n",
@@ -175,13 +176,28 @@ fn the_macro_operations_answer_from_one_file() {
          int a (int x) { return OUTER (x); }\n",
     );
 
-    let r = run(&["expansion-sites", f.to_str().unwrap(), "--macro", "INNER", "--json"]);
+    let r = run(&[
+        "expansion-sites",
+        f.to_str().unwrap(),
+        "--macro",
+        "INNER",
+        "--json",
+    ]);
     assert_eq!(r.code, 0, "stderr:\n{}", r.err);
     let v = json(&r);
-    assert!(v["proven"].as_bool().unwrap_or(false), "the table is exact: {v}");
+    assert!(
+        v["proven"].as_bool().unwrap_or(false),
+        "the table is exact: {v}"
+    );
     assert_eq!(v["result"]["total"].as_u64(), Some(1));
 
-    let r = run(&["explain-macro", f.to_str().unwrap(), "--line", "3", "--json"]);
+    let r = run(&[
+        "explain-macro",
+        f.to_str().unwrap(),
+        "--line",
+        "3",
+        "--json",
+    ]);
     assert_eq!(r.code, 0, "stderr:\n{}", r.err);
     let v = json(&r);
     let chains = v["result"]["chains"].as_array().expect("chains");
@@ -201,7 +217,10 @@ fn the_macro_operations_answer_from_one_file() {
 /// **The human rendering is the default**, and it carries the qualification too.
 #[test]
 fn the_default_output_is_for_a_person_and_still_says_what_it_is_worth() {
-    let f = write("mac2.c", "#define M(v) ((v) + 1)\nint a (int x) { return M (x); }\n");
+    let f = write(
+        "mac2.c",
+        "#define M(v) ((v) + 1)\nint a (int x) { return M (x); }\n",
+    );
     let r = run(&["expansion-sites", f.to_str().unwrap(), "--macro", "NOPE"]);
     assert_eq!(r.code, 0, "stderr:\n{}", r.err);
     assert!(
@@ -218,7 +237,13 @@ fn the_default_output_is_for_a_person_and_still_says_what_it_is_worth() {
 /// a reader who types a wrong path and gets `sites: 0` learns something false.
 #[test]
 fn a_missing_file_is_an_error_not_a_zero() {
-    let r = run(&["expansion-sites", "/nonexistent/nope.c", "--macro", "M", "--json"]);
+    let r = run(&[
+        "expansion-sites",
+        "/nonexistent/nope.c",
+        "--macro",
+        "M",
+        "--json",
+    ]);
     assert_ne!(r.code, 0, "stdout was:\n{}", r.out);
     assert!(
         r.err.contains("nope.c"),
