@@ -229,6 +229,18 @@ pub struct Justification {
     pub edges: Vec<ImpactEdge>,
     /// How far the closure walked: 0 for the root, 1 for its callers, and so on.
     pub distance: u32,
+    /// The lines **of this entity** whose text differs, ascending.
+    ///
+    /// **The granularity 032 §3.2 needs.** That refinement drops a test that never entered the
+    /// block containing *the change*; an impact set located only to entities cannot let it fire,
+    /// because a test that entered a twenty-line function has reached some of its lines.
+    ///
+    /// Empty for an entity reached by the closure — it changed nothing in itself — and a caller
+    /// must read that as "no line to ask about", not "nothing changed anywhere".
+    ///
+    /// **Over-approximates within the entity**, which is the safe direction: an extra line is one
+    /// more to ask about, and a line the test reached keeps the test.
+    pub changed_lines: Vec<u32>,
 }
 
 /// What could behave differently (031 §3).
@@ -389,6 +401,8 @@ pub struct Program {
     arity: IndexMap<String, (usize, bool)>,
     /// The argument counts of the indirect call sites each entity contains.
     indirect_calls: IndexMap<Entity, Vec<usize>>,
+    /// Each entity's written tokens, grouped by line — for locating a change *within* it.
+    by_line: IndexMap<Entity, Vec<(u32, Vec<String>)>>,
     /// The source lines each entity occupies, ascending.
     ///
     /// **Through `expansion_loc`, which is what makes the join to coverage work at all** (032 §2,
@@ -506,6 +520,7 @@ impl Program {
         // The lines an entity occupies, for 032's coverage join.
         let sm = &tu.source_map;
         let mut lines: IndexMap<Entity, Vec<u32>> = IndexMap::new();
+        let mut by_line: IndexMap<Entity, Vec<(u32, Vec<String>)>> = IndexMap::new();
         for (e, (lo, hi)) in &spans {
             let mut ls: Vec<u32> = tu
                 .tokens
@@ -518,6 +533,7 @@ impl Program {
             ls.sort_unstable();
             ls.dedup();
             lines.insert(e.clone(), ls);
+            by_line.insert(e.clone(), tokens_by_line(&tu, *lo, *hi));
         }
 
         // **031 §3.4's gap, computed from the token stream** like the rest of this crate. Every
@@ -574,6 +590,7 @@ impl Program {
         Some(Program {
             file: file.to_string(),
             parsed_cleanly,
+            by_line,
             lines,
             conditions,
             layouts,
@@ -599,6 +616,52 @@ impl Program {
     pub fn lines_of(&self, e: &Entity) -> &[u32] {
         self.lines.get(e).map_or(&[], Vec::as_slice)
     }
+}
+
+/// The written tokens of `[lo, hi)`, grouped by the line they appear on.
+///
+/// Used only to locate a change *within* an entity (031 `changed_lines`). Root-context tokens
+/// only, for the same reason the fingerprint uses them: a macro's expansion belongs to the macro.
+fn tokens_by_line(tu: &chiero_pp::PreprocessedTu, lo: u32, hi: u32) -> Vec<(u32, Vec<String>)> {
+    let sm = &tu.source_map;
+    let mut out: IndexMap<u32, Vec<String>> = IndexMap::new();
+    for (i, t) in tu.tokens.iter().enumerate() {
+        if t.span.is_dummy() || !t.span.ctx.is_root() || t.span.lo.0 < lo || t.span.lo.0 >= hi {
+            continue;
+        }
+        let Some(loc) = sm.lookup_loc(t.span.lo) else {
+            continue;
+        };
+        if let Some(text) = tu.text_at(i) {
+            out.entry(loc.line).or_default().push(text.to_string());
+        }
+    }
+    let mut v: Vec<(u32, Vec<String>)> = out.into_iter().collect();
+    v.sort_by_key(|(l, _)| *l);
+    v
+}
+
+/// The lines of `after` that differ from `before`, by trimming the common prefix and suffix.
+///
+/// The classic diff trim rather than a real LCS: it is O(n), it is exact when a change is
+/// contiguous — which an edit to one statement is — and where it is not exact it reports *more*
+/// lines, which keeps more tests.
+fn differing_lines(before: &[(u32, Vec<String>)], after: &[(u32, Vec<String>)]) -> Vec<u32> {
+    let mut head = 0usize;
+    while head < before.len() && head < after.len() && before[head].1 == after[head].1 {
+        head += 1;
+    }
+    let mut tail = 0usize;
+    while tail < before.len() - head.min(before.len())
+        && tail < after.len() - head.min(after.len())
+        && before[before.len() - 1 - tail].1 == after[after.len() - 1 - tail].1
+    {
+        tail += 1;
+    }
+    after[head.min(after.len())..after.len() - tail.min(after.len() - head.min(after.len()))]
+        .iter()
+        .map(|(l, _)| *l)
+        .collect()
 }
 
 /// The tokens whose span lies in `[lo, hi)`, as text.
@@ -835,6 +898,13 @@ fn file_name(p: &std::path::Path) -> String {
 pub fn impact(old: &Program, new: &Program) -> ImpactSet {
     let mut entities: IndexMap<Entity, Justification> = IndexMap::new();
     let mut direct = |e: &Entity, class| {
+        // Where the change *is*, within the entity. An added or removed entity is entirely the
+        // change, and a removal has no new side to diff against, so both report every line.
+        let changed_lines = match (old.by_line.get(e), new.by_line.get(e)) {
+            (Some(b), Some(a)) => differing_lines(b, a),
+            (None, Some(a)) | (Some(a), None) => a.iter().map(|(l, _)| *l).collect(),
+            (None, None) => Vec::new(),
+        };
         entities.insert(
             e.clone(),
             Justification {
@@ -842,6 +912,7 @@ pub fn impact(old: &Program, new: &Program) -> ImpactSet {
                 root: e.clone(),
                 edges: vec![ImpactEdge::DirectlyChanged],
                 distance: 0,
+                changed_lines,
             },
         );
     };
@@ -889,6 +960,8 @@ pub fn impact(old: &Program, new: &Program) -> ImpactSet {
                     file: p.file.clone(),
                 }],
                 distance: 0,
+                // Nothing is known about the file, so no line of it can be named.
+                changed_lines: Vec::new(),
             });
         }
     }
@@ -932,6 +1005,8 @@ pub fn impact(old: &Program, new: &Program) -> ImpactSet {
                         condition: text.clone(),
                     }],
                     distance: 0,
+                    // A condition changed, not a line of this entity.
+                    changed_lines: Vec::new(),
                 });
             }
         }
@@ -1012,6 +1087,8 @@ fn apply_address_taken(
                             callee: name.clone(),
                         }],
                         distance: via.distance + 1,
+                        // Reached, not changed.
+                        changed_lines: Vec::new(),
                     },
                 );
                 applied += 1;
@@ -1074,6 +1151,8 @@ fn close_over_references(
                     root: via.root.clone(),
                     edges,
                     distance,
+                    // Reached by the closure: nothing changed *in* this entity.
+                    changed_lines: Vec::new(),
                 },
             );
             next.push(holder.clone());

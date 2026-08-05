@@ -241,8 +241,10 @@ fn two_static_helpers_of_one_name_are_two_entities() {
 /// reached keeps the test.
 #[test]
 fn a_body_edit_reports_the_lines_that_differ() {
-    let before = "int f (int x)\n{\n  int a = 1;\n  int b = 2;\n  int c = 3;\n  return a + b + c;\n}\n";
-    let after = "int f (int x)\n{\n  int a = 1;\n  int b = 9;\n  int c = 3;\n  return a + b + c;\n}\n";
+    let before =
+        "int f (int x)\n{\n  int a = 1;\n  int b = 2;\n  int c = 3;\n  return a + b + c;\n}\n";
+    let after =
+        "int f (int x)\n{\n  int a = 1;\n  int b = 9;\n  int c = 3;\n  return a + b + c;\n}\n";
     let set = impact(
         &Program::parse("f.c", before).expect("parses"),
         &Program::parse("f.c", after).expect("parses"),
@@ -268,9 +270,11 @@ fn an_entity_reached_by_closure_reports_no_changed_lines() {
             .is_empty(),
         "`middle` is in the set because it calls `leaf`, not because it changed"
     );
-    assert!(!set.entities[&Entity::function("f.c", "leaf")]
-        .changed_lines
-        .is_empty());
+    assert!(
+        !set.entities[&Entity::function("f.c", "leaf")]
+            .changed_lines
+            .is_empty()
+    );
 }
 
 /// A signature change reports the line the declarator is on, which is what a test would have to
@@ -283,7 +287,10 @@ fn a_signature_change_reports_its_own_line() {
         &Program::parse("f.c", before).expect("parses"),
         &Program::parse("f.c", after).expect("parses"),
     );
-    assert_eq!(set.entities[&Entity::function("f.c", "f")].changed_lines, vec![1]);
+    assert_eq!(
+        set.entities[&Entity::function("f.c", "f")].changed_lines,
+        vec![1]
+    );
 }
 
 /// **Added and removed entities report every line they have**, because the whole thing is the
