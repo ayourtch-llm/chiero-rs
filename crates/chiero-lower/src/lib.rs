@@ -1836,7 +1836,12 @@ impl Lowerer<'_> {
     fn restore_static_local_names(&mut self) {
         let Some(fs) = self.f.as_mut() else { return };
         let entries = std::mem::take(&mut fs.static_locals);
-        for (name, shadowed) in entries {
+        // **Innermost last declared, first restored.** Each entry records what its own
+        // declaration displaced, so they only compose in reverse: two `static double t[2]` in
+        // sibling scopes push `(t, file-scope)` then `(t, first-static)`, and replaying forwards
+        // ends with the *first static* bound — an object of a function that has ended, which the
+        // next function to write `t` would then read, silently and with the wrong value.
+        for (name, shadowed) in entries.into_iter().rev() {
             match shadowed {
                 Some(prev) => {
                     self.globals.insert(name, prev);
@@ -1920,9 +1925,30 @@ impl Lowerer<'_> {
             // **Renamed so a dump can tell two of them apart.** Two functions may each declare
             // `static int c`, and so may a file-scope `c` alongside them; the ids stay distinct
             // either way, but a reader of the CIR should not have to guess which is which.
+            //
+            // **And two in *one* function need an ordinal**, because `<owner>.<name>` alone is
+            // not unique: sibling scopes may each declare `static double t[2]`, which C 6.2.4p3
+            // makes two objects with two initializers. The duplicate name was a verifier error,
+            // so 015 §7 discarded the whole function — 175 of the first 240 VPP translation
+            // units, all of it `ELOG_TYPE_DECLARE (e)` in sibling `if` blocks and
+            // `times_power_of_ten`'s `static f64 t[8]` in each arm of an `if`/`else`.
+            //
+            // Counted over the frame's own list, so the suffix depends on nothing outside the
+            // function and two runs agree. `.1` is the second, matching how a reader counts.
             let owner = self.fs().name.clone();
-            self.module.globals[gid.0 as usize].name =
-                std::sync::Arc::from(format!("{owner}.{}", self.sym(n).unwrap_or_default()));
+            let seen = self
+                .fs()
+                .static_locals
+                .iter()
+                .filter(|(prev, _)| *prev == n)
+                .count();
+            let base = format!("{owner}.{}", self.sym(n).unwrap_or_default());
+            let unique = if seen <= 1 {
+                base
+            } else {
+                format!("{base}.{}", seen - 1)
+            };
+            self.module.globals[gid.0 as usize].name = std::sync::Arc::from(unique);
             self.module.globals[gid.0 as usize].linkage = chiero_cir::Linkage::Internal;
             let _ = gid;
             return;
