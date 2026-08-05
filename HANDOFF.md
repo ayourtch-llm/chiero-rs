@@ -476,9 +476,24 @@ have entrenched conventions real lowering then had to match.)
   > has built this tree many times.
 
   **The harness is built** — `xtask/src/replay_gate.rs`, `cargo run -p xtask -- replay-gate`,
-  corpus at `tests/corpus/replay/corpus.tsv`. What remains is *populating* it, which means
-  finding a VPP commit with a known test failure and running the named test at `commit^` and
-  `commit` to confirm it fails then passes. The manifest records `observed` vs `asserted` and
+  corpus at `tests/corpus/replay/corpus.tsv`. What remains is *populating* it.
+
+  **First candidate probed and rejected, 2026-08-05.** `1d0e0e825 pvti: fix adjacent packet
+  overwrite with very big packets` against `test_pvti`, whose
+  `test_0003_pvti_send_simple_1pkt_big` exists at the parent and is exactly the right shape.
+  It **passes** at the parent — the suite does not exercise the overwrite. Two builds and
+  ~40 minutes to find that out, which is precisely what `observed` is for: reading the commit
+  message would have produced a confident wrong entry.
+
+  **Use the better method next time.** Hunting for a commit an existing test happens to catch
+  is a poor use of 40 minutes an attempt. Instead **revert a historical fix's `src/` diff on
+  top of HEAD and run the suite** — whatever fails is ground truth, observed rather than
+  guessed, on the build that already exists. That is the mutation gate's methodology applied
+  to a change somebody else made for their own reasons, which is the whole difference §6 draws
+  between the two harnesses. The entry still records the original commit, and the diff replayed
+  for selection is still `commit^..commit`, so nothing the gate measures changes.
+  `$SCRATCH/replay-probe.sh` does the two-checkout version and restores the user's tree on
+  every exit path. The manifest records `observed` vs `asserted` and
   **only `observed` counts towards recall**: a ground-truth oracle computed over beliefs
   measures the beliefs, which is the exact failure the mutation gate had to be rebuilt to
   avoid.

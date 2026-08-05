@@ -18,3 +18,32 @@
 # both, confirm it fails then passes. Verified 2026-08-05 that this is possible here
 # — `make test TEST=<name>` needs no root and no network namespaces, correcting a
 # premise this project carried for weeks.
+#
+# ---------------------------------------------------------------------------
+# CANDIDATES PROBED AND REJECTED. Kept so the expensive probe is not repeated.
+# ---------------------------------------------------------------------------
+#
+# 1d0e0e825  pvti: fix adjacent packet overwrite with very big packets
+#            test_pvti — REJECTED 2026-08-05.
+#            `test_0003_pvti_send_simple_1pkt_big` exists at the parent and looked
+#            like exactly the right shape. It PASSES at the parent: the suite does
+#            not exercise the overwrite. Built and ran both revisions to find that
+#            out, which is the point of `observed` — reading the commit message
+#            would have produced a confident wrong entry.
+#
+# ---------------------------------------------------------------------------
+# A BETTER METHOD, for whoever picks this up
+# ---------------------------------------------------------------------------
+#
+# Hunting for a commit whose fix an existing test happens to catch is a poor use
+# of ~40 minutes per attempt, and the pvti result shows why: the plausible
+# candidate was wrong.
+#
+# Instead REVERT a historical fix's src/ diff on top of HEAD and run the suite.
+# Whatever fails is the ground truth, observed rather than guessed, and it uses
+# the current build instead of two checkouts. That is the mutation gate's own
+# methodology applied to a change somebody else made for their own reasons —
+# which is the whole difference 032 §6 draws between the two harnesses.
+#
+# The entry then records the original commit; the diff replayed for selection is
+# still `commit^..commit`, so nothing about what the gate measures changes.
