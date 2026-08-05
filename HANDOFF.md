@@ -854,7 +854,7 @@ typing the paths ever would.
 > | 9, 10, 11, 12, 13, 14 the safety set | ✅ and each states *why*, not merely *that* |
 > | 17, 20 budget and report | ✅ reduction and safety always together |
 > | **19 the mutation gate** | ✅ 100% / 14.3% / 65%, whole pipeline |
-> | 7 reachability refinement | 🟡 both halves ready — `line_reached` (gcov) and `changed_lines` (diff); only the `select` wiring is left |
+> | 7 reachability refinement | ❌ **cannot fire at line granularity — proven, not guessed** (see below) |
 > | 18 historical replay | ❌ needs VPP tests, which need root |
 >
 > ### 🚀 032's FOUNDATION (contracts 1, 3, 9, 11, 15, 16)
@@ -922,7 +922,28 @@ typing the paths ever would.
 >   means any test that entered the function has reached some of its lines. That was found by
 >   trying to wire the refinement, not by reading the spec.
 >
->   ⚠️ **The wiring into `select` needs an API decision, not more analysis.** §3.2 is per *test*,
+>   ### 🛑 AND THEN IT TURNED OUT NOT TO FIRE — do not write the wiring
+>
+>   Both halves exist and the refinement is still a **no-op**. The argument is short and is pinned
+>   as a test over five fixtures (`arcs::the_arcs_never_contradict_the_line_index_at_line_
+>   granularity`):
+>
+>   > `tests_for_line` names a test only when its count for that line is non-zero — 030's
+>   > absence-versus-zero rule, per test. A non-zero line count means flow entered *some* block
+>   > carrying the line. That is exactly what `line_reached` asks. So for every test the line index
+>   > selects, the arcs agree.
+>
+>   §3.2's value is entirely in the case its own text names: *"line-level coverage attributes a
+>   whole line — including a multi-statement macro expansion — to a test that only executed part
+>   of it."* **Part of it is a block.** To exploit that, the *change* must be located to a block
+>   too, and 031 reports lines.
+>
+>   So contract 7 stays open. It needs a **line→block bridge on the change side** — which is a
+>   smaller version of the bridge §3.3 was cut for, and unbuilt rather than a research problem.
+>   Writing the wiring anyway and labelling it contract 7 would be the same overstatement as a
+>   report showing reduction without safety.
+>
+>   ⚠️ **If it is built later, the wiring needs an API decision:** §3.2 is per *test*,
 >   and `ArcCoverage` accumulates across ingests — so the caller must hold **one `ArcCoverage` per
 >   test** and `select` must take them. `CoverageIndex` alone cannot answer it. Two traps already
 >   paid for in the query itself, both in the direction that *removes* tests:
