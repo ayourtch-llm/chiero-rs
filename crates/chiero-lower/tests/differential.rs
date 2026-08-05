@@ -6456,3 +6456,37 @@ fn a_null_pointer_constant_initializes_a_pointer_member() {
         "char *a[2] = { 0, 0 }; return (a[0] == 0) + (a[1] == 0);",
     );
 }
+
+/// **A statement after an unconditional `return` breaks the control-flow graph.**
+///
+/// ```text
+/// vppinfra/clib.h:129:30: `clib_memcpy_u32` lowered to CIR the verifier rejects
+///   (block BlockId(31) branches to unknown BlockId(33))
+/// ```
+///
+/// `int f(int n) { return n; while (n) { n--; } }` is the whole of it. The unreachable loop is
+/// still lowered — it has to be, since C makes no promise that dead code is discarded and 015
+/// lowers what is written — and its blocks are referenced without being added to the function.
+///
+/// # It is ordinary C, and VPP's headers are full of it
+///
+/// `clib_memcpy_u32` ends its `CLIB_HAVE_VEC512` path with `return;` and then continues with the
+/// scalar tail for the configurations where that path was not taken. Under `-march=x86-64-v4`
+/// the `#if` leaves a `return` with two loops after it, and the function was discarded in **18
+/// translation units** — every `x86_64_v4` variant in the tree.
+#[test]
+fn a_statement_after_return_does_not_break_the_graph() {
+    agree_with("", "return 5; while (1) { }");
+    agree_with("", "int n = 3; return n; while (n) { n--; }");
+    agree_with("", "int n = 3; return n; if (n >= 2) { n -= 2; }");
+    // A loop *and* a following statement, which is `clib_memcpy_u32`'s exact shape.
+    agree_with(
+        "static void g(int);\nstatic int seen;\nstatic void g(int x) { seen += x; }",
+        "int n = 4; if (n) g(1); return seen; while (n) { g(2); n--; } g(3);",
+    );
+    // Unreachable code inside a branch that *is* reachable, so the fix cannot be "stop lowering
+    // after the first return anywhere".
+    agree_with("", "int n = 2; if (n) { return n; g_dead: ; } return 0;");
+    // A `goto` that targets a label in the unreachable part must still resolve.
+    agree_with("", "int n = 7; goto done; while (n) n--; done: return n;");
+}
