@@ -1784,6 +1784,73 @@ impl Cx<'_> {
         )
     }
 
+    /// The result type of a **type-generic** builtin, resolved against this call's arguments.
+    ///
+    /// `builtins.rs` records a measured return type per name, which cannot express "the type of
+    /// operand 1" — so the ten front-end special forms keep `Ty::Error`, and a value with no type
+    /// lowers to a scalar `Int(32)` fallback. For a vector-returning one that is fatal rather
+    /// than approximate: initializing a vector object from a scalar is a `Copy` with no address
+    /// to copy from, the verifier rejects it, and 015 §7 discards the function. Every
+    /// `_mm512_reduce_*` intrinsic is written with `__builtin_shuffle`, so this was 26 of the
+    /// first 27 VPP translation units.
+    ///
+    /// **Measured against gcc 13.3.0**, by the method `builtins.rs` documents: the call is passed
+    /// to `void take(struct Z)` and the return type is read out of gcc's own diagnostic.
+    ///
+    /// - `__builtin_shuffle(v, mask)` and `(a, b, mask)` are **the first argument's type**. The
+    ///   mask contributes nothing: gcc rejects one whose lane count differs, and `v4sf` data with
+    ///   a `v4si` mask is `v4sf`.
+    /// - `__builtin_shufflevector(a, b, idx…)` is the first argument's **element** type with as
+    ///   many lanes as there are indices — `(v4si, v4si, 0, 1)` is a two-lane vector.
+    ///
+    /// The 46 `__atomic_*`/`__sync_*` names are the same shape with a different rule — the
+    /// *pointee* of operand 1, qualifiers stripped — and are the larger remaining gap. They are
+    /// not here because they have not been measured to the standard this file requires.
+    fn type_generic_builtin(
+        &mut self,
+        callee: ExprId,
+        first_arg: Option<TyId>,
+        argc: usize,
+    ) -> Option<TyId> {
+        let ExprKind::Ident(n) = self.ast.expr(callee).kind else {
+            return None;
+        };
+        // A *declared* function of that name is an ordinary call and must stay one, exactly as
+        // the unmodeled-builtin arm in lowering requires.
+        if self.values.get(&n).is_some() {
+            return None;
+        }
+        let first = first_arg?;
+        match self.text(n)? {
+            "__builtin_shuffle" => Some(first),
+            "__builtin_shufflevector" => {
+                let Ty::Vector { elem, align, .. } = self.out.ty(first).clone() else {
+                    return None;
+                };
+                // Two vector operands then one index each. Fewer than three arguments is not a
+                // call gcc accepts, and inventing a zero-lane vector for it would be worse than
+                // leaving the poison in place.
+                let lanes = u32::try_from(argc.checked_sub(2)?).ok()?;
+                if lanes == 0 {
+                    return None;
+                }
+                // **The alignment is not the first argument's.** A narrower result is a narrower
+                // type: `__builtin_shufflevector(v4si, v4si, 0, 1)` is eight bytes, and carrying
+                // sixteen into it would misplace it in a struct. Width, as `apply_vector_size`
+                // computes it for a declaration carrying no `aligned` attribute — and this one
+                // carries none, because there is no declaration to write it on.
+                let _ = align;
+                let width = size_of_ty(&self.out, &self.target, elem)? * u64::from(lanes);
+                Some(self.intern(Ty::Vector {
+                    elem,
+                    lanes,
+                    align: width,
+                }))
+            }
+            _ => None,
+        }
+    }
+
     /// A declaration at **file scope**. Contract 14's redefinition rule applies here and only
     /// here, which is why the scope is a parameter rather than something inferred.
     fn item(&mut self, id: DeclId) {
@@ -5951,8 +6018,14 @@ impl Cx<'_> {
                     }
                 }
                 let mut ops = vec![c];
+                // **As written, before the promotions.** A type-generic builtin's result is one
+                // of its arguments' types, and the argument it names is the one in the source.
+                let mut first_arg = None;
                 for (i, a) in args.iter().enumerate() {
                     let node = self.type_expr(*a);
+                    if i == 0 {
+                        first_arg = Some(self.out.typed.ty_of(node));
+                    }
                     let node = match params.get(i) {
                         // A declared parameter: convert to **its** type, not to the
                         // promoted one. `f(long)` called with a `char` must receive a
@@ -5963,6 +6036,10 @@ impl Cx<'_> {
                     };
                     ops.push(node);
                 }
+                // **Resolved here because a table row cannot say "the type of operand 1".**
+                let ret = self
+                    .type_generic_builtin(*callee, first_arg, args.len())
+                    .unwrap_or(ret);
                 self.push_typed(TypedNode::Value {
                     expr,
                     ty: ret,
