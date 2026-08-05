@@ -511,6 +511,37 @@ typing the paths ever would.
 >
 > If `probe_cmds.txt` is gone, rebuild it: `cd $VPPBUILD && ninja -t commands <the .o>` for each.
 >
+> ### 🔴 THE SUITE HAS ONE FAILING TEST, ON PURPOSE — it is the next task
+>
+> `differential::an_arrow_through_an_array_is_an_lvalue` is a committed RED with no GREEN yet.
+> Everything else passes (1743 at the last full run).
+>
+> **The defect, in three lines:**
+>
+> ```c
+> struct H { int a; }; struct B { struct H h; };
+> int f(struct H *s) { struct B b[1]; b->h = *s; return b->h.a; }
+> // lower: `f` contains a construct lowering cannot represent
+> // inner: an aggregate assignment to something with no address
+> ```
+>
+> `b[0].h = *s` works; the scalar `b->z = 9` works; only an **aggregate** assignment through an
+> arrow on an array name fails. It is `vppinfra/cJSON.c`'s `print`, whose `printbuffer buffer[1]`
+> is the one-element-array idiom.
+>
+> ⚠️ **What was tried and is not the answer:** adding an `Ty::Array { elem, .. } if arrow` arm to
+> `field_of` (lower/lib.rs ~4956). Instrumentation showed the contradiction that should be the
+> next reader's starting point:
+>
+> - in `lvalue_addr`'s `Member` arm, `self.type_of(base)` prints `Array { elem: TyId(2), len:
+>   Fixed(1) }` and `self.field_of(base, field, arrow)` answers `None`;
+> - but a print *inside* the new array arm never fires, and the `find_field` print at the end of
+>   `field_of` fires only for the later `.a` access.
+>
+> So `field_of` returns `None` without reaching either. Print `bty` and the matched arm at the
+> top of `field_of` itself before changing anything else — one of those two observations is
+> lying, and which one is the whole answer.
+>
 > ### 📊 THE NUMBER: **1757 of 1871 clean (93.9%)** at 99bc5bd — was 12 of 1871
 >
 > | sweep | clean | not-run | diagnosed |
@@ -523,7 +554,21 @@ typing the paths ever would.
 > The remaining 107 are a *tail* rather than a blocker — no single cause is more than 70, and
 > the largest is one file.
 >
-> ⏭️ **The tail at 99bc5bd**, most to least. `85f6e49` landed after this sweep and takes the
+> ### ✅ SIX MORE CAUSES CLOSED AFTER THAT SWEEP — re-measure before trusting the tail below
+>
+> | commit | defect | share of the 107 |
+> |---|---|---|
+> | 85f6e49 | `--x` on a narrow object was typed `int` while lowering produced 8 bits | the `Int(8)`/`Int(16)` rows |
+> | 0d1e0c7 | a `case` label right after `default:` belonged to no switch | **70** |
+> | (anon-union) | `.write = {…}` on an anonymous-union member filled the union's *first* arm | 12 |
+> | (compound lit) | `&(u64){ 1 }` stored an `int` into an eight-byte object | 6 |
+>
+> Spot-checked after those: `igmp_report.c`, `memif/node.c`, `fib_node.c`, `ip6_forward.c`,
+> `session_node.c`, `elog.c`, `mem.c` and all five probe TUs are **clean**. What is left of the
+> tail is the cJSON arrow defect above, the two `pp` macro redefinitions, and
+> `vec_bootstrap.h:212` (sema: dereference of a pointer to an incomplete type).
+>
+> ⏭️ **The tail as the 99bc5bd sweep saw it**, most to least — now largely closed: `85f6e49` landed after this sweep and takes the
 > `Int(8)`/`Int(16)` comparison rows with it, so re-measure before working from these counts:
 >
 > | count | where | message |
