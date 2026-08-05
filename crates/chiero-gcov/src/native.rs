@@ -810,6 +810,18 @@ fn solve_arcs(
         });
     }
 
+    // **Every counter zero means every arc zero, with no reasoning at all.** The spanning tree
+    // makes the solution unique — that is what it is for — and the all-zero assignment always
+    // satisfies conservation, so it *is* that solution.
+    //
+    // This is not a shortcut for its own sake. "Never ran" is the common case: gcc elides such a
+    // function's counters entirely, and propagation stalls on graphs with more than one block
+    // that has no successors — a `noreturn` sink beside the exit — which is what
+    // `memory_client.c`'s `rx_thread_fn` is, and what had it skipped as unsolvable.
+    if counters.iter().all(|&c| c == 0) {
+        return Ok(Some(vec![0; n]));
+    }
+
     // Conservation, to a fixpoint.
     loop {
         let mut changed = false;

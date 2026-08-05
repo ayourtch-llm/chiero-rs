@@ -114,3 +114,34 @@ fn each_block_carries_the_lines_it_came_from() {
         .collect();
     assert_eq!(hdr_lines, vec![(2, "m.h", vec![2]), (3, "m.h", vec![2])]);
 }
+
+/// **A function whose every counter is zero has every arc zero**, and needs no graph reasoning.
+///
+/// The spanning tree makes the solution unique — that is what it is for — and the all-zero
+/// assignment always satisfies conservation. So if no measured arc ran, no derived arc ran, and
+/// the answer follows without propagating anything.
+///
+/// It matters because "never ran" is the common case: gcc elides the counters of such a function
+/// entirely (a negative record length), and 83 of 98 objects of one real build had at least one.
+/// `memory_client.c`'s `rx_thread_fn` is one of them — a thread body nothing started — and it has
+/// two blocks with no successors, so arc-by-arc propagation stalls and the function was being
+/// skipped as unsolvable. gcov reports its 18 lines as `0`; skipping reported nothing at all.
+#[test]
+fn a_function_that_never_ran_solves_without_propagation() {
+    let idx = chiero_gcov::ingest_native(&corpus(), "unrun").expect("unrun decodes");
+    let lines = idx.lines_of("unrun.c");
+    assert!(!lines.is_empty());
+    assert_eq!(
+        idx.line_count("unrun.c", 1),
+        Some(0),
+        "recorded, and nothing ran it"
+    );
+    assert!(
+        chiero_gcov::ingest_native(&corpus(), "unrun")
+            .expect("unrun decodes")
+            .provenance()
+            .iter()
+            .all(|r| r.unsolved.is_empty()),
+        "and it is solved rather than skipped"
+    );
+}
