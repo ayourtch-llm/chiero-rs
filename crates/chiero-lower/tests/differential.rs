@@ -6359,3 +6359,53 @@ fn an_inner_declaration_does_not_outlive_its_block() {
         "return take(4);",
     );
 }
+
+/// **`va_arg(ap, T)` yields an `int` whatever `T` is.**
+///
+/// ```text
+/// vppinfra/mem_dlmalloc.c:212:3: `format_clib_mem_heap` lowered to CIR the verifier rejects
+///   (store value operand is Int(32), declared Ptr)
+///   clib_mem_heap_t *heap = va_arg (*va, clib_mem_heap_t *);
+///
+/// vppinfra/format.c:211:6: `do_percent` … (store value operand is Int(32), declared Int(64))
+///   fi.width[i] = va_arg (*va, int);
+/// ```
+///
+/// The type operand is an `ExprKind::TypeName`, which sema types as `Ty::Error` — correct for a
+/// node that denotes no value — and the *call* then takes its type from the undeclared builtin,
+/// which is also `Error`, so `cty` falls back to `Int(32)`. Only `va_arg(ap, int)` was ever
+/// right, and it was right by accident.
+///
+/// Every `format` function in VPP is a `va_list` walk, so this is most of the tree's printing
+/// code and all of its `%U` handlers.
+#[test]
+fn va_arg_has_the_type_it_names() {
+    // **`__builtin_va_list` and the builtins directly**, because this harness has no include
+    // loader and `<stdarg.h>` is exactly these three macros over exactly these builtins.
+    const P: &str = "typedef __builtin_va_list va_list;\n\
+        static long take_l(int n, ...) { va_list a; __builtin_va_start(a, n); \
+          long v = __builtin_va_arg(a, long); __builtin_va_end(a); return v; }\n\
+        static void *take_p(int n, ...) { va_list a; __builtin_va_start(a, n); \
+          void *v = __builtin_va_arg(a, void *); __builtin_va_end(a); return v; }\n\
+        static double take_d(int n, ...) { va_list a; __builtin_va_start(a, n); \
+          double v = __builtin_va_arg(a, double); __builtin_va_end(a); return v; }\n\
+        static int take_i(int n, ...) { va_list a; __builtin_va_start(a, n); \
+          int v = __builtin_va_arg(a, int); __builtin_va_end(a); return v; }\n";
+    // A `long` argument, whose value does not fit in the `int` the fallback assumed.
+    agree_with(P, "return (int)(take_l(1, 5000000000L) >> 30);");
+    // A pointer, which is the `mem_dlmalloc` shape.
+    agree_with(P, "int x = 7; int *p = &x; return *(int *)take_p(1, p);");
+    // A `double`, which travels in a different register class entirely.
+    agree_with(P, "return (int)take_d(1, 2.5);");
+    // And the case that already worked, so a fix cannot regress it.
+    agree_with(P, "return take_i(1, 42);");
+    // Two arguments in sequence: the second must start where the first ended, which a
+    // wrongly-sized first read would break.
+    agree_with(
+        "typedef __builtin_va_list va_list;\n\
+         static long two(int n, ...) { va_list a; __builtin_va_start(a, n); \
+           long x = __builtin_va_arg(a, long); int y = __builtin_va_arg(a, int); \
+           __builtin_va_end(a); return x + y; }\n",
+        "return (int)two(2, 100L, 5);",
+    );
+}
