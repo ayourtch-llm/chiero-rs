@@ -6199,3 +6199,49 @@ fn a_shift_count_narrower_than_int_is_promoted_not_widened() {
         "u64 w = 0; bit_set(&w, 40, 1); return (int)(w >> 40);",
     );
 }
+
+/// **The GNU elvis form `a ?: b` is typed from the else arm alone.**
+///
+/// ```text
+/// vppinfra/pool.h:308:42: `_pool_alloc` lowered to CIR the verifier rejects
+///   (store value operand is Int(64), declared Int(32))
+///   clib_bitmap_validate (ph->free_bitmap, (len + n_elts) ?: 1);
+/// ```
+///
+/// `a ?: b` is `a ? a : b`, so the result takes the **common type of both operands** — and sema
+/// answers `ety`, the else arm's type. `unsigned long ?: 1` came out `int`, lowering allocated a
+/// four-byte slot for it, and storing the eight-byte condition into that slot is what the
+/// verifier caught. Measured against gcc 13.3.0 with `_Generic`:
+///
+/// | expression | gcc |
+/// |---|---|
+/// | `a ?: 1` with `a` an `unsigned long` | `unsigned long` |
+/// | `b ?: c` with `b` an `int`, `c` a `long` | `long` |
+/// | `u ?: l` with `u` an `unsigned`, `l` a `long` | `long` |
+///
+/// The explicit `a ? a : b` was always right, which is what makes this the elvis form's own bug.
+#[test]
+fn the_elvis_form_takes_the_common_type_of_both_operands() {
+    // The corpus shape: a wide condition and a narrow constant.
+    agree_with("", "unsigned long a = 5; return (int)(a ?: 1);");
+    // The value, not just the width — a truthy condition yields the condition.
+    agree_with(
+        "",
+        "unsigned long a = 5; unsigned long r = a ?: 1; return (int)r;",
+    );
+    agree_with(
+        "",
+        "unsigned long a = 0; unsigned long r = a ?: 7; return (int)r;",
+    );
+    // The other direction: a narrow condition and a wide else arm, where the *condition* is the
+    // operand needing conversion.
+    agree_with("", "int b = 5; long c = 7; return (int)(b ?: c);");
+    agree_with("", "int b = 0; long c = 7; return (int)(b ?: c);");
+    // Signedness, which is the half a width-only fix would miss: `unsigned ?: long` is `long`.
+    agree_with("", "unsigned u = 1; long l = 2; return (int)(u ?: l);");
+    // And the arm is evaluated once — the elvis form's own contract, unchanged by this.
+    agree_with(
+        "static int calls;\nstatic int bump(void) { calls++; return 3; }",
+        "int r = bump() ?: 9; return r*10 + calls;",
+    );
+}
