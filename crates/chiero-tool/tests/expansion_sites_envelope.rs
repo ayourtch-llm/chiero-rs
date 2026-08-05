@@ -71,7 +71,10 @@ fn a_macro_that_expands_nowhere_is_proven_empty() {
     let tu = preprocess_str("f.c", src, Config::default());
     let env = expansion_sites_envelope(&tu.source_map, "UNUSED", None, 50);
 
-    assert!(env.proven, "nothing expanded it, and that is known rather than unmeasured");
+    assert!(
+        env.proven,
+        "nothing expanded it, and that is known rather than unmeasured"
+    );
     let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
     assert_eq!(v["result"]["total"], 0);
 }

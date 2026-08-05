@@ -479,3 +479,64 @@ fn describe_reason(r: &chiero_select::SelectionReason) -> serde_json::Value {
         }
     }
 }
+
+/// [`expansion_sites`] in 050 §2's envelope (contract 7).
+///
+/// # Why this is a wrapper rather than a change to `expansion_sites`
+///
+/// [`SiteSummary`] reports its own truncation, which is the right shape for a Rust caller holding
+/// the value. The JSON surface needs it in the envelope, because 050 §2's argument is that a
+/// consumer reads *one* place for the qualification of *any* answer — an operation that reported
+/// it in its own shape would be one more thing to learn, and the one a reader forgets.
+///
+/// # The fidelity, which is the only judgement here
+///
+/// **`Exact`, and this is the first 050 operation for which that is honest.** The sites are the
+/// preprocessor's own expansion table rather than a scan or an estimate, so the answer is
+/// complete for the translation unit it was given — and a macro that expands nowhere is *proven*
+/// empty, which is the one place in this system an empty answer may be read plainly.
+///
+/// **A truncated page is not proven.** The operation is exact; the response is a page of it, and
+/// a caller holding 50 of 1043 sites does not hold the answer. Nothing about the page is
+/// approximate, which is exactly why this distinction is easy to lose.
+pub fn expansion_sites_envelope(
+    map: &SourceMap,
+    name: &str,
+    cursor: Option<usize>,
+    limit: usize,
+) -> Envelope {
+    let summary = expansion_sites(map, name, cursor, limit);
+    let complete = summary.cursor.is_none() && summary.shown == summary.total;
+
+    let result = serde_json::json!({
+        "total": summary.total,
+        "shown": summary.shown,
+        "cursor": summary.cursor,
+        "sites": summary
+            .sites
+            .iter()
+            .map(|s| serde_json::json!({
+                "file": s.file,
+                "line": s.line,
+                "col": s.col,
+                "item_line": s.item_line,
+                "item_col": s.item_col,
+            }))
+            .collect::<Vec<_>>(),
+    });
+
+    let env = Envelope::new(
+        result,
+        if complete {
+            Fidelity::Exact
+        } else {
+            // Nothing is approximated — the caller simply does not have all of it.
+            Fidelity::Bounded
+        },
+    );
+    if complete {
+        env
+    } else {
+        env.truncated(summary.shown, summary.total)
+    }
+}
