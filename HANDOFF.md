@@ -597,6 +597,10 @@ typing the paths ever would.
 > | **7** `FAKE` in the solve, out of the queries | done (e48d151) |
 > | **4** arc queries unavailable on a JSON index | done (e48d151) — by *where the method is*: there is no `tests_for_arc` on `CoverageIndex` at all |
 > | §5 `FuncKey`, `MarchResolver` | done (376cd40) — file + name + start line, and the variant is a resolver, never a parse |
+> | **5 line rule** | done (0e08d70) — **98/98 objects, 0 of 30133 lines** against a real VPP build |
+> | **11 memory budget** | done (7d35375) — **190 MiB** against a documented 256 MiB, measured by a counting allocator |
+> | **13 `tests_for_block`** | done (3d7326f) — the union over a CIR block's `gcov_lines`, keyed on a file the caller supplies |
+> | **§5 `tests_for_span`, `uncovered_lines`** | done (4231609) — through `expansion_loc`, and zero-versus-absent kept apart |
 >
 > **Contract 5 is the one that matters and it discriminates** — but it discriminates between the
 > candidates someone thought of. It rejected `sum` on `loop.c` and kept `max`, and `max` was
@@ -723,20 +727,23 @@ typing the paths ever would.
 > confidence that made `max` survive four fixtures.
 >
 > ⏭️ **Next in 030**, in the order the spec gives them:
-> - **§5's `tests_for_span` and `uncovered_lines`**, the two queries in the spec's list with no
->   implementation. `tests_for_span` is where contract 12's rule becomes code rather than a guard:
->   it must go through `SourceMap::expansion_loc`, and it is the first thing in this crate that
->   needs `chiero-span`.
-> - **contract 13, `tests_for_block`**: the union over a CIR block's `gcov_lines`. The bridge to
->   the rest of the system, and the join 020 §3 computed `gcov_lines` with `expansion_loc` for.
+> - ~~**§5's `tests_for_span` and `uncovered_lines`**~~ — done (4231609). Both go through
+>   `union_over_lines`, which is where the absence-versus-zero decision is now made once.
+> - ~~**contract 13, `tests_for_block`**~~ — done (3d7326f). ⚠️ **The signature deviates from 030
+>   §5 on purpose**: the file is a parameter, because 015 §5 keys `gcov_lines` on *the enclosing
+>   function's* defining file and a `&Block` carries no `FileId` — and `.cir` fixtures have
+>   `Span::DUMMY`, which 015 §5 introduces the `.line` directive precisely to work around. Read
+>   the method doc before "fixing" it to match the spec sketch.
 > - ~~**the line index needs `FuncKey`'s lesson too**~~ — done: `Variant` is in the key and
 >   `tests_for_line_in` asks per variant, with the union still the default answer.
 > - **contract 13**: `tests_for_block` over a CIR block's `gcov_lines` — the join to the rest of
 >   the system, and the first thing here that touches `chiero-cir`.
-> - **contract 11**: the memory budget, 1M lines × 5000 tests. `TestBitmap` is a sorted
->   `Vec<TestId>` and will not meet it; 030 §5 says roaring. The type is private to the crate, so
->   the swap is an implementation detail — **that is deliberate, and the reason to do the
->   benchmark before reaching for a dependency.**
+> - ~~**contract 11**: the memory budget~~ — done (7d35375), **and roaring was not needed.**
+>   Writing the benchmark first is what showed why: the cost was never the bitmaps. It was three
+>   `IndexMap`s keyed by the same `(file, line)`, each holding its own copy of a 40-byte path.
+>   Interning the paths and merging the three maps into one `LineEntry` took 577 MiB to 190,
+>   against a 256 MiB budget — no dependency, and the `TestBitmap` is still a sorted `Vec`.
+>   **The benchmark cost an afternoon and saved a dependency the spec had already chosen.**
 > - **contract 2's sibling**: a fixture at VPP scale. Everything so far is two small programs; the
 >   frontend vertical only became trustworthy when it met 1871 real translation units, and there
 >   is no reason to expect this one to differ.
