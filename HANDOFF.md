@@ -750,14 +750,29 @@ typing the paths ever would.
 > Contracts 4, 6, 7, 8, 18, 19 are green with it: transitive closure three deep, the auditable
 > edge chain, and §3's fixpoint.
 >
-> ⚠️ **Two bugs this wave, both of the kind that pass tests.** The macro body fingerprint indexed
+> ### 📐 WHAT `LayoutChanged` COST — two premises that were wrong (b703cfc)
+>
+> Both were caught by tests written against the spec, and both would have been silently wrong:
+>
+> 1. **Reordering two same-size fields moves no offset in the list.** `int a; short b; short c;`
+>    lays out at 0, 4, 6 either way — what changes is *which name* sits at 6. So the layout is
+>    keyed by **field name**; a bare offset list calls contract 9's own example unchanged.
+> 2. **`packed` on an already-tight struct is still a layout change**, and the test asserted the
+>    opposite until gcc was asked. It removes no padding and drops the alignment from 4 to 1, so
+>    a struct embedding it moves from offset 4 to offset 1. `size_delta: 0` is the report saying
+>    the size held while something else did not.
+>
+> Comparing only the field names the two sides have **in common** is what separates a rename
+> (moves nothing, `BodyChanged`) from a reorder (`LayoutChanged`) — §2 draws exactly that line.
+>
+> ⚠️ **Two bugs in the macro wave, both of the kind that pass tests.** The macro body fingerprint indexed
 > the *TU's* token stream by body position, so every macro got the file's first N tokens —
 > identical on both sides, making a body edit invisible — and the parameter-rename test passed
 > throughout because its *head* differed. And the coverage baseline first asked "does the index
 > have any line for `m.h`", which is **true**: `m.h` also holds a `static inline`, and inline
 > functions do get their own entries. Ask about the changed *line*.
 >
-> ### 📊 031 CONTRACT STATUS — 13 of 20 green
+> ### 📊 031 CONTRACT STATUS — 16 of 20 green
 >
 > | | |
 > |---|---|
@@ -768,19 +783,13 @@ typing the paths ever would.
 > | 12 two `static`s of one name | ✅ guard — `Entity` carries the file (014 §4) |
 > | 15 unparsed → `Partial` | ✅ every entity of the file, classed `Unknown` |
 > | **17 precision** | ✅ guard — a macro edit does **not** impact every includer |
-> | 9, 10, 11 `LayoutChanged` | ❌ |
+> | **9, 10, 11 `LayoutChanged`** | ✅ computed from 014's `RecordLayout`, keyed by field *name* |
 > | 13 `CLIB_MARCH_VARIANT` | ❌ |
 > | 14 address-taken indirect calls | ❌ |
 > | 16 `#if` and `ConfigId` | ❌ |
 >
 > ⏭️ **Next, in the order the spec gives them:**
 >
-> - **`LayoutChanged`** (contracts 9–11). ⚠️ §2 is explicit that this is a **computed comparison
->   of `RecordLayout`** (014 §3), *not* a syntactic one: reordering two same-size fields changes
->   every offset while the token stream barely moves, and adding `__attribute__((packed))`
->   changes everything downstream. The fingerprint machinery that carried contracts 1–8 is the
->   wrong tool here and will quietly under-report — the one place in 031 where tokens are not
->   enough. VPP's wire-format structs make it the highest-severity class in §2's table.
 > - **contract 14**, address-taken functions, which is also the first thing to increment
 >   `address_taken_fallbacks` — one of the three `Completeness::Partial` fields that report zero
 >   today and say so on themselves.
