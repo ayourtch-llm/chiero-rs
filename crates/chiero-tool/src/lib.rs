@@ -592,3 +592,166 @@ fn frame_json(f: &MacroFrame) -> serde_json::Value {
         "args": f.args,
     })
 }
+
+/// `prove_equivalent` in 050 §2's envelope — [050 contract 8](../../../docs/specs/050-tool-interface.md).
+///
+/// 050 §1: *"the LLM proposes; chiero adjudicates."* This is the operation that sentence is
+/// about. [041 §1](../../../docs/specs/041-optimization-analysis.md) does the deciding; the
+/// judgement here is what fidelity the answer deserves, which is the only thing this layer
+/// is for.
+///
+/// # Why `Differs` is `Exact`
+///
+/// It reads like an overclaim and is not. A `Differs` carries a concrete input at which the
+/// two versions demonstrably disagree, and "these two functions are not equivalent" is a
+/// claim about *all* inputs — it happens to be witnessed by one. 041 skips any pair of paths
+/// a budget cut, so a divergence never comes from a truncated path.
+///
+/// What is *not* proven is that a real compiler agrees, and that is a blind spot rather than
+/// a fidelity: 041 §1.3 wants "a replay harness that compiles and demonstrates the
+/// divergence", contract 11 wants a harness that fails to demonstrate it to downgrade the
+/// result — and **no harness is built yet**. An un-run harness is not a failed one, so the
+/// verdict stands and the envelope says, in the place a consumer is structurally unable to
+/// miss, that nothing has checked it against a compiler.
+///
+/// # Why `Equivalent` is whatever 041 said and never better
+///
+/// `Fidelity::Bounded` is 041 §1.2's own word for "a statement about inputs within the
+/// bound, not a proof", and 032 §3.1 refuses to drop a test on one. Promoting it here would
+/// let the surface bless a rewrite the pruner would not trust — the two layers disagreeing
+/// about the same value, which is how a caveat gets lost.
+pub fn prove_equivalent(
+    before: &chiero_cir::Module,
+    after: &chiero_cir::Module,
+    cfg: &chiero_opt::EquivCfg,
+) -> Envelope {
+    match chiero_opt::prove_equivalent(before, after, cfg) {
+        chiero_opt::Equivalence::Equivalent {
+            fidelity,
+            footprint,
+            assumptions,
+        } => {
+            let result = serde_json::json!({
+                "verdict": "equivalent",
+                "compared": footprint.compared.iter().map(|c| c.label()).collect::<Vec<_>>(),
+            });
+            let mut env = Envelope::new(result, exec_fidelity(fidelity));
+            for a in &assumptions {
+                env = env.with_assumption(&format!("{:?}", a.kind), &a.detail);
+            }
+            // **What `compared` leaves out is the load-bearing half.** 041 §1.1 makes
+            // equivalence three claims and this decides two; a consumer reading
+            // `"verdict": "equivalent"` beside a list of two would otherwise have to know
+            // the list was meant to be three.
+            for missing in [chiero_opt::Claim::Memory, chiero_opt::Claim::SideEffects] {
+                if !footprint.compared.contains(&missing) {
+                    env = env.with_blind_spot(&format!(
+                        "{} was not compared (041 §1.1); the verdict is silent about it",
+                        missing.label()
+                    ));
+                }
+            }
+            env
+        }
+        chiero_opt::Equivalence::Differs {
+            input,
+            observation,
+            replay,
+        } => {
+            let result = serde_json::json!({
+                "verdict": "differs",
+                "input": input.bindings.iter().map(binding_json).collect::<Vec<_>>(),
+                "observation": divergence_json(&observation),
+                "replay": serde_json::Value::Null,
+            });
+            let env = Envelope::new(result, Fidelity::Exact);
+            match replay {
+                // Unreachable today — `Replay` has no constructor — and written as a match
+                // rather than an unconditional blind spot so that building one flips this
+                // instead of leaving a stale caveat behind.
+                Some(_) => env,
+                None => env.with_blind_spot(
+                    "no replay harness was compiled (041 §1.3), so the divergence is \
+                     chiero's semantics and has not been demonstrated against a compiler",
+                ),
+            }
+        }
+        chiero_opt::Equivalence::Unknown { reason } => Envelope::new(
+            serde_json::json!({ "verdict": "unknown", "reason": reason }),
+            Fidelity::Unknown,
+        )
+        .with_assumption("undecided", &reason)
+        .with_blind_spot("the two versions were not shown to agree and were not shown to differ"),
+    }
+}
+
+/// 023 §7's fidelity in 050 §2's terms. A plain mapping, named so the one place it happens
+/// is greppable — a second, divergent copy of this match is how the two layers would start
+/// disagreeing about what `Bounded` means.
+fn exec_fidelity(f: chiero_exec::Fidelity) -> Fidelity {
+    match f {
+        chiero_exec::Fidelity::Exact => Fidelity::Exact,
+        chiero_exec::Fidelity::Bounded => Fidelity::Bounded,
+        chiero_exec::Fidelity::Approximated => Fidelity::Approximated,
+        chiero_exec::Fidelity::Unknown => Fidelity::Unknown,
+    }
+}
+
+fn binding_json(b: &chiero_exec::Binding) -> serde_json::Value {
+    // Both readings, because neither alone is the number a reader wants: 4294967295 and -1
+    // are the same input, and which one makes the divergence obvious depends on the code.
+    let signed = match b.width {
+        0..=64 => {
+            let shift = 128 - b.width.max(1);
+            Some(((b.value << shift) as i128) >> shift)
+        }
+        _ => None,
+    };
+    serde_json::json!({
+        "origin": b.origin.label(),
+        "width": b.width,
+        "value": b.value.to_string(),
+        "signed": signed.map(|s| s.to_string()),
+        "pinned": b.pinned,
+    })
+}
+
+fn divergence_json(d: &chiero_opt::Divergence) -> serde_json::Value {
+    match d {
+        chiero_opt::Divergence::ReturnValue { before, after } => serde_json::json!({
+            "kind": "return_value",
+            "before": before.bits().to_string(),
+            "before_signed": before.signed().to_string(),
+            "after": after.bits().to_string(),
+            "after_signed": after.signed().to_string(),
+            "width": before.width(),
+        }),
+        chiero_opt::Divergence::Memory {
+            object,
+            offset,
+            before,
+            after,
+        } => serde_json::json!({
+            "kind": "memory",
+            "object": object,
+            "offset": offset,
+            "before": before,
+            "after": after,
+        }),
+        chiero_opt::Divergence::SideEffect {
+            index,
+            before,
+            after,
+        } => serde_json::json!({
+            "kind": "side_effect",
+            "index": index,
+            "before": before,
+            "after": after,
+        }),
+        chiero_opt::Divergence::Termination { before, after } => serde_json::json!({
+            "kind": "termination",
+            "before": format!("{before:?}"),
+            "after": format!("{after:?}"),
+        }),
+    }
+}

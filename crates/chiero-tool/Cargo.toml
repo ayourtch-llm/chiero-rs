@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 chiero-span.workspace = true
+chiero-cir.workspace = true
 chiero-exec.workspace = true
 chiero-check.workspace = true
 chiero-opt.workspace = true
