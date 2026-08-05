@@ -785,7 +785,13 @@ fn block_counts(f: &NoteFunction, arcs: &[u64]) -> Vec<u64> {
 /// invented here: gcov attributes each block to the last line of each of its location groups, and
 /// the entry and exit blocks to none, so the lines those pass over never enter the graph
 /// computation at all.
-fn line_counts(f: &NoteFunction, arc_counts: &[u64], blocks: &[u64]) -> Vec<(String, u32, u64)> {
+///
+/// **The two halves are returned apart because they do not combine by addition.** gcov holds one
+/// record per `(source, line)` for the whole object, and the graph count *overwrites* whatever
+/// accumulated there — from every function, not just this one. So a line some function attributed
+/// a block to takes the sum of the graph counts and discards every accumulation, which a caller
+/// cannot reconstruct from one merged number. See [`ObjectLines`].
+fn line_counts(f: &NoteFunction, arc_counts: &[u64], blocks: &[u64]) -> FunctionLines {
     let last_block = f.blocks.saturating_sub(1);
     let mut acc: IndexMap<(String, u32), u64> = IndexMap::new();
     // The blocks gcov attributes to each line, in its order, duplicates kept: a block reached
@@ -813,8 +819,9 @@ fn line_counts(f: &NoteFunction, arc_counts: &[u64], blocks: &[u64]) -> Vec<(Str
         }
     }
 
-    // `accumulate_line_info`, which overwrites the accumulation wherever a subgraph exists.
+    // `accumulate_line_info`, for the lines this function attributed a block to.
     let succ = succ_lists(f);
+    let mut graphed: IndexMap<(String, u32), u64> = IndexMap::new();
     for (key, bs) in &on_line {
         let mut count: u64 = 0;
         for &b in bs {
@@ -825,10 +832,65 @@ fn line_counts(f: &NoteFunction, arc_counts: &[u64], blocks: &[u64]) -> Vec<(Str
             }
         }
         count = count.saturating_add(cycles_count(f, &succ, bs, arc_counts));
-        acc.insert(key.clone(), count);
+        acc.shift_remove(key);
+        graphed.insert(key.clone(), count);
     }
 
-    acc.into_iter().map(|((f, l), c)| (f, l, c)).collect()
+    FunctionLines {
+        accumulated: acc,
+        graphed,
+    }
+}
+
+/// One function's contribution to its object's lines, in the two kinds that merge differently.
+struct FunctionLines {
+    /// Lines this function's blocks passed over without any of them being attributed to them:
+    /// the sum of those blocks' counts.
+    accumulated: IndexMap<(String, u32), u64>,
+    /// Lines this function attributed at least one block to: the count of the subgraph those
+    /// blocks induce.
+    graphed: IndexMap<(String, u32), u64>,
+}
+
+/// The lines of one object, merged across its functions the way gcov merges them.
+///
+/// **Attribution by any function wins for every function.** gcov's `accumulate_line_info`
+/// overwrites the shared `(source, line)` record with the graph count whenever its block list is
+/// non-empty, and that list is the union over the object. So a line one function graphed and
+/// another merely accumulated over reports the graph count alone — the accumulation is not added,
+/// it is discarded. Summing the two would inflate every line that a header is inlined into.
+///
+/// Graph counts *do* sum across functions, because no arc crosses a function: the union's induced
+/// subgraph is the disjoint union of the per-function ones, and its entry arcs and cycles are
+/// theirs.
+#[derive(Default)]
+struct ObjectLines {
+    accumulated: IndexMap<(String, u32), u64>,
+    graphed: IndexMap<(String, u32), u64>,
+}
+
+impl ObjectLines {
+    fn add(&mut self, f: FunctionLines) {
+        for (key, c) in f.accumulated {
+            let slot = self.accumulated.entry(key).or_insert(0);
+            *slot = slot.saturating_add(c);
+        }
+        for (key, c) in f.graphed {
+            let slot = self.graphed.entry(key).or_insert(0);
+            *slot = slot.saturating_add(c);
+        }
+    }
+
+    /// `(file, line, count)` for every line of the object.
+    fn finish(mut self) -> Vec<(String, u32, u64)> {
+        for (key, c) in self.graphed {
+            self.accumulated.insert(key, c);
+        }
+        self.accumulated
+            .into_iter()
+            .map(|((f, l), c)| (f, l, c))
+            .collect()
+    }
 }
 
 /// Each block's outgoing arcs in gcov's order: declaration order reversed by the prepend in
@@ -979,6 +1041,7 @@ pub fn ingest_into(
         idx.note_test(*t);
         idx.note_variant(v);
     }
+    let mut object = ObjectLines::default();
     for f in &notes.functions {
         let Some(d) = data.functions.iter().find(|d| d.ident == f.ident) else {
             return Err(IngestError::Malformed {
@@ -1003,11 +1066,15 @@ pub fn ingest_into(
         }
         let arcs = solve_arcs(f, &d.counters, &data_path)?;
         let blocks = block_counts(f, &arcs);
-        for (file, line, count) in line_counts(f, &arcs, &blocks) {
-            match &test {
-                Some((t, v)) => idx.add_line_for_variant(*t, v, file, line, count),
-                None => idx.add_line(file, line, count),
-            }
+        object.add(line_counts(f, &arcs, &blocks));
+    }
+    // **Merged across the object before the index sees any of it.** A header inlined into three
+    // functions contributes to its lines three times, and the index's merge cannot tell those
+    // apart from three separate objects reporting the same line.
+    for (file, line, count) in object.finish() {
+        match &test {
+            Some((t, v)) => idx.add_line_for_variant(*t, v, file, line, count),
+            None => idx.add_line(file, line, count),
         }
     }
     idx.set_detail(CoverageDetail::LinesAndArcs);
