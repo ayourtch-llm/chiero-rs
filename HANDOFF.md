@@ -901,14 +901,20 @@ typing the paths ever would.
 > ```
 > cargo run -p xtask -- mutation-gate
 >
->   chiero recall        100.0%  (12/12)
->   coverage-only recall   0.0%  (0/12)
->   reduction             50.0%  (12 of 24 case-selections avoided)
+>   chiero recall        100.0%  (14/14)
+>   coverage-only recall  14.3%  (2/14)
+>   reduction             65.0%
 > ```
 >
-> Six macro-body mutations in a header, no `.c` touched. **The ground truth is observed, not
+> Eight mutations: six macro bodies in a header with no `.c` touched, **and two ordinary `.c`
+> edits** — a changed constant and a flipped comparison. **The ground truth is observed, not
 > assumed**: each mutation is applied, the suite rebuilt and rerun, and the tests whose result
 > changed are the ones that would have caught it.
+>
+> ⚠️ **The `.c` mutations are what make this a measurement rather than an advertisement.** The
+> baseline finds both of them — it should, the changed line is one gcov recorded — and misses all
+> six macro ones. A gate containing only the case the alternative fails would report 0% and say
+> nothing about whether chiero is *worse* anywhere.
 >
 > **The coverage-only baseline is implemented, not asserted** — 032 §6 requires exactly that, "so
 > every report can state the delta chiero adds rather than asserting it". Its 0% comes from
@@ -923,6 +929,10 @@ typing the paths ever would.
 > 2. chiero selected all four cases every time, so reduction was 0%. **A recall gate that selects
 >    everything is satisfied and worthless** — precisely why contract 20 insists both numbers
 >    appear together.
+> 3. the baseline looked files up by the name the *diff* uses, while gcov records the path **it**
+>    saw — an absolute path under the build directory. Every lookup missed, silently, and the
+>    failure was **flattering**: 0% on exactly the mutations where the alternative works. *A gate
+>    whose bug favours the tool it is measuring is worse than no gate.*
 >
 > ⏭️ **Contract 18, the historical-replay gate, does not exist.** It is the ground-truth oracle and
 > "the one that would catch a real design flaw" (§6). It needs VPP commits with a known test
