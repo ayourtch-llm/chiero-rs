@@ -1379,7 +1379,10 @@ fn a_conditional_with_one_void_side_is_a_gnu_extension() {
     // Both sides `void` is ordinary C and stays silent in both.
     let both = "void v(void); void w(void);\nvoid f(int c) { c ? v() : w(); }\n";
     assert_eq!(sema_messages(both, Dialect::gnu()), Vec::<String>::new());
-    assert_eq!(sema_messages(both, Dialect::pedantic()), Vec::<String>::new());
+    assert_eq!(
+        sema_messages(both, Dialect::pedantic()),
+        Vec::<String>::new()
+    );
     // A `void` value where a value is genuinely required is still an error in both dialects —
     // the rule is not being dropped, only the one shape gcc accepts.
     let used = "void v(void);\nint f(void) { return v(); }\n";

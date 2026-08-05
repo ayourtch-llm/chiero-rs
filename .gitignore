@@ -7,6 +7,11 @@ Cargo.lock.bak
 *.gcno
 *.gcda
 *.gcov
+# ...except the committed coverage fixtures, which *are* gcc's artifacts and are the point:
+# 030's contracts are asserted against gcov's own output, not against a re-encoding of it.
+!/tests/corpus/coverage/*.gcno
+!/tests/corpus/coverage/*.gcda
+!/tests/corpus/coverage/*.gcov.json
 
 # editor
 .idea/
