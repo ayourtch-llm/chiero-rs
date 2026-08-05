@@ -166,3 +166,28 @@ fn every_function_of_an_object_contributes_to_a_shared_line() {
     );
     assert_eq!(count("multi", "multi.h", 6), Some(2));
 }
+
+/// **Two functions beginning on one line are a *group*, and a group keeps private line tables.**
+///
+/// gcov marks two non-artificial functions that share a `(source, start_line)` as a group
+/// (`process_all_functions`). Each member then accounts the lines in its own range into a private
+/// table rather than the source's shared one, and `--json-format` emits those as separate entries
+/// per function — which `ingest_json` sums, because that is what they mean.
+///
+/// The distinction only bites when the members disagree about a line. In `group.c`, `two` fits on
+/// line 1 and attributes a block to it; `one` starts there but its body is on line 2, so line 1
+/// is an *accumulation* for `one` and no block of its own lands there. Sharing one table lets
+/// `two`'s graph count overwrite `one`'s accumulation, and `one`'s contribution vanishes.
+///
+/// On a real VPP object this is `memcpy_x86_64.c:51`, where a macro puts 255 `wrapper` functions
+/// on one line: 32 of them contribute by accumulation alone, so the shared table reports 446
+/// against gcov's 510.
+#[test]
+fn a_group_of_functions_keeps_its_members_apart() {
+    assert_eq!(
+        count("group", "group.c", 1),
+        Some(2),
+        "`one` and `two` both begin on line 1 and both contribute to it"
+    );
+    assert_eq!(count("group", "group.c", 2), Some(1));
+}
