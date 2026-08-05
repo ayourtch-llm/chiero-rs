@@ -6577,3 +6577,52 @@ fn a_case_after_default_belongs_to_its_switch() {
         "return pick(4)*100 + pick(3)*10 + pick(9);",
     );
 }
+
+/// **A designator naming a member of an anonymous union writes the wrong member.**
+///
+/// ```text
+/// vlib/unix/fuse.c:652:3: `vlib_fuse_reply_write` … (cast source operand is Ptr, declared Int(32))
+///
+///   vlib_fuse_file_op_data_t od = {
+///     .h = h, .type = …, .nodeid = …, .file_handle = wi->fh,
+///     .write = { .req_offset = off, .req_size = size, .start = (u8 *)(wi + 1) },
+///   };
+/// ```
+///
+/// `write` is a member of an **anonymous union**, so it is not in the enclosing struct's field
+/// list. `init_list` looked there, found nothing, left the cursor where it was, and filled the
+/// braced value against the union's *first* member — `open`, whose members are one-bit
+/// bit-fields. The CIR stored all three of `write`'s members at one address, one of them through
+/// a `storebits … bits 0..1`, and the pointer among them reached a `zext` declaring an `i32`
+/// source. That last step is what the verifier caught; everything before it was already wrong.
+///
+/// The file-scope folder learned this in the same wave (`field_path`); the local walk did not,
+/// which is the mirror-drift that has produced most of this wave's defects.
+#[test]
+fn a_designator_names_a_member_through_an_anonymous_union() {
+    const P: &str = "struct D { int h; \
+        union { struct { unsigned a; unsigned b; } read; \
+                struct { unsigned long off; unsigned sz; unsigned char *start; } write; }; };\n";
+    // Every member of the designated arm must land at its own offset.
+    agree_with(
+        P,
+        "unsigned char buf[4] = {9,8,7,6}; \
+         struct D d = { .h = 1, .write = { .off = 40, .sz = 3, .start = buf } }; \
+         return (int)(d.write.off + d.write.sz + (d.write.start == buf));",
+    );
+    // The *other* arm of the same union, so the fix cannot hardcode one member.
+    agree_with(
+        P,
+        "struct D d = { .h = 1, .read = { .a = 5, .b = 6 } }; return d.read.a * 10 + d.read.b;",
+    );
+    // A scalar member promoted out of an anonymous union, which is the simplest form.
+    agree_with(
+        "struct E { int x; union { int u; unsigned v; }; int y; };",
+        "struct E e = { .x = 1, .u = 7, .y = 2 }; return e.x * 100 + e.u * 10 + e.y;",
+    );
+    // An anonymous *struct*, which C promotes the same way.
+    agree_with(
+        "struct F { int x; struct { int p; int q; }; };",
+        "struct F f = { .x = 1, .q = 9 }; return f.x * 10 + f.q;",
+    );
+}
