@@ -55,6 +55,9 @@ fn main() {
     let mut errors: Vec<String> = Vec::new();
     // Cross-validation, where gcov's own answer is available beside the artifacts.
     let (mut checked, mut agreed) = (0usize, 0usize);
+    // Object-level agreement is all-or-nothing, so it hides progress: one wrong line in a
+    // 900-line object scores the same as a decoder that gets nothing right.
+    let (mut rows, mut wrong_rows) = (0usize, 0usize);
     let mut disagreements: Vec<String> = Vec::new();
 
     for (dir, stem) in &stems {
@@ -79,8 +82,10 @@ fn main() {
         let mut same = true;
         for file in json.files() {
             for line in json.lines_of(file) {
+                rows += 1;
                 if native.line_count(file, line) != json.line_count(file, line) {
                     same = false;
+                    wrong_rows += 1;
                     if disagreements.len() < 20 {
                         disagreements.push(format!(
                             "{stem} {file}:{line} native={:?} gcov={:?}",
@@ -101,6 +106,7 @@ fn main() {
     println!("ingest:  {ok} ok, {failed} failed");
     println!("index:   {} files, {lines} lines", files.len());
     println!("cross-validated: {agreed}/{checked} objects agree with gcov");
+    println!("                 {} of {rows} lines differ", wrong_rows);
 
     // **The failures, grouped.** One line per distinct shape rather than per object: a decoder
     // gap in a header reaches every object that includes it, and a list of 400 identical

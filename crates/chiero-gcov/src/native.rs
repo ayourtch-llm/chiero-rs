@@ -759,20 +759,187 @@ fn block_counts(f: &NoteFunction, arcs: &[u64]) -> Vec<u64> {
 
 /// The line counts one function contributes, as `(file, line, count)`.
 ///
-/// **The maximum over the blocks on a line, not the sum.** Measured: `loop.c`'s five blocks on
-/// line 1 have counts `[1, 4, 5, 1, 1]` and gcov reports 5. Summing gives 12 and taking the first
-/// block gives 1, so the fixture refutes both — and `t.c`, whose blocks are all 1, cannot tell
-/// the three apart, which is why it is not the only fixture.
-fn line_counts(f: &NoteFunction, blocks: &[u64]) -> Vec<(String, u32, u64)> {
-    let mut out: IndexMap<(String, u32), u64> = IndexMap::new();
+/// **Not an aggregation of the blocks' counts.** gcc's own word for summing them is "artificially
+/// high" (`gcc/gcov.cc`, `accumulate_line_info`): a line compiled into several blocks that flow
+/// into one another has been executed once, not once per block. The rule is a computation on the
+/// subgraph induced by the line's blocks —
+///
+/// 1. every arc entering that subgraph from outside contributes its count, and
+/// 2. every elementary cycle *within* it contributes its bottleneck arc,
+///
+/// — so a `for` loop written entirely on one line is counted by finding the loop. The answer
+/// therefore depends on the arcs, which is why no formula over block counts reproduces it; see
+/// `crates/chiero-gcov/tests/line_rule.rs` for what that cost to learn.
+///
+/// A line no block was *attributed* to keeps the accumulated sum instead. That is not a fallback
+/// invented here: gcov attributes each block to the last line of each of its location groups, and
+/// the entry and exit blocks to none, so the lines those pass over never enter the graph
+/// computation at all.
+fn line_counts(f: &NoteFunction, arc_counts: &[u64], blocks: &[u64]) -> Vec<(String, u32, u64)> {
+    let last_block = f.blocks.saturating_sub(1);
+    let mut acc: IndexMap<(String, u32), u64> = IndexMap::new();
+    // The blocks gcov attributes to each line, in its order, duplicates kept: a block reached
+    // twice contributes its entry arcs twice, and dropping the repeat would change the answer.
+    let mut on_line: IndexMap<(String, u32), Vec<u32>> = IndexMap::new();
+
+    // `add_line_counts`. `carried` mirrors gcov's `line` pointer, which persists across a block's
+    // location groups and is reset per block — a group with no lines pushes the block onto
+    // whatever line the previous group ended on.
+    let mut carried: Option<(String, u32)> = None;
+    let mut current: Option<u32> = None;
     for bl in &f.lines {
+        if current != Some(bl.block) {
+            current = Some(bl.block);
+            carried = None;
+        }
         let c = blocks.get(bl.block as usize).copied().unwrap_or(0);
         for &line in &bl.lines {
-            let slot = out.entry((bl.file.clone(), line)).or_insert(0);
-            *slot = (*slot).max(c);
+            let slot = acc.entry((bl.file.clone(), line)).or_insert(0);
+            *slot = slot.saturating_add(c);
+            carried = Some((bl.file.clone(), line));
+        }
+        if let (true, Some(key)) = (bl.block != 0 && bl.block != last_block, &carried) {
+            on_line.entry(key.clone()).or_default().push(bl.block);
         }
     }
-    out.into_iter().map(|((f, l), c)| (f, l, c)).collect()
+
+    // `accumulate_line_info`, which overwrites the accumulation wherever a subgraph exists.
+    let succ = succ_lists(f);
+    for (key, bs) in &on_line {
+        let mut count: u64 = 0;
+        for &b in bs {
+            for (i, a) in f.arcs.iter().enumerate() {
+                if a.to == b && !bs.contains(&a.from) {
+                    count = count.saturating_add(arc_counts[i]);
+                }
+            }
+        }
+        count = count.saturating_add(cycles_count(f, &succ, bs, arc_counts));
+        acc.insert(key.clone(), count);
+    }
+
+    acc.into_iter().map(|((f, l), c)| (f, l, c)).collect()
+}
+
+/// Each block's outgoing arcs in gcov's order: declaration order reversed by the prepend in
+/// `read_graph_file`, then stably sorted by destination. The order is not cosmetic —
+/// [`handle_cycle`](cycles_count) subtracts each cycle's bottleneck from its arcs, so which cycle
+/// is enumerated first can change what later ones are worth.
+fn succ_lists(f: &NoteFunction) -> Vec<Vec<usize>> {
+    let mut out: Vec<Vec<usize>> = vec![Vec::new(); f.blocks as usize];
+    for (i, a) in f.arcs.iter().enumerate().rev() {
+        if let Some(slot) = out.get_mut(a.from as usize) {
+            slot.push(i);
+        }
+    }
+    for slot in &mut out {
+        slot.sort_by_key(|&i| f.arcs[i].to);
+    }
+    out
+}
+
+/// The counts of the elementary cycles lying entirely within `bs`, by Hawick and James'
+/// enumeration — the algorithm `gcc/gcov.cc` cites and implements in `circuit`/`unblock`.
+///
+/// Each cycle is worth its **minimum** remaining arc count, which is then subtracted from every
+/// arc along it, so two cycles sharing an arc cannot both claim it. A blocked node is released
+/// only when it turns out to lie on a cycle, which is what keeps the search over simple paths
+/// from being exponential in the common case.
+fn cycles_count(f: &NoteFunction, succ: &[Vec<usize>], bs: &[u32], arc_counts: &[u64]) -> u64 {
+    let mut cs: Vec<i64> = vec![0; f.arcs.len()];
+    for &b in bs {
+        for &i in succ.get(b as usize).into_iter().flatten() {
+            cs[i] = arc_counts[i].min(i64::MAX as u64) as i64;
+        }
+    }
+    let mut count: i64 = 0;
+    for &start in bs {
+        let mut path: Vec<usize> = Vec::new();
+        let mut blocked: Vec<u32> = Vec::new();
+        let mut block_lists: Vec<Vec<u32>> = Vec::new();
+        circuit(
+            f,
+            succ,
+            start,
+            &mut path,
+            start,
+            &mut blocked,
+            &mut block_lists,
+            bs,
+            &mut cs,
+            &mut count,
+        );
+    }
+    count.max(0) as u64
+}
+
+#[allow(clippy::too_many_arguments)]
+fn circuit(
+    f: &NoteFunction,
+    succ: &[Vec<usize>],
+    v: u32,
+    path: &mut Vec<usize>,
+    start: u32,
+    blocked: &mut Vec<u32>,
+    block_lists: &mut Vec<Vec<u32>>,
+    bs: &[u32],
+    cs: &mut [i64],
+    count: &mut i64,
+) -> bool {
+    let mut loop_found = false;
+    blocked.push(v);
+    block_lists.push(Vec::new());
+
+    for &i in succ.get(v as usize).into_iter().flatten() {
+        let w = f.arcs[i].to;
+        // `w < start` keeps each cycle to the one rotation whose lowest block starts it, which is
+        // what makes the enumeration terminate rather than merely deduplicate afterwards.
+        if w < start || cs[i] <= 0 || !bs.contains(&w) {
+            continue;
+        }
+        path.push(i);
+        if w == start {
+            let cycle = path.iter().map(|&e| cs[e]).min().unwrap_or(0);
+            *count += cycle;
+            for &e in path.iter() {
+                cs[e] -= cycle;
+            }
+            loop_found = true;
+        } else if !path.iter().any(|&e| cs[e] <= 0) && !blocked.contains(&w) {
+            loop_found |= circuit(f, succ, w, path, start, blocked, block_lists, bs, cs, count);
+        }
+        path.pop();
+    }
+
+    if loop_found {
+        unblock(v, blocked, block_lists);
+    } else {
+        for &i in succ.get(v as usize).into_iter().flatten() {
+            let w = f.arcs[i].to;
+            if w < start || cs[i] <= 0 || !bs.contains(&w) {
+                continue;
+            }
+            let Some(index) = blocked.iter().position(|&b| b == w) else {
+                continue;
+            };
+            if !block_lists[index].contains(&v) {
+                block_lists[index].push(v);
+            }
+        }
+    }
+    loop_found
+}
+
+/// Release `u`, and transitively everything whose search was blocked waiting on it.
+fn unblock(u: u32, blocked: &mut Vec<u32>, block_lists: &mut Vec<Vec<u32>>) {
+    let Some(index) = blocked.iter().position(|&b| b == u) else {
+        return;
+    };
+    blocked.remove(index);
+    let to_unblock = block_lists.remove(index);
+    for w in to_unblock {
+        unblock(w, blocked, block_lists);
+    }
 }
 
 /// Ingest a `.gcno`/`.gcda` pair for one object stem (030 §4).
@@ -826,7 +993,7 @@ pub fn ingest_into(
         }
         let arcs = solve_arcs(f, &d.counters, &data_path)?;
         let blocks = block_counts(f, &arcs);
-        for (file, line, count) in line_counts(f, &blocks) {
+        for (file, line, count) in line_counts(f, &arcs, &blocks) {
             match &test {
                 Some((t, v)) => idx.add_line_for_variant(*t, v, file, line, count),
                 None => idx.add_line(file, line, count),
