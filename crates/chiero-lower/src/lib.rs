@@ -4957,6 +4957,11 @@ impl Lowerer<'_> {
                 Ty::Record(r) => r,
                 _ => return None,
             },
+            // The same decay `field_of` makes, so a report names the member the access used.
+            Ty::Array { elem, .. } if arrow => match self.analysis.ty(elem).clone() {
+                Ty::Record(r) => r,
+                _ => return None,
+            },
             _ => return None,
         };
         let l = self.analysis.layout(rec);
@@ -4978,6 +4983,15 @@ impl Lowerer<'_> {
         let rec = match self.analysis.ty(bty).clone() {
             Ty::Record(r) => r,
             Ty::Ptr(p) if arrow => match self.analysis.ty(p).clone() {
+                Ty::Record(r) => r,
+                _ => return None,
+            },
+            // **An array decays before `->` reaches it** (C11 6.3.2.1p3), so `b->m` on a
+            // `struct B b[1]` is `(*b).m` — the one-element-array idiom `cJSON`'s `print` uses
+            // for its `printbuffer`, and `va_list` uses for the same reason. Without it the
+            // member had no offset, `lvalue_addr` answered `None`, and an aggregate assignment
+            // through the arrow reported "something with no address" and refused the function.
+            Ty::Array { elem, .. } if arrow => match self.analysis.ty(elem).clone() {
                 Ty::Record(r) => r,
                 _ => return None,
             },
