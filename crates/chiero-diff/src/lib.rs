@@ -389,6 +389,13 @@ pub struct Program {
     arity: IndexMap<String, (usize, bool)>,
     /// The argument counts of the indirect call sites each entity contains.
     indirect_calls: IndexMap<Entity, Vec<usize>>,
+    /// The source lines each entity occupies, ascending.
+    ///
+    /// **Through `expansion_loc`, which is what makes the join to coverage work at all** (032 §2,
+    /// 030 §1). gcov records the line a macro was *used* on, never the macro's own line, so an
+    /// entity's lines have to be the lines its tokens *appear* at — the same rule, in the same
+    /// direction, as everything else that touches a span here.
+    lines: IndexMap<Entity, Vec<u32>>,
     /// Every conditional directive's condition, normalised to token spellings.
     ///
     /// **The one thing the token stream cannot carry.** A `#if` line is consumed, so a condition
@@ -496,6 +503,23 @@ impl Program {
 
         let (entities, refs, spans) = extract(file, &tu, &parsed);
 
+        // The lines an entity occupies, for 032's coverage join.
+        let sm = &tu.source_map;
+        let mut lines: IndexMap<Entity, Vec<u32>> = IndexMap::new();
+        for (e, (lo, hi)) in &spans {
+            let mut ls: Vec<u32> = tu
+                .tokens
+                .iter()
+                .filter(|t| !t.span.is_dummy())
+                .filter_map(|t| sm.expansion_loc(t.span))
+                .filter(|l| l.pos.0 >= *lo && l.pos.0 < *hi)
+                .map(|l| l.line)
+                .collect();
+            ls.sort_unstable();
+            ls.dedup();
+            lines.insert(e.clone(), ls);
+        }
+
         // **031 §3.4's gap, computed from the token stream** like the rest of this crate. Every
         // function's arity comes from its declaration; a name that appears anywhere without a `(`
         // after it has escaped; and a call through something that is not a known function name is
@@ -550,6 +574,7 @@ impl Program {
         Some(Program {
             file: file.to_string(),
             parsed_cleanly,
+            lines,
             conditions,
             layouts,
             address_taken,
@@ -564,6 +589,15 @@ impl Program {
     /// Every entity this translation unit declares, in written order.
     pub fn entities(&self) -> impl Iterator<Item = &Entity> {
         self.entities.keys()
+    }
+
+    /// The source lines an entity occupies, ascending — 032 §2's join to coverage.
+    ///
+    /// Empty for an entity this program does not declare, which a caller must not read as "it
+    /// occupies no lines": 032 §4 sends an entity with no coverage to the safety set, and the two
+    /// are different facts.
+    pub fn lines_of(&self, e: &Entity) -> &[u32] {
+        self.lines.get(e).map_or(&[], Vec::as_slice)
     }
 }
 

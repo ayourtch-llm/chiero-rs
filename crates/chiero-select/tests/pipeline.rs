@@ -74,8 +74,8 @@ fn an_empty_diff_selects_only_the_always_run_set() {
 #[test]
 fn a_body_edit_selects_the_tests_that_cover_it() {
     let before = Program::parse("t.c", t_c()).expect("parses");
-    let after = Program::parse("t.c", "int main (void)\n{\n  M; M;\n  return 1;\n}\n")
-        .expect("parses");
+    let after =
+        Program::parse("t.c", "int main (void)\n{\n  M; M;\n  return 1;\n}\n").expect("parses");
     let sel = select(&impact(&before, &after), &after, &index_with(&[TestId(0)]));
 
     assert!(
@@ -85,7 +85,10 @@ fn a_body_edit_selects_the_tests_that_cover_it() {
     );
     // **Contract 15.** Every selected test says why.
     for (t, reasons) in &sel.tests {
-        assert!(!reasons.is_empty(), "{t:?} was selected for no stated reason");
+        assert!(
+            !reasons.is_empty(),
+            "{t:?} was selected for no stated reason"
+        );
     }
 }
 
@@ -130,13 +133,16 @@ fn a_test_that_crashed_is_always_selected() {
 #[test]
 fn a_partial_impact_set_reduces_confidence_and_says_why() {
     let good = Program::parse("t.c", t_c()).expect("parses");
-    let broken = Program::parse("t.c", "int main (void) { return ; }\n").expect("recovers");
+    // `return ;` would have been *valid* C — a return with no expression — and this test
+    // silently passed on the wrong branch until that was noticed. `return x + ;` is not.
+    let broken =
+        Program::parse("t.c", "int main (void) { int x = 0; return x + ; }\n").expect("recovers");
     let sel = select(&impact(&good, &broken), &broken, &index_with(&[TestId(0)]));
 
     match &sel.confidence {
         Confidence::Reduced { reasons } => assert!(
-            reasons.iter().any(|r| r.contains("t.c")),
-            "the reason names what could not be read: {reasons:?}"
+            reasons.iter().any(|r| r.contains("could not be parsed")),
+            "the reason names the gap itself, not merely a file: {reasons:?}"
         ),
         other => panic!("an unparsed file must reduce confidence, got {other:?}"),
     }
@@ -150,8 +156,8 @@ fn a_partial_impact_set_reduces_confidence_and_says_why() {
 #[test]
 fn the_selection_is_deterministic() {
     let before = Program::parse("t.c", t_c()).expect("parses");
-    let after = Program::parse("t.c", "int main (void)\n{\n  M; M;\n  return 1;\n}\n")
-        .expect("parses");
+    let after =
+        Program::parse("t.c", "int main (void)\n{\n  M; M;\n  return 1;\n}\n").expect("parses");
     let idx = index_with(&[TestId(0), TestId(1)]);
     let a = select(&impact(&before, &after), &after, &idx);
     let b = select(&impact(&before, &after), &after, &idx);
