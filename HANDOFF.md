@@ -698,21 +698,29 @@ typing the paths ever would.
 > exactly that. **When a new query is added here, ask what its empty answer claims** before
 > deciding whether it should be able to give one.
 >
-> ### 🧱 KNOWN GAPS IN THE NATIVE DECODER — none reachable from gcc-compiled C, all reachable
+> ### 🧱 KNOWN GAPS IN THE NATIVE DECODER — what is left after two adversarial reviews
 >
-> Found by the adversarial review of the line rule, verified against `gcov.cc`, and left undone
-> deliberately because the corpus cannot exercise them. Each is a *silent* wrong answer, not an
-> error, so none will announce itself:
+> Two rounds of adversarial review found seven divergences from `gcov.cc`. **Four were reachable
+> from gcc-compiled C and are fixed, each with a fixture built to reach it** (`omp`, `samelin`,
+> `xline`, and the group work itself). What remains needs a toolchain this machine does not have,
+> so it is recorded rather than guessed at. Each is a *silent* wrong answer, not an error:
 >
 > | gap | gcov | chiero | first input that breaks it |
 > |---|---|---|---|
-> | **artificial functions** are erased before any line accounting (`gcov.cc` 1391–1393) | skips them | counts them | C++ — the corpus has none |
-> | a function in the `.gcno` with **no counters in the `.gcda`** | skips it: "some other instance must have been selected" | hard-errors the whole object | COMDAT, so again C++ |
-> | an **empty location group** | still runs the attribution push, re-attributing the block to the carried line | `flush` drops the group | needs gcc to emit consecutive FILE markers |
+> | a **zero-length `FUNCTION` record** in a `.gcda` | reads it as a placeholder, reports the function with count 0 (`gcov.cc` 2067) | `read_data` refuses the whole object | COMDAT, or a `gcov-tool` merge |
+> | a function in the `.gcno` with **no counters in the `.gcda`** | skips it: "some other instance must have been selected" | hard-errors the whole object | the same |
+> | `..` in a path | elides it after `stat`ing the prefix for a symlink | leaves it literal, on purpose | a build system that emits `a/../b.c`; under-merges only |
+> | grouping **scope** | per gcov *invocation*, so `gcov a.gcda b.gcda` groups across objects | per object | a header `static inline` shared by two TUs |
 >
 > The first two are one decision — what `ingest_into` does with a function it cannot pair — and
 > 030 §4's rule that a missing function is corrupt rather than skippable was written before COMDAT
-> was in view. Re-argue it there rather than patching it here.
+> was in view. **Re-argue it in the spec rather than patching it here.** The last two are
+> deliberate and documented at `canonical_path` and `group_members`; do not "fix" them without
+> reading why.
+>
+> ⚠️ **`scale`'s 98/98 is not evidence about any of these.** It compares one object at a time, in
+> one C tree, built by one compiler with one path spelling. That is exactly the shape of
+> confidence that made `max` survive four fixtures.
 >
 > ⏭️ **Next in 030**, in the order the spec gives them:
 > - **§5's `tests_for_span` and `uncovered_lines`**, the two queries in the spec's list with no
