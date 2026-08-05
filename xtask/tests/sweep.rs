@@ -975,12 +975,16 @@ fn the_rendered_report_names_the_right_side_per_section() {
 /// because a silent skip is how a sweep lies about its coverage."* A skip inside lowering is
 /// the same lie one stage further down.
 ///
-/// **The fixture is a real defect, not a synthetic one.** `char *v[2] = {s, 0}` — a null pointer
-/// constant in an array-of-pointers initializer — lowers to a store of `Int(32)` into a `Ptr`
-/// slot, and the verifier refuses the function. It is recorded in HANDOFF §9 as its own bug;
-/// this test asserts only that the sweep *notices*, so it keeps passing once the initializer is
-/// fixed — at which point the row below stops being a lowering failure and the assertion moves
-/// to whatever the next unlowerable shape is.
+/// **The fixture is a real defect, not a synthetic one**, and it has been moved once already —
+/// which is the point of writing it this way. It was `char *v[2] = {s, 0}`, a null pointer
+/// constant in an array-of-pointers initializer, until that was fixed and the file started
+/// lowering cleanly.
+///
+/// It is now a **vector-returning unmodeled builtin**: `__builtin_ia32_paddq512` has no
+/// signature, its opaque result is a scalar, and returning it where a 64-byte vector is declared
+/// gives `copy source must be pointer-typed`. HANDOFF §9 records the shape — the whole
+/// `__builtin_ia32_*` vector family needs the opaque to produce an aggregate result — so when
+/// *that* is fixed, this fixture moves again rather than the test being deleted.
 #[test]
 fn chiero_outcome_reports_a_translation_unit_it_cannot_lower() {
     let tmp = std::env::temp_dir().join("chiero-lower-skip");
@@ -989,8 +993,8 @@ fn chiero_outcome_reports_a_translation_unit_it_cannot_lower() {
     let tu = tmp.join("unlowerable.c");
     std::fs::write(
         &tu,
-        "int first(char *v[]) { return v[0][0]; }\n\
-         int probe(void) { char *s = \"A\"; char *v[2] = {s, 0}; return first(v); }\n",
+        "typedef long long v8di __attribute__((vector_size(64)));\n\
+         v8di probe(v8di a, v8di b) { return __builtin_ia32_paddq512(a, b); }\n",
     )
     .unwrap();
 

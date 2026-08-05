@@ -6684,6 +6684,36 @@ impl Lowerer<'_> {
             };
             return self.emit_fcast(v, kind, CTy::Float(fk), CTy::Int(want), span);
         }
+        // **A null pointer constant is a pointer** (C11 6.3.2.3p3): an integer constant
+        // expression of value 0 converts to a null pointer of the target type. Falling through
+        // to "not an integer target, nothing to do" stored four bytes of integer where an
+        // address belongs, which the verifier refused — `struct S { void *p; } s = { .p = 0 };`,
+        // and `vec_new_generic`'s `.heap = (P)` with `P` zero, which is every `vec_new` in VPP.
+        //
+        // Only a *constant* zero is converted silently, because that is the only integer C
+        // converts to a pointer without a cast; anything else sema has already reported, and an
+        // `IntToPtr` keeps the CIR well-formed so the rest of the function is still analysed.
+        if matches!(to, CTy::Ptr)
+            && let Some(CTy::Int(have)) = self.type_of(from).map(|t| self.cty(t))
+        {
+            if matches!(v, Operand::Const(Const::Int { val: 0, .. })) {
+                return Operand::Const(Const::Null);
+            }
+            let dst = self.new_value();
+            self.emit(
+                InstKind::Assign {
+                    dst,
+                    rv: RValue::Cast {
+                        kind: chiero_cir::CastKind::IntToPtr,
+                        a: v,
+                        from: CTy::Int(have),
+                        to: CTy::Ptr,
+                    },
+                },
+                span,
+            );
+            return Operand::Value(dst);
+        }
         let CTy::Int(want) = *to else { return v };
         let have = self.width_of(from);
         if have == want {
