@@ -54,6 +54,7 @@ int scaled (int x);
 int offset (int x);
 int both (int x);
 int untouched (int x);
+int gate (int x);
 ";
 
 /// The library: three functions expand `SCALE` or `OFFSET`, one expands neither.
@@ -63,6 +64,7 @@ int scaled (int x) { return SCALE (x); }
 int offset (int x) { return OFFSET (x); }
 int both (int x) { return SCALE (OFFSET (x)); }
 int untouched (int x) { return x - 1; }
+int gate (int x) { return x > 0 ? 1 : 0; }
 ";
 
 const CASES: &[Case] = &[
@@ -82,49 +84,88 @@ const CASES: &[Case] = &[
         name: "t_untouched",
         body: "return untouched (3) == 2 ? 0 : 1;",
     },
+    Case {
+        name: "t_gate",
+        body: "return gate (0) == 0 ? 0 : 1;",
+    },
 ];
 
-/// The mutations, each a replacement of one macro's replacement list.
+/// One mutation: which file it edits, and the replacement.
+struct Mutation {
+    name: &'static str,
+    /// `"lib.h"` or `"lib.c"` — which side of the comparison it is a test of.
+    file: &'static str,
+    from: &'static str,
+    to: &'static str,
+}
+
+/// The mutations.
 ///
-/// Every one is a **macro body** edit in a header, with no `.c` file touched — the case 032 §2
-/// exists for and the case a coverage-only tool provably fails.
-const MUTATIONS: &[(&str, &str, &str)] = &[
-    (
-        "SCALE x3",
-        "#define SCALE(v) ((v) * 2)",
-        "#define SCALE(v) ((v) * 3)",
-    ),
-    (
-        "SCALE x0",
-        "#define SCALE(v) ((v) * 2)",
-        "#define SCALE(v) ((v) * 0)",
-    ),
-    (
-        "SCALE +1",
-        "#define SCALE(v) ((v) * 2)",
-        "#define SCALE(v) ((v) * 2 + 1)",
-    ),
-    (
-        "OFFSET +2",
-        "#define OFFSET(v) ((v) + 1)",
-        "#define OFFSET(v) ((v) + 2)",
-    ),
-    (
-        "OFFSET -1",
-        "#define OFFSET(v) ((v) + 1)",
-        "#define OFFSET(v) ((v) - 1)",
-    ),
-    (
-        "OFFSET x2",
-        "#define OFFSET(v) ((v) + 1)",
-        "#define OFFSET(v) (((v) + 1) * 2)",
-    ),
+/// **Both kinds, deliberately.** The macro-body edits are the case 032 §2 exists for and the one
+/// a coverage-only tool provably fails. The `.c` edits are the ordinary case — a flipped
+/// comparison, a changed constant, exactly what §6 lists beside them — where a coverage-only tool
+/// **works**, because the changed line is one gcov recorded.
+///
+/// A gate containing only the first kind would be a rigged comparison: it would report a baseline
+/// of 0% and say nothing about whether chiero is *worse* anywhere. The second kind is what makes
+/// the two numbers a measurement rather than an advertisement.
+const MUTATIONS: &[Mutation] = &[
+    // --- macro bodies, in the header: no .c file is touched ---------------------------------
+    Mutation {
+        name: "SCALE x3",
+        file: "lib.h",
+        from: "#define SCALE(v) ((v) * 2)",
+        to: "#define SCALE(v) ((v) * 3)",
+    },
+    Mutation {
+        name: "SCALE x0",
+        file: "lib.h",
+        from: "#define SCALE(v) ((v) * 2)",
+        to: "#define SCALE(v) ((v) * 0)",
+    },
+    Mutation {
+        name: "SCALE +1",
+        file: "lib.h",
+        from: "#define SCALE(v) ((v) * 2)",
+        to: "#define SCALE(v) ((v) * 2 + 1)",
+    },
+    Mutation {
+        name: "OFFSET +2",
+        file: "lib.h",
+        from: "#define OFFSET(v) ((v) + 1)",
+        to: "#define OFFSET(v) ((v) + 2)",
+    },
+    Mutation {
+        name: "OFFSET -1",
+        file: "lib.h",
+        from: "#define OFFSET(v) ((v) + 1)",
+        to: "#define OFFSET(v) ((v) - 1)",
+    },
+    Mutation {
+        name: "OFFSET x2",
+        file: "lib.h",
+        from: "#define OFFSET(v) ((v) + 1)",
+        to: "#define OFFSET(v) (((v) + 1) * 2)",
+    },
+    // --- ordinary code, in the .c: the case a coverage-only tool handles --------------------
+    Mutation {
+        name: "const",
+        file: "lib.c",
+        from: "return x - 1;",
+        to: "return x - 2;",
+    },
+    Mutation {
+        name: "compare",
+        file: "lib.c",
+        from: "int gate (int x) { return x > 0 ? 1 : 0; }",
+        to: "int gate (int x) { return x >= 0 ? 1 : 0; }",
+    },
 ];
 
-fn write_tree(dir: &Path, header: &str) -> std::io::Result<()> {
+fn write_tree(dir: &Path, header: &str, lib: &str) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     std::fs::write(dir.join("lib.h"), header)?;
-    std::fs::write(dir.join("lib.c"), LIB)?;
+    std::fs::write(dir.join("lib.c"), lib)?;
     for c in CASES {
         std::fs::write(
             dir.join(format!("{}.c", c.name)),
@@ -173,23 +214,34 @@ fn failing_cases(dir: &Path) -> Vec<String> {
 /// The chain is the real one: `chiero-diff` compares the two trees per case, and the selection is
 /// the union of every case whose own translation unit is impacted. A test *is* a translation
 /// unit here, so "the test is impacted" is the honest reading of "the test would be selected".
-fn chiero_selects(dir: &Path, before: &str, after: &str) -> Vec<String> {
+fn chiero_selects(
+    dir: &Path,
+    before: &str,
+    after: &str,
+    lib_before: &str,
+    lib_after: &str,
+) -> Vec<String> {
     let mut out = Vec::new();
     for c in CASES {
         let src = std::fs::read_to_string(dir.join(format!("{}.c", c.name))).unwrap_or_default();
-        let lib = std::fs::read_to_string(dir.join("lib.c")).unwrap_or_default();
-        // Each case is compiled with the library, so the unit chiero analyses is both.
-        let whole = format!("{src}\n{lib}");
+        // Each case is compiled with the library, so the unit chiero analyses is both — and a
+        // mutation may be in either the header or the library, so both sides vary.
+        let whole_before = format!("{src}\n{lib_before}");
+        let whole_after = format!("{src}\n{lib_after}");
         let mut cfg = chiero_pp::Config::default();
         cfg.iquote_paths.push(dir.to_path_buf());
         let a = chiero_diff::Program::parse_with(
             "unit.c",
-            &whole,
+            &whole_before,
             cfg.clone(),
             &mut Header(before.to_string()),
         );
-        let b =
-            chiero_diff::Program::parse_with("unit.c", &whole, cfg, &mut Header(after.to_string()));
+        let b = chiero_diff::Program::parse_with(
+            "unit.c",
+            &whole_after,
+            cfg,
+            &mut Header(after.to_string()),
+        );
         let (Some(a), Some(b)) = (a, b) else {
             // Unparseable is 031 §4's gap: the answer widens, so the case is selected.
             out.push(c.name.to_string());
@@ -232,8 +284,23 @@ impl chiero_pp::FileLoader for Header {
 /// macro's definition — 030 §1 measured it and `tests/corpus/coverage/` pins it. So every lookup
 /// misses and the selection is empty. Implemented rather than asserted, because 032 §6 requires
 /// the delta chiero adds to be *stated* rather than claimed.
-fn coverage_only_selects(coverage: &chiero_gcov::CoverageIndex, changed_line: u32) -> Vec<String> {
-    match coverage.tests_for_line("lib.h", changed_line) {
+fn coverage_only_selects(
+    coverage: &chiero_gcov::CoverageIndex,
+    file: &str,
+    changed_line: u32,
+) -> Vec<String> {
+    // **Matched by basename**, because gcov records the path *it* saw — an absolute path under
+    // the build directory — while a diff names the file relative to the tree. Looking up the bare
+    // name missed every time, and the failure was silent and *flattering*: it reported the
+    // baseline as 0% on the `.c` mutations, where a coverage-only tool genuinely works. A gate
+    // whose bug favours the tool it is measuring is worse than no gate.
+    let Some(indexed) = coverage
+        .files()
+        .find(|f| std::path::Path::new(f).file_name() == std::path::Path::new(file).file_name())
+    else {
+        return Vec::new();
+    };
+    match coverage.tests_for_line(indexed, changed_line) {
         Some(ts) => ts
             .iter()
             .filter_map(|t| CASES.get(t.0 as usize).map(|c| c.name.to_string()))
@@ -281,7 +348,7 @@ fn measure_coverage(dir: &Path) -> chiero_gcov::CoverageIndex {
 pub fn mutation_gate() -> i32 {
     let root = std::env::temp_dir().join("chiero-mutation-gate");
     let _ = std::fs::remove_dir_all(&root);
-    if write_tree(&root, HEADER).is_err() {
+    if write_tree(&root, HEADER, LIB).is_err() {
         eprintln!("mutation gate: could not write the fixture tree");
         return 1;
     }
@@ -293,27 +360,40 @@ pub fn mutation_gate() -> i32 {
     let (mut truth_total, mut chiero_hits, mut baseline_hits) = (0usize, 0usize, 0usize);
     let (mut chiero_selected_total, mut suite_total) = (0usize, 0usize);
 
-    for (name, from, to) in MUTATIONS {
-        let mutated = HEADER.replace(from, to);
-        if mutated == HEADER {
-            eprintln!("mutation gate: `{name}` matched nothing — the fixture drifted");
+    for m in MUTATIONS {
+        let (header, lib) = match m.file {
+            "lib.h" => (HEADER.replace(m.from, m.to), LIB.to_string()),
+            _ => (HEADER.to_string(), LIB.replace(m.from, m.to)),
+        };
+        if header == HEADER && lib == LIB {
+            eprintln!(
+                "mutation gate: `{}` matched nothing — the fixture drifted",
+                m.name
+            );
             return 1;
         }
 
         // Ground truth: which cases actually fail once the mutation is applied.
-        if write_tree(&root, &mutated).is_err() {
+        if write_tree(&root, &header, &lib).is_err() {
             return 1;
         }
         let truth = failing_cases(&root);
         // Restore, so chiero sees the same tree the suite was measured on.
-        if write_tree(&root, HEADER).is_err() {
+        if write_tree(&root, HEADER, LIB).is_err() {
             return 1;
         }
 
-        let picked = chiero_selects(&root, HEADER, &mutated);
-        // The macro's definition line: 1 for SCALE, 2 for OFFSET.
-        let line = if name.starts_with("SCALE") { 1 } else { 2 };
-        let baseline = coverage_only_selects(&coverage, line);
+        let picked = chiero_selects(&root, HEADER, &header, LIB, &lib);
+        // **The line the diff touched, found in the file** rather than hard-coded: a constant
+        // would silently point at the wrong line the moment the fixture grew.
+        let original = if m.file == "lib.h" { HEADER } else { LIB };
+        let needle = m.from.lines().next().unwrap_or(m.from);
+        let line = original
+            .lines()
+            .position(|l| l.contains(needle))
+            .map(|i| i as u32 + 1)
+            .unwrap_or(1);
+        let baseline = coverage_only_selects(&coverage, m.file, line);
 
         let hit = truth.iter().filter(|t| picked.contains(t)).count();
         let bhit = truth.iter().filter(|t| baseline.contains(t)).count();
@@ -322,19 +402,29 @@ pub fn mutation_gate() -> i32 {
         baseline_hits += bhit;
         chiero_selected_total += picked.len();
         suite_total += CASES.len();
-        rows.push(((*name).to_string(), truth.len(), hit, bhit, picked.len()));
+        rows.push((
+            format!(
+                "{} [{}]",
+                m.name,
+                if m.file == "lib.h" { "hdr" } else { ".c" }
+            ),
+            truth.len(),
+            hit,
+            bhit,
+            picked.len(),
+        ));
     }
 
     println!(
-        "032 contract 19 — mutation gate over {} macro-body mutations",
+        "032 contract 19 — mutation gate over {} mutations",
         MUTATIONS.len()
     );
     println!(
-        "  {:<12} {:>6} {:>8} {:>10} {:>9}",
+        "  {:<18} {:>6} {:>8} {:>10} {:>9}",
         "mutation", "failed", "chiero", "cov-only", "selected"
     );
     for (name, truth, hit, bhit, picked) in &rows {
-        println!("  {name:<12} {truth:>6} {hit:>8} {bhit:>10} {picked:>9}");
+        println!("  {name:<18} {truth:>6} {hit:>8} {bhit:>10} {picked:>9}");
     }
 
     let recall = |hits: usize| {
