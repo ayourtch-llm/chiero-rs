@@ -58,3 +58,23 @@ counts **[1, 4, 5, 1, 1]**. gcov reports `line 1 count 5`.
 So the rule is **the maximum**, and the fixture refutes the two other readings outright: the sum
 is 12 and the first block's count is 1. `t.c`'s three blocks are all 1, so it cannot tell the
 three apart — which is exactly why this second fixture is here.
+
+## Two functions with one name (030 §5's `FuncKey`)
+
+`a.c` and `b.c` each define `static int helper(int)`, at **different lines** and with
+**different counts** — a.c's runs once, b.c's twice. `m.c` calls into both.
+
+```
+prog-a   a.c   helper @1  count 1
+prog-b   b.c   helper @3  count 2
+```
+
+Keying coverage by function *name* merges them, and the merge is silent: one file's tests get
+attributed to another file's code. That is the misattribution `FuncKey` exists to prevent, and
+this is the smallest fixture that catches it — the counts differ, so a collision cannot look like
+agreement.
+
+It also demonstrates the stem rule a second time, in the form a real build produces: compiling
+and linking in one step names the artifacts after the *output*, so the stems here are `prog-a`
+and `prog-b`, not `a` and `b`. Asking for `a` yields a JSON document with an empty `files` array
+rather than an error — which is exactly the silent nothing contract 3 is about.

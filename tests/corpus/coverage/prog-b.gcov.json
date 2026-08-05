@@ -1,0 +1,51 @@
+{
+ "current_working_directory": "/tmp/claude-1000/-home-ubuntu-rust-chiero-rs/66909b76-9140-4b55-94cc-f7adb56f7f97/scratchpad/cov3",
+ "data_file": "prog-b",
+ "files": [
+  {
+   "file": "b.c",
+   "functions": [
+    {
+     "blocks": 2,
+     "blocks_executed": 2,
+     "demangled_name": "helper",
+     "end_column": 43,
+     "end_line": 3,
+     "execution_count": 2,
+     "name": "helper",
+     "start_column": 12,
+     "start_line": 3
+    },
+    {
+     "blocks": 3,
+     "blocks_executed": 3,
+     "demangled_name": "from_b",
+     "end_column": 46,
+     "end_line": 4,
+     "execution_count": 1,
+     "name": "from_b",
+     "start_column": 5,
+     "start_line": 4
+    }
+   ],
+   "lines": [
+    {
+     "branches": [],
+     "count": 2,
+     "function_name": "helper",
+     "line_number": 3,
+     "unexecuted_block": false
+    },
+    {
+     "branches": [],
+     "count": 1,
+     "function_name": "from_b",
+     "line_number": 4,
+     "unexecuted_block": false
+    }
+   ]
+  }
+ ],
+ "format_version": "1",
+ "gcc_version": "13.3.0"
+}
