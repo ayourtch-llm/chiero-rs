@@ -6165,3 +6165,37 @@ fn a_shift_count_wider_than_its_value_still_lowers() {
     // and gcc computes something; what matters here is that both sides agree it is not a crash.
     agree_with("", "unsigned long i = 3; int v = -8; return v >> i;");
 }
+
+/// **A shift count narrower than `int` is promoted before lowering sees it, and the widening
+/// code reads the width it was written with.**
+///
+/// ```text
+/// vppinfra/bitops.h:325:12: `u64_bit_set` lowered to CIR the verifier rejects
+///   (cast source operand is Int(32), declared Int(8))
+///   val &= ~(1ULL << bit_index);        /* bit_index is a u8 */
+/// ```
+///
+/// C11 6.5.7p3 promotes each operand of a shift on its own, so a `u8` count is already an `int`
+/// by the time it is an operand — and 014 inserted that conversion, so the lowered value is
+/// `Int(32)`. The count-widening path asks `raw_width_of`, which deliberately walks *past* every
+/// conversion to the width the source wrote, and then emits a `ZExt` declaring an `Int(8)` source
+/// for a value that is already 32 bits.
+///
+/// 192 of the first 207 translation units, and it was there all along: `compress_init` is
+/// earlier in the same header and 015 §7 reports one function per translation unit, so this sat
+/// behind the wide-count defect until that one was fixed.
+#[test]
+fn a_shift_count_narrower_than_int_is_promoted_not_widened() {
+    agree_with("", "unsigned char i = 3; return 1u << i;");
+    agree_with("", "unsigned char i = 3; return 4096 >> i;");
+    agree_with("", "signed char i = 3; return 1 << i;");
+    agree_with("", "unsigned short i = 4; return 1 << i;");
+    // The corpus shape: a `u8` index into a 64-bit word.
+    agree_with(
+        "typedef unsigned long long u64; typedef unsigned char u8;\n\
+         static void bit_set(u64 *p, u8 i, u8 one) {\n\
+           u64 v = *p; v &= ~(1ULL << i); if (one) v |= 1ULL << i; *p = v;\n\
+         }",
+        "u64 w = 0; bit_set(&w, 40, 1); return (int)(w >> 40);",
+    );
+}
