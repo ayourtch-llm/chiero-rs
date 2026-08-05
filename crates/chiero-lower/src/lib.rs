@@ -4514,6 +4514,12 @@ impl Lowerer<'_> {
         // and inserts no conversion — unlike a plain read of `b`, where it does — so the
         // one-bit result stored in the object would be stored again as an `i32` by whatever
         // consumes it. The object keeps its bit; the expression hands back its `int`.
+        //
+        // **Only `_Bool`, and that is not an oversight.** Every wider narrow type is converted
+        // by the *consumer*, which asks `raw_width_of` — the width as written — and would then
+        // declare an `Int(8)` source for a value promoted here. `_Bool` is the exception because
+        // its stored value is one bit and no consumer expects that width. A narrow operand
+        // meeting a wider operation is handled where the operation is emitted.
         let want = self.raw_width_of(e);
         if ty == CTy::Int(1) && want > 1 {
             let w = self.new_value();

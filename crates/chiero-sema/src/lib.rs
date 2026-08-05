@@ -5538,6 +5538,18 @@ impl Cx<'_> {
                         }
                         (pointee, decayed)
                     }
+                    // **`++x` and `--x` keep the operand's type** (C 6.5.3.1p2: the result is
+                    // the value of the operand after incrementing, and `x += 1` gives that the
+                    // operand's type back). Measured: gcc 13.3.0 answers `unsigned char` to
+                    // `_Generic(--c, unsigned char: 1, int: 2)` for an `unsigned char c`, and
+                    // the same for `c--`, which the `Postfix` arm already models.
+                    //
+                    // The catch-all below promotes, which is right for `+`, `-` and `~` and
+                    // wrong here: it made `--f->refcnt` an `int` in the typed tree while
+                    // lowering produced the object's eight bits, and the comparison in
+                    // `svm_fifo_free` then declared `Int(32)` for an `Int(8)` operand. The
+                    // promotion a *use* needs happens at the use.
+                    UnOp::PreInc | UnOp::PreDec => (ity, inner),
                     UnOp::Not => {
                         // **Decayed before the question**, unlike the other unary operators
                         // here, which promote instead. `!a` on an array asks about the pointer
