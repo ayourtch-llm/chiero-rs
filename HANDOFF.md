@@ -454,7 +454,7 @@ have entrenched conventions real lowering then had to match.)
 | **030 coverage** | ✅ 19/19 contracts | full VPP, gcc: **1895/1895 `.gcno`, 322/322 objects, 0 of 156991 lines differ**. clang: **1872/1872** |
 | **031 change impact** | ✅ 20/20 contracts | incl. the headline — a header macro edit impacts every expansion site while coverage sees nothing |
 | **032 test selection** | 🟡 18/20 | mutation gate: **recall 100%, coverage-only 14.3%, reduction 65%** |
-| **041 `prove_equivalent`** | 🟡 contracts 1–5, 9, 12, 13, 13b | z3 proves `x*2 == x<<1` over all 2^32; finds `INT_MIN` as the one input two `abs()`s disagree on |
+| **041 `prove_equivalent`** | 🟡 contracts 1–6, 9, 12, 13, 13b | z3 proves `x*2 == x<<1` over all 2^32; finds `INT_MIN` as the one input two `abs()`s disagree on |
 | **050 tool interface** | 🟡 5 operations | envelope + `select_tests`, `expansion_sites`, `explain_macro_expansion`, `prove_equivalent` |
 | 040 checkers, 042 recipes, 060 vpp | partial | `chiero-check`, `chiero-recipe`, `chiero-vpp` exist |
 
@@ -515,21 +515,27 @@ guard fires.
 
 **Left to build, in rough order of value:**
 
-0. **Un-refusing what the guard conservatively refuses.** `observable_beyond_the_return` is
-   syntactic and answers "could this touch caller-visible memory", not "does it". Every
-   `Unknown` it produces is a real refusal today and a comparison that should be possible
-   later. The first step is in chiero-exec: `EffectKind` has only `VolatileStore`, so an
-   extern call is not in the effect sequence and contract 6 is unreachable rather than
-   unimplemented. **The arguments are the load-bearing half** — contract 6's rewrite swaps
-   two calls to the *same* function, so a sequence of callee names is identical before and
-   after. A parked RED suite for this is at
-   `$SCRATCH/effect_sequence.rs.wip` (needs `Effect.args`).
 1. **§1.3's replay harness** (contracts 10, 11) — the half of 050 contract 8 that is missing.
    *"Your rewrite is wrong" is an opinion; "here is the program" ends the discussion.* Nothing
    in the tree emits a C replay harness yet — 040 §3 wants one too.
-2. **§1.1's other two claims** — caller-visible memory (with the object bijection, contracts
-   13c/13d) and the ordered side-effect sequence (contract 6). Contract 6 needs extern calls
-   recorded as `Effect`s; `EffectKind` today has only `VolatileStore`.
+2. **§1.1's remaining claim — caller-visible memory** (with the object bijection, contracts
+   13c/13d). `observable_beyond_the_return` refuses anything that could touch it: a volatile
+   access, a store through an address that is not provably a stack slot, inline asm, a
+   variadic list, an indirect call. Every one of those refusals is a comparison that should
+   be possible later.
+
+   *Done since:* **contract 6, the side-effect sequence.** `EffectKind::Call` carries the
+   callee and its **arguments as terms** — the load-bearing half, since contract 6's rewrite
+   swaps two calls to the *same* function and a name sequence is identical either way.
+   `link_inputs` learned §1.2's shared extern-return symbols, keyed by (function, nth call),
+   not by span: the two versions are different modules and a span key would match nothing.
+
+   **`Approximated` can now carry an `Equivalent`,** which is the thing a relational proof
+   can do that an absolute one cannot: the engine cannot say what an unmodeled callee did,
+   and does not have to, because the effect sequences agreed — so every such call is either
+   non-pure and identical on both sides, or pure and declared to do nothing. `proven` stays
+   false and 032 §3.1 still refuses to drop a test on it. **This is the single riskiest piece
+   of reasoning in the crate; it is under adversarial review as of 2026-08-05.**
 3. **Pointer parameters and pointer returns**, which currently answer `Unknown` by name.
 4. **032 §3.1's `Prover` seam wired to it.** The blocker is not equivalence — it is that
    `Prover::prove_equivalent(&chiero_diff::Entity)` has to turn an entity into two runnable
