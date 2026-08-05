@@ -47,7 +47,8 @@ fn the_token_streams_really_are_identical() {
 fn a_changed_condition_impacts_the_translation_unit() {
     let set = impact(&prog(BEFORE), &prog(AFTER));
     assert!(
-        set.entities.contains_key(&Entity::function("f.c", "always")),
+        set.entities
+            .contains_key(&Entity::function("f.c", "always")),
         "the TU is compiled under a configuration whose meaning changed: {:?}",
         set.entities.keys().map(Entity::name).collect::<Vec<_>>()
     );
@@ -116,11 +117,14 @@ fn a_file_without_conditionals_stays_complete() {
 /// names changes what the file compiles to under some configuration.
 #[test]
 fn an_ifdef_is_a_condition() {
-    let a = "#ifdef ALPHA\nint gated (void) { return 1; }\n#endif\nint always (void) { return 0; }\n";
-    let b = "#ifdef BETA\nint gated (void) { return 1; }\n#endif\nint always (void) { return 0; }\n";
+    let a =
+        "#ifdef ALPHA\nint gated (void) { return 1; }\n#endif\nint always (void) { return 0; }\n";
+    let b =
+        "#ifdef BETA\nint gated (void) { return 1; }\n#endif\nint always (void) { return 0; }\n";
     let set = impact(&prog(a), &prog(b));
     assert!(
-        set.entities.contains_key(&Entity::function("f.c", "always")),
+        set.entities
+            .contains_key(&Entity::function("f.c", "always")),
         "`ALPHA` and `BETA` are different questions: {:?}",
         set.entities.keys().map(Entity::name).collect::<Vec<_>>()
     );

@@ -81,6 +81,25 @@ pub struct MacroDef {
     pub undef_span: Option<Span>,
 }
 
+/// One conditional directive, as written (031 contract 16).
+///
+/// **Recorded because the token stream cannot carry it.** A `#if` line is consumed by the
+/// preprocessor, so a condition that changed while its *outcome* did not leaves no trace at all —
+/// and that is precisely the change that behaves differently under another configuration. 031
+/// §3.5 needs to see it; nothing else here can show it.
+///
+/// The condition is kept as **token spellings**, not source text, so that respacing it is not a
+/// change — the same normalisation every other comparison in the system uses.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConditionalRecord {
+    /// `if`, `ifdef`, `ifndef` or `elif`.
+    pub directive: String,
+    /// Where the directive begins.
+    pub span: Span,
+    /// The condition's tokens, spelled.
+    pub condition: Vec<String>,
+}
+
 #[derive(Debug)]
 pub struct PreprocessedTu {
     pub tokens: Vec<PpToken>,
@@ -90,6 +109,8 @@ pub struct PreprocessedTu {
     pub deps: Vec<FileId>,
     pub pragmas: Vec<PragmaRecord>,
     pub macro_defs: Vec<MacroDef>,
+    /// Every conditional directive, in source order — see [`ConditionalRecord`].
+    pub conditionals: Vec<ConditionalRecord>,
     spellings: Vec<String>,
     symbols: BTreeMap<Symbol, Arc<str>>,
 }
@@ -310,6 +331,7 @@ struct Engine {
     by_name: BTreeMap<String, usize>,
     diagnostics: Vec<Diagnostic>,
     pragmas: Vec<PragmaRecord>,
+    conditionals: Vec<ConditionalRecord>,
     counter: u64,
     expansion_depth: usize,
 }
@@ -366,6 +388,7 @@ impl Engine {
             by_name: BTreeMap::new(),
             diagnostics,
             pragmas: Vec::new(),
+            conditionals: Vec::new(),
             counter: 0,
             expansion_depth: 0,
         };
@@ -455,6 +478,7 @@ impl Engine {
             config: self.config.id,
             deps: std::mem::take(&mut self.deps),
             pragmas: std::mem::take(&mut self.pragmas),
+            conditionals: std::mem::take(&mut self.conditionals),
             macro_defs,
             spellings,
             symbols,
@@ -865,6 +889,20 @@ impl Engine {
         self.by_name.insert(name, index);
     }
 
+    /// Keep a conditional directive's condition, which the token stream cannot (031 contract 16).
+    ///
+    /// **Recorded whether or not the branch is live.** An inactive `#if` inside a skipped region
+    /// is not *evaluated* — 012's rule — but its text is still what would be evaluated under a
+    /// different configuration, which is exactly the question 031 §3.5 asks.
+    fn record_conditional(&mut self, line: &[Tok], from: usize) {
+        let Some(head) = line.first() else { return };
+        self.conditionals.push(ConditionalRecord {
+            directive: line.get(1).map(|t| t.text.clone()).unwrap_or_default(),
+            span: head.token.span,
+            condition: line.iter().skip(from).map(|t| t.text.clone()).collect(),
+        });
+    }
+
     fn directive(
         &mut self,
         line: &[Tok],
@@ -876,6 +914,7 @@ impl Engine {
         let active = conditionals.last().is_none_or(|frame| frame.active);
         match directive {
             Some("if") => {
+                self.record_conditional(line, 2);
                 let parent_active = active;
                 // **C 6.10.1p1: `#if` has an expression.** Only when the branch is live: an
                 // inactive `#if` inside a skipped region is not evaluated at all, and 012's rule
@@ -897,6 +936,7 @@ impl Engine {
                 });
             }
             Some("ifdef" | "ifndef") => {
+                self.record_conditional(line, 2);
                 let parent_active = active;
                 if parent_active && self.check_macro_name_present(line) {
                     self.check_extra_tokens(line, 3);
@@ -919,6 +959,7 @@ impl Engine {
                 });
             }
             Some("elif") => {
+                self.record_conditional(line, 2);
                 let should_eval = conditionals
                     .last()
                     .is_some_and(|frame| frame.parent_active && !frame.taken);

@@ -145,6 +145,12 @@ pub enum ChangeClass {
     LayoutChanged {
         size_delta: i64,
     },
+    /// A `#if` condition this entity is compiled under changed (031 §3.5).
+    ///
+    /// **Even when the token stream did not.** The preprocessor consumes `#if` lines, so a
+    /// condition whose *outcome* is unchanged under the configuration chiero evaluated leaves no
+    /// other trace — and is exactly the change that behaves differently under another.
+    ConfigChanged,
     /// **chiero could not read this entity**, so it must be assumed changed (031 §4).
     ///
     /// Not a guess about what happened to it. A file that failed to parse tells you nothing about
@@ -167,6 +173,8 @@ pub enum ImpactEdge {
     ExpandsMacro { name: String },
     /// Its file could not be parsed, so nothing about it is known (031 §4).
     FileUnparsed { file: String },
+    /// It is compiled under a conditional whose condition changed (031 §3.5).
+    UnderConfig { condition: String },
     /// **It calls through a pointer, and a changed function's address was taken** (031 §3.4).
     ///
     /// A fallback rather than a resolved call: chiero could not prove this site *does* reach that
@@ -381,6 +389,11 @@ pub struct Program {
     arity: IndexMap<String, (usize, bool)>,
     /// The argument counts of the indirect call sites each entity contains.
     indirect_calls: IndexMap<Entity, Vec<usize>>,
+    /// Every conditional directive's condition, normalised to token spellings.
+    ///
+    /// **The one thing the token stream cannot carry.** A `#if` line is consumed, so a condition
+    /// that changed while its outcome did not is invisible to every other comparison here.
+    conditions: Vec<Vec<String>>,
     /// Which names each entity mentions, for §3's closure.
     ///
     /// **Names, not resolved bindings.** A local variable shadowing a global's name puts its
@@ -471,6 +484,16 @@ impl Program {
             );
         }
 
+        let conditions: Vec<Vec<String>> = tu
+            .conditionals
+            .iter()
+            .map(|c| {
+                let mut v = vec![c.directive.clone()];
+                v.extend(c.condition.iter().cloned());
+                v
+            })
+            .collect();
+
         let (entities, refs, spans) = extract(file, &tu, &parsed);
 
         // **031 §3.4's gap, computed from the token stream** like the rest of this crate. Every
@@ -527,6 +550,7 @@ impl Program {
         Some(Program {
             file: file.to_string(),
             parsed_cleanly,
+            conditions,
             layouts,
             address_taken,
             arity,
@@ -659,10 +683,26 @@ fn extract_macros(
         let Some(name) = tu.symbol_text(def.name) else {
             continue;
         };
-        let file = sm
+        // **A macro with no source location is not an entity of this program.** The predefined
+        // macros — `__LINE__`, `__STDC__`, `__x86_64__` — and anything from `-D` belong to the
+        // *configuration*: identical on both sides by construction, and thirteen names in every
+        // program's entity list. A change to them is a config change, which is contract 16's
+        // business and not this one's.
+        //
+        // The test is `is_dummy`, **not** whether `lookup_file` answers. Their spans are
+        // `Span::DUMMY`, whose `lo` is `BytePos(0)` — which resolves happily to whichever file
+        // starts at offset 0, so every one of them was being filed under the main source. This is
+        // the second time a dummy span has fabricated a location in this codebase; the first was
+        // `tests_for_span` in `chiero-gcov`, and 010 §4 warns about it in as many words.
+        if def.def_span.is_dummy() {
+            continue;
+        }
+        let Some(file) = sm
             .lookup_file(def.def_span.lo)
             .map(|f| file_name(sm.file(f).path()))
-            .unwrap_or_else(|| "<command line>".to_string());
+        else {
+            continue;
+        };
         let entity = Entity::macro_(&file, name);
 
         // The interface and the replacement list are separate for the same reason a function's
@@ -789,6 +829,45 @@ pub fn impact(old: &Program, new: &Program) -> ImpactSet {
     // how many arrived through a gap rather than a resolved call.
     let address_taken_fallbacks = apply_address_taken(old, new, &mut entities);
 
+    // **§3.5: a changed `#if` condition invalidates the whole translation unit.** chiero
+    // evaluated *one* configuration; a condition whose outcome held there may not hold elsewhere,
+    // and the preprocessor consumed the line, so nothing else in this crate can see it.
+    let changed_condition = old
+        .conditions
+        .iter()
+        .zip(new.conditions.iter())
+        .find(|(a, b)| a != b)
+        .map(|(a, _)| a.clone())
+        .or_else(|| {
+            // A conditional added or removed is also a change to what this file compiles to.
+            (old.conditions.len() != new.conditions.len())
+                .then(|| {
+                    old.conditions
+                        .get(new.conditions.len().min(old.conditions.len()))
+                        .or_else(|| new.conditions.first())
+                        .cloned()
+                })
+                .flatten()
+        });
+    let mut unknown_configs: Vec<String> = Vec::new();
+    if let Some(cond) = changed_condition {
+        // The first token is the directive; the rest is what was written.
+        let text = cond.iter().skip(1).cloned().collect::<Vec<_>>().join(" ");
+        unknown_configs.push(text.clone());
+        for p in [old, new] {
+            for e in p.entities.keys() {
+                entities.entry(e.clone()).or_insert_with(|| Justification {
+                    class: ChangeClass::ConfigChanged,
+                    root: e.clone(),
+                    edges: vec![ImpactEdge::UnderConfig {
+                        condition: text.clone(),
+                    }],
+                    distance: 0,
+                });
+            }
+        }
+    }
+
     close_over_references(old, new, &mut entities);
 
     // **031 §5: by kind, then file, then name** — never by discovery order, so two runs give the
@@ -798,13 +877,16 @@ pub fn impact(old: &Program, new: &Program) -> ImpactSet {
     });
     ImpactSet {
         entities,
-        completeness: if unparsed_files.is_empty() && address_taken_fallbacks == 0 {
+        completeness: if unparsed_files.is_empty()
+            && address_taken_fallbacks == 0
+            && unknown_configs.is_empty()
+        {
             Completeness::Complete
         } else {
             Completeness::Partial {
                 unparsed_files,
                 unresolved_calls: 0,
-                unknown_configs: Vec::new(),
+                unknown_configs,
                 address_taken_fallbacks,
             }
         },
@@ -1182,6 +1264,7 @@ fn class_word(c: ChangeClass) -> String {
         ChangeClass::LayoutChanged { size_delta } => {
             format!("LayoutChanged (size {size_delta:+})")
         }
+        ChangeClass::ConfigChanged => "ConfigChanged".into(),
         ChangeClass::Added => "Added".into(),
         ChangeClass::Removed => "Removed".into(),
         ChangeClass::Unknown => "Unknown".into(),
@@ -1197,6 +1280,7 @@ fn edge_word(e: Option<&ImpactEdge>) -> String {
         Some(ImpactEdge::UsesGlobal { name }) => format!("UsesGlobal {name}"),
         Some(ImpactEdge::UsesType { name }) => format!("UsesType {name}"),
         Some(ImpactEdge::ExpandsMacro { name }) => format!("ExpandsMacro {name}"),
+        Some(ImpactEdge::UnderConfig { condition }) => format!("UnderConfig {condition}"),
         Some(ImpactEdge::FileUnparsed { file }) => format!("FileUnparsed {file}"),
     }
 }
@@ -1209,6 +1293,7 @@ fn edge_json(e: &ImpactEdge) -> serde_json::Value {
         ImpactEdge::UsesGlobal { name } => ("UsesGlobal", Some(name)),
         ImpactEdge::UsesType { name } => ("UsesType", Some(name)),
         ImpactEdge::ExpandsMacro { name } => ("ExpandsMacro", Some(name)),
+        ImpactEdge::UnderConfig { condition } => ("UnderConfig", Some(condition)),
         ImpactEdge::FileUnparsed { file } => ("FileUnparsed", Some(file)),
     };
     serde_json::json!({ "kind": kind, "target": target })
