@@ -1876,6 +1876,7 @@ impl Cx<'_> {
     fn type_generic_builtin(
         &mut self,
         callee: ExprId,
+        args: &[ExprId],
         first_arg: Option<TyId>,
         argc: usize,
     ) -> Option<TyId> {
@@ -1909,6 +1910,17 @@ impl Cx<'_> {
                     _ => None,
                 },
             };
+        }
+        // **`va_arg`'s type is written down**, in an `ExprKind::TypeName` operand that denotes
+        // no value and so types as `Ty::Error` — right for the node, and fatal for the call,
+        // which then took `Error` from the undeclared builtin and lowered to a 32-bit fallback.
+        // `va_arg(ap, int)` was the only correct case and it was correct by accident.
+        if self.text(n)? == "__builtin_va_arg" {
+            let &[_, tyarg] = args else { return None };
+            let ExprKind::TypeName(t) = self.ast.expr(tyarg).kind else {
+                return None;
+            };
+            return Some(self.ty_of(t));
         }
         let first = first_arg?;
         match self.text(n)? {
@@ -6137,7 +6149,7 @@ impl Cx<'_> {
                 }
                 // **Resolved here because a table row cannot say "the type of operand 1".**
                 let ret = self
-                    .type_generic_builtin(*callee, first_arg, args.len())
+                    .type_generic_builtin(*callee, args, first_arg, args.len())
                     .unwrap_or(ret);
                 self.push_typed(TypedNode::Value {
                     expr,
