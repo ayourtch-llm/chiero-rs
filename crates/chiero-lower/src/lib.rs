@@ -1592,26 +1592,37 @@ impl Lowerer<'_> {
     /// fixpoint, because removing a block can orphan another.
     fn finish_blocks(&mut self) {
         let entry = self.fs().entry;
-        loop {
-            let reachable = self.reachable_blocks();
-            let before = self.fs().blocks.len();
-            self.fs().blocks.retain(|b| {
-                b.id == entry
-                    || reachable.contains(&b.id)
-                    // A block nothing reaches but which holds real instructions is left
-                    // alone, so the verifier reports it rather than lowering deleting
-                    // code quietly. **Markers do not count as real instructions**: a
-                    // compound statement emits its `Scope(Exit)` after its last statement,
-                    // and when that statement was a `return` the marker lands in the dead
-                    // block after it. The exit already happened — `return` unwinds every
-                    // open scope first — so the copy in the dead block is bookkeeping, not
-                    // code, and keeping it made the module fail to verify.
-                    || b.insts.iter().any(|i| !matches!(i.kind, InstKind::Marker(_)))
-            });
-            if self.fs().blocks.len() == before {
-                break;
-            }
-        }
+        // **The kept set is closed under successors**, which is why the roots are collected
+        // first and the walk runs once over all of them.
+        //
+        // A block nothing reaches but which holds real instructions is kept, so the verifier
+        // reports it rather than lowering deleting code quietly — and *its* successors have to
+        // be kept with it. `int f(int n) { return n; while (n) { n--; } }` is the case: the dead
+        // loop's header holds instructions and stayed, its body and exit held none and were
+        // dropped, and the header then branched to a block that no longer existed. VPP's
+        // `clib_memcpy_u32` ends one `#if` arm with `return;` and continues with the scalar
+        // tail, so this was every `x86_64_v4` translation unit in the tree.
+        //
+        // **Markers do not count as real instructions**: a compound statement emits its
+        // `Scope(Exit)` after its last statement, and when that statement was a `return` the
+        // marker lands in the dead block after it. The exit already happened — `return` unwinds
+        // every open scope first — so the copy in the dead block is bookkeeping, not code, and
+        // keeping it made the module fail to verify.
+        let roots: Vec<BlockId> = std::iter::once(entry)
+            .chain(
+                self.fs()
+                    .blocks
+                    .iter()
+                    .filter(|b| {
+                        b.insts
+                            .iter()
+                            .any(|i| !matches!(i.kind, InstKind::Marker(_)))
+                    })
+                    .map(|b| b.id),
+            )
+            .collect();
+        let keep = self.reachable_from(roots);
+        self.fs().blocks.retain(|b| keep.contains(&b.id));
         let ret = self.fs().ret.clone();
         let value = match &ret {
             CTy::Void => None,
@@ -1665,10 +1676,10 @@ impl Lowerer<'_> {
         }
     }
 
-    fn reachable_blocks(&mut self) -> Vec<BlockId> {
-        let entry = self.fs().entry;
+    /// The blocks reachable from `roots`, roots included.
+    fn reachable_from(&mut self, roots: Vec<BlockId>) -> Vec<BlockId> {
         let mut seen: Vec<BlockId> = vec![];
-        let mut work = vec![entry];
+        let mut work = roots;
         while let Some(id) = work.pop() {
             if seen.contains(&id) {
                 continue;
