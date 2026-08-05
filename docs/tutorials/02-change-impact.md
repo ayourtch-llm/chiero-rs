@@ -31,31 +31,39 @@ the most confident possible wrong answer.
 
 ```console
 $ chiero impact geom-before.c geom-after.c
-completeness: Complete
-count: 3
 entities:
-  - name: SCALE
-    kind: macro
-    class: MacroBodyChanged
-    distance: 0
-    edges:
-    - DirectlyChanged
   - name: area
+    file: geom-after.c
     kind: function
     class: MacroBodyChanged
+    root: SCALE
     distance: 1
+    changed_lines: (empty)
     edges:
     - ExpandsMacro { name: "SCALE" }
   - name: volume
+    file: geom-after.c
     kind: function
     class: MacroBodyChanged
+    root: SCALE
     distance: 2
+    changed_lines: (empty)
     edges:
     - Calls { callee: "area" }
     - ExpandsMacro { name: "SCALE" }
+  - name: SCALE
+    file: geom-after.c
+    kind: macro
+    class: MacroBodyChanged
+    root: SCALE
+    distance: 0
+    changed_lines: (empty)
+    edges:
+    - DirectlyChanged
+count: 3
+completeness: Complete
 proven — this holds for all inputs (Exact)
-  blind spot: the closure is over the translation units given; a caller in a unit
-              chiero was not shown is not in this set
+  blind spot: the closure is over the translation units given; a caller in a unit chiero was not shown is not in this set
 ```
 
 Or from Rust:
