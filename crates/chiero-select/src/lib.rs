@@ -38,6 +38,74 @@ use indexmap::IndexMap;
 use chiero_diff::{Completeness, ImpactSet, Program};
 use chiero_gcov::{CoverageIndex, TestId};
 
+/// How much a proof is worth (023 §7).
+///
+/// **Only `Exact` spends.** A selection tool's entire safety argument is that everything
+/// upstream over-approximates; a refinement that dropped a test on `Bounded` would undo all of
+/// it, and would look identical in every case where it happened to be right.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fidelity {
+    /// Proven for all inputs.
+    Exact,
+    /// Proven within a bound — a loop unrolled to a depth, an array modelled to a size.
+    Bounded,
+    /// Modelled with an approximation somewhere in the chain.
+    Approximated,
+    /// The engine reached something it does not model.
+    Unknown,
+}
+
+/// What a prover concluded about one entity's two versions (032 §3.1).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Equivalence {
+    /// Observationally identical — *at this fidelity*, which is what decides whether it counts.
+    Equivalent { fidelity: Fidelity },
+    /// A difference was found.
+    Differs,
+    /// The solver ran out of time. **Not a proof, and not a non-event**: it reduces confidence.
+    TimedOut,
+    /// No attempt was made — the default.
+    NotAttempted,
+}
+
+/// 041's `prove_equivalent`, as a seam (032 §3.1).
+///
+/// The trait exists so the *discipline* can be built before the prover is: there is no way to
+/// remove a test except by returning a verdict, and only one verdict removes anything.
+pub trait Prover {
+    fn prove_equivalent(&mut self, entity: &chiero_diff::Entity) -> Equivalence;
+}
+
+/// The default: attempts nothing, proves nothing, removes nothing.
+///
+/// **A seam that defaulted to attempting proofs would change the meaning of every existing
+/// call.** This is `chiero-gcov`'s `MarchResolver` shape for the same reason: an extension point
+/// whose default does not guess.
+#[derive(Debug)]
+pub struct NoProver;
+
+impl Prover for NoProver {
+    fn prove_equivalent(&mut self, _entity: &chiero_diff::Entity) -> Equivalence {
+        Equivalence::NotAttempted
+    }
+}
+
+/// A test that was a candidate and was removed, with the proof that justified it (032 §5).
+///
+/// **Every field is required.** §3: "Every dropped test records *why*, with the proof's fidelity,
+/// so a selection can be audited after a regression escapes." An exclusion nobody can audit is
+/// indistinguishable from a bug.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExcludedTest {
+    pub test: TestId,
+    /// Which refinement removed it — "equivalence" for §3.1.
+    pub refinement: String,
+    /// The entity whose proof did it.
+    pub entity: String,
+    /// Always `Exact`; the type permits nothing else to reach here.
+    pub fidelity: Fidelity,
+}
+
 /// Why one test is in the selection (032 §5).
 ///
 /// **Every selected test carries at least one** (contract 15). A maintainer told to run 400 tests
@@ -75,6 +143,8 @@ pub enum Confidence {
 pub struct Selection {
     /// Test → its reasons, in deterministic order.
     pub tests: IndexMap<TestId, Vec<SelectionReason>>,
+    /// Tests that were candidates and were removed, each with the proof that justified it.
+    pub excluded: Vec<ExcludedTest>,
     pub confidence: Confidence,
 }
 
@@ -123,6 +193,24 @@ pub fn select_with(
     coverage: &CoverageIndex,
     suite: &Suite,
 ) -> Selection {
+    select_refined(impact, program, coverage, suite, &mut NoProver)
+}
+
+/// The same, with 032 §3.1's equivalence refinement — **the only step that removes anything**.
+///
+/// §3's rule, and the whole safety argument: *"A test may be dropped only on an `Exact` proof.
+/// `Bounded`, `Approximated`, `Unknown`, or a solver timeout all mean keep."*
+///
+/// Refinement removes an *entity* rather than a test, which is why §3.1 calls it the
+/// highest-leverage one: the tests that came only from that entity go with it, and any test also
+/// selected for another reason stays.
+pub fn select_refined(
+    impact: &ImpactSet,
+    program: &Program,
+    coverage: &CoverageIndex,
+    suite: &Suite,
+    prover: &mut dyn Prover,
+) -> Selection {
     let mut tests: IndexMap<TestId, Vec<SelectionReason>> = IndexMap::new();
     let mut reasons: Vec<String> = Vec::new();
 
@@ -133,8 +221,33 @@ pub fn select_with(
         }
     };
 
+    // **§3.1, before the intersection.** Refinement removes an *entity*, so proving one
+    // equivalent removes every test that would have come from it — rather than removing tests one
+    // at a time afterwards and hoping the bookkeeping agrees.
+    let mut proven: Vec<&chiero_diff::Entity> = Vec::new();
+    let mut timed_out = 0usize;
+    for entity in impact.entities.keys() {
+        match prover.prove_equivalent(entity) {
+            // The one verdict that spends.
+            Equivalence::Equivalent {
+                fidelity: Fidelity::Exact,
+            } => proven.push(entity),
+            Equivalence::TimedOut => timed_out += 1,
+            // Bounded, Approximated, Unknown, Differs, NotAttempted — all mean keep.
+            _ => {}
+        }
+    }
+    if timed_out > 0 {
+        reasons.push(format!(
+            "{timed_out} equivalence proof(s) timed out; every affected test was kept"
+        ));
+    }
+
     // ① Coverage intersection (§2).
     for entity in impact.entities.keys() {
+        if proven.contains(&entity) {
+            continue;
+        }
         let lines = program.lines_of(entity);
         if lines.is_empty() {
             // **Not "unaffected" — unmeasured.** An entity with no lines here has no coverage to
@@ -307,8 +420,32 @@ pub fn select_with(
     // ④ Deterministic order, so two runs are comparable and two reports diffable (contract 16).
     tests.sort_keys();
 
+    // §3's audit requirement: an exclusion nobody can audit is indistinguishable from a bug.
+    let mut excluded: Vec<ExcludedTest> = Vec::new();
+    for entity in &proven {
+        for line in program.lines_of(entity) {
+            for t in coverage
+                .tests_for_line(entity.file(), *line)
+                .unwrap_or_default()
+            {
+                // Only a test that nothing *else* selected is actually excluded.
+                if tests.contains_key(&t) || excluded.iter().any(|e| e.test == t) {
+                    continue;
+                }
+                excluded.push(ExcludedTest {
+                    test: t,
+                    refinement: "equivalence".into(),
+                    entity: entity.name().to_string(),
+                    fidelity: Fidelity::Exact,
+                });
+            }
+        }
+    }
+    excluded.sort_by_key(|e| e.test.0);
+
     Selection {
         tests,
+        excluded,
         confidence: if reasons.is_empty() {
             Confidence::Full
         } else {
@@ -411,6 +548,18 @@ impl Selection {
             "ALWAYS-RUN: {} test(s) — never candidates for removal\n",
             always.len()
         ));
+        if !self.excluded.is_empty() {
+            out.push_str(&format!(
+                "EXCLUDED (proof): {} test(s)\n",
+                self.excluded.len()
+            ));
+            for e in &self.excluded {
+                out.push_str(&format!(
+                    "  test {:<6} {}: `{}` proven equivalent ({:?})\n",
+                    e.test.0, e.refinement, e.entity, e.fidelity
+                ));
+            }
+        }
         match &self.confidence {
             Confidence::Full => out.push_str("CONFIDENCE: Full\n"),
             Confidence::Reduced { reasons } => {

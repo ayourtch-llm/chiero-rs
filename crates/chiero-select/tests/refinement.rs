@@ -23,9 +23,7 @@
 
 use chiero_diff::{Program, impact};
 use chiero_gcov::{CoverageIndex, TestId, TestOutcome};
-use chiero_select::{
-    Equivalence, Fidelity, Prover, Suite, select_refined, select_with,
-};
+use chiero_select::{Equivalence, Fidelity, Prover, Suite, select_refined, select_with};
 use std::path::PathBuf;
 
 fn corpus() -> PathBuf {
@@ -69,7 +67,10 @@ fn only_an_exact_proof_drops_a_test() {
     let set = impact(&before, &after);
 
     let kept = select_with(&set, &after, &index(), &Suite::default());
-    assert!(kept.tests.contains_key(&TestId(0)), "the baseline selects it");
+    assert!(
+        kept.tests.contains_key(&TestId(0)),
+        "the baseline selects it"
+    );
 
     let dropped = select_refined(
         &set,
@@ -165,7 +166,11 @@ fn every_exclusion_carries_its_proof() {
 
     assert!(!sel.excluded.is_empty(), "something was dropped");
     for e in &sel.excluded {
-        assert_eq!(e.fidelity, Fidelity::Exact, "nothing weaker may appear here");
+        assert_eq!(
+            e.fidelity,
+            Fidelity::Exact,
+            "nothing weaker may appear here"
+        );
         assert!(
             !e.refinement.is_empty() && !e.entity.is_empty(),
             "an exclusion without a named refinement cannot be audited: {e:?}"
