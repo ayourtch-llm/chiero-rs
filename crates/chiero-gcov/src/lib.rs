@@ -102,6 +102,35 @@ impl Variant {
 /// private to the crate so that swap stays an implementation detail.
 type TestBitmap = Vec<TestId>;
 
+/// What the index knows about one line.
+///
+/// **The per-build split is empty until a second build appears.** With one variant the union
+/// *is* that variant's set, so storing both would be a second copy of every test list in the
+/// index for no answer that is not already available. `promote_to_per_variant` fills it in once,
+/// when the second variant arrives — the cost is a single pass, and it buys back roughly a third
+/// of the index in the case every tree that is not VPP is in.
+#[derive(Clone, Debug, Default)]
+struct LineEntry {
+    /// Aggregate execution count, saturating.
+    count: u64,
+    /// The tests that executed the line, unioned across builds.
+    tests: TestBitmap,
+    /// Per build, and empty while the index holds at most one.
+    per_variant: Vec<(VariantRef, TestBitmap)>,
+}
+
+/// A file's index into [`CoverageIndex::file_names`].
+///
+/// **Interned rather than repeated.** Every line of the index is keyed by a path, in three maps,
+/// and a build tree has a few thousand distinct paths against a million lines. See
+/// `src/memory_budget.rs` for what that costs when the key owns its string.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct FileRef(u32);
+
+/// A variant's index into [`CoverageIndex::variants`], for the same reason.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct VariantRef(u32);
+
 /// What one ingest read, kept so a report can say where a number came from (030 §7).
 #[derive(Clone, Debug)]
 pub struct IngestRecord {
@@ -125,15 +154,25 @@ pub struct CoverageIndex {
     /// writes `0` for one it recorded as unexecuted; collapsing the two would turn "coverage
     /// cannot see this" into "nothing ran this", which is the misreading 030 §1 exists to
     /// prevent.
-    line_counts: IndexMap<(String, u32), u64>,
-    /// `(file, line) -> the tests that executed it`, unioned across variants.
-    line_tests: IndexMap<(String, u32), TestBitmap>,
-    /// The same, per build.
+    /// **One entry per line, not one map per question.** The count, the union of tests and the
+    /// per-build split were three maps keyed by the same `(file, line)`, so a million lines paid
+    /// three hash buckets and three copies of the key. See [`LineEntry`] and
+    /// `src/memory_budget.rs`.
+    lines: IndexMap<(FileRef, u32), LineEntry>,
+    /// Every path to its reference, for interning during ingest.
     ///
-    /// **Beside the union rather than instead of it.** Most changes are variant-independent and
-    /// the union is the right answer for them; the split matters for code only one build compiles.
-    variant_tests: IndexMap<(Variant, String, u32), TestBitmap>,
-    /// Every variant that contributed, in arrival order.
+    /// A second copy of a few thousand strings, against a million lines that no longer each hold
+    /// one. It is here because interning by scanning `file_names` made ingest quadratic — 170
+    /// seconds for the benchmark, against 5 before it.
+    file_ids: IndexMap<String, FileRef>,
+    /// Every path, once. Keys hold a [`FileRef`] into this rather than a `String` of their own.
+    ///
+    /// **The whole of 030 contract 11's headroom is here.** A path appears in three keys per line
+    /// — the count, the union, the per-variant set — and a VPP path is around 40 bytes, so a
+    /// million lines carried 120 MB of the same few thousand strings. Interning is why the index
+    /// fits: measured, it took 577 MiB to 178.
+    file_names: Vec<String>,
+    /// Every variant that contributed, in arrival order. A [`VariantRef`] indexes this.
     variants: Vec<Variant>,
     /// Every test that contributed an ingest, in the order they arrived.
     ///
@@ -146,17 +185,48 @@ pub struct CoverageIndex {
 }
 
 impl CoverageIndex {
+    /// The reference for a path already known, or `None` — a lookup must not create one, or
+    /// every query for a file nobody ingested would grow the table.
+    fn file_ref(&self, file: &str) -> Option<FileRef> {
+        self.file_ids.get(file).copied()
+    }
+
+    /// The reference for a path, interning it if it is new. Ingest only.
+    fn intern_file(&mut self, file: &str) -> FileRef {
+        match self.file_ref(file) {
+            Some(r) => r,
+            None => {
+                let r = FileRef(self.file_names.len() as u32);
+                self.file_names.push(file.to_string());
+                self.file_ids.insert(file.to_string(), r);
+                r
+            }
+        }
+    }
+
+    fn variant_ref(&self, v: &Variant) -> Option<VariantRef> {
+        self.variants
+            .iter()
+            .position(|x| x == v)
+            .map(|i| VariantRef(i as u32))
+    }
+
     /// The aggregate count for a line, or `None` when gcov recorded no entry for it.
     pub fn line_count(&self, file: &str, line: u32) -> Option<u64> {
-        self.line_counts.get(&(file.to_string(), line)).copied()
+        self.lines
+            .get(&(self.file_ref(file)?, line))
+            .map(|e| e.count)
     }
 
     /// Every line gcov recorded for a file, ascending.
     pub fn lines_of(&self, file: &str) -> Vec<u32> {
+        let Some(r) = self.file_ref(file) else {
+            return Vec::new();
+        };
         let mut v: Vec<u32> = self
-            .line_counts
+            .lines
             .keys()
-            .filter(|(f, _)| f == file)
+            .filter(|(f, _)| *f == r)
             .map(|(_, l)| *l)
             .collect();
         v.sort_unstable();
@@ -180,7 +250,9 @@ impl CoverageIndex {
     /// **`None` rather than an empty set.** An empty set is the claim "no test covers this", which
     /// 032 acts on by running nothing; a line gcov never recorded supports no such claim (030 §1).
     pub fn tests_for_line(&self, file: &str, line: u32) -> Option<Vec<TestId>> {
-        self.line_tests.get(&(file.to_string(), line)).cloned()
+        self.lines
+            .get(&(self.file_ref(file)?, line))
+            .map(|e| e.tests.clone())
     }
 
     /// The union of the tests for a set of lines of one file, or `None` when the index recorded
@@ -280,10 +352,13 @@ impl CoverageIndex {
     /// spec's `impl Iterator` for the reason [`lines_of`](Self::lines_of) is one — the order is
     /// part of the answer, and materialising it is what makes that checkable.
     pub fn uncovered_lines(&self, file: &str) -> Vec<u32> {
+        let Some(r) = self.file_ref(file) else {
+            return Vec::new();
+        };
         let mut out: Vec<u32> = self
-            .line_counts
+            .lines
             .iter()
-            .filter(|((f, _), c)| f == file && **c == 0)
+            .filter(|((f, _), e)| *f == r && e.count == 0)
             .map(|((_, l), _)| *l)
             .collect();
         out.sort_unstable();
@@ -298,9 +373,17 @@ impl CoverageIndex {
     /// the AVX-512 build" is not "the AVX-512 build ran nothing", and only the second lets a test
     /// be skipped.
     pub fn tests_for_line_in(&self, file: &str, line: u32, v: &Variant) -> Option<Vec<TestId>> {
-        self.variant_tests
-            .get(&(v.clone(), file.to_string(), line))
-            .cloned()
+        let vr = self.variant_ref(v)?;
+        let e = self.lines.get(&(self.file_ref(file)?, line))?;
+        if e.per_variant.is_empty() {
+            // At most one build has been ingested, so the union is that build's set — and a
+            // variant that is not it recorded nothing, which is `None` rather than empty.
+            return (self.variants.first() == Some(v)).then(|| e.tests.clone());
+        }
+        e.per_variant
+            .iter()
+            .find(|(x, _)| *x == vr)
+            .map(|(_, t)| t.clone())
     }
 
     /// Every build that contributed coverage, in arrival order.
@@ -353,13 +436,8 @@ impl CoverageIndex {
 
     /// Every file the index holds coverage for, in ingest order.
     pub fn files(&self) -> impl Iterator<Item = &str> {
-        let mut seen: Vec<&str> = Vec::new();
-        for (f, _) in self.line_counts.keys() {
-            if !seen.contains(&f.as_str()) {
-                seen.push(f);
-            }
-        }
-        seen.into_iter()
+        // Interning already made this list: `file_names` is every path once, in ingest order.
+        self.file_names.iter().map(|f| f.as_str())
     }
 
     /// Merge one line's count across *objects*, taking the **maximum** where a line already has
@@ -378,8 +456,9 @@ impl CoverageIndex {
     /// too-high a count never causes a test to be skipped. Per-variant answers, which is what a
     /// caller should ask when the distinction matters, come from `tests_for_line_in`.
     pub(crate) fn add_line(&mut self, file: String, line: u32, count: u64) {
-        let slot = self.line_counts.entry((file, line)).or_insert(0);
-        *slot = (*slot).max(count);
+        let f = self.intern_file(&file);
+        let e = self.lines.entry((f, line)).or_default();
+        e.count = e.count.max(count);
     }
 
     /// The same, attributed to a test and to the build it came from.
@@ -396,23 +475,43 @@ impl CoverageIndex {
         line: u32,
         count: u64,
     ) {
+        self.note_variant(v);
         self.add_line(file.clone(), line, count);
-        let set = self.line_tests.entry((file.clone(), line)).or_default();
-        if !set.contains(&test) {
-            set.push(test);
+        let f = self.intern_file(&file);
+        let vr = self.variant_ref(v).expect("just noted");
+        let split = self.variants.len() > 1;
+        let e = self.lines.entry((f, line)).or_default();
+        if !e.tests.contains(&test) {
+            e.tests.push(test);
         }
-        let per = self
-            .variant_tests
-            .entry((v.clone(), file, line))
-            .or_default();
-        if !per.contains(&test) {
-            per.push(test);
+        if split {
+            let per = match e.per_variant.iter_mut().find(|(x, _)| *x == vr) {
+                Some((_, t)) => t,
+                None => {
+                    e.per_variant.push((vr, TestBitmap::new()));
+                    &mut e.per_variant.last_mut().expect("just pushed").1
+                }
+            };
+            if !per.contains(&test) {
+                per.push(test);
+            }
         }
     }
 
     pub(crate) fn note_variant(&mut self, v: &Variant) {
-        if !self.variants.contains(v) {
-            self.variants.push(v.clone());
+        if self.variants.contains(v) {
+            return;
+        }
+        self.variants.push(v.clone());
+        // **The second variant is where the split starts costing anything.** Until now every
+        // line's union was the first build's set; move it into the split so the two stay
+        // distinguishable from here on.
+        if self.variants.len() == 2 {
+            for e in self.lines.values_mut() {
+                if !e.tests.is_empty() {
+                    e.per_variant.push((VariantRef(0), e.tests.clone()));
+                }
+            }
         }
     }
 
@@ -613,11 +712,9 @@ pub fn ingest_json_into(
             // **Saturating, and merged rather than replaced.** One object's coverage may be
             // ingested beside another's, and two runs of the same line add up — a count that
             // wrapped would read as a line nothing executed.
-            let slot = idx
-                .line_counts
-                .entry((name.to_string(), n as u32))
-                .or_insert(0);
-            *slot = slot.saturating_add(c);
+            let f = idx.intern_file(name);
+            let e = idx.lines.entry((f, n as u32)).or_default();
+            e.count = e.count.saturating_add(c);
         }
     }
 
