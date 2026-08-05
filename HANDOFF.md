@@ -606,6 +606,45 @@ typing the paths ever would.
 > rule with a sum fails it on `loop.c` with the file and line named. A gate that only ran on `t`
 > would have passed the wrong rule, which is why the second fixture exists.
 >
+> ### 🔴 START HERE — two tests are red on purpose, and the question is *attribution*
+>
+> `cross_validation::{a_block_may_carry_lines_from_more_than_one_file, native_decoding_agrees_with_gcov_json}`
+> fail. Everything else passes.
+>
+> **Pointing the decoder at a real `--coverage` build of `vppinfra` found three things**, which is
+> what a scale test is for — the four hand-built fixtures agreed with gcov and were not
+> representative:
+>
+> | found | status |
+> |---|---|
+> | VPP's cmake defaults to **clang**, whose `.gcno` tag is `*804` | refused correctly (contract 9). Use `-DCMAKE_C_COMPILER=gcc`. A clang decoder is a separate job. |
+> | a **negative counter length** means "this many counters, all zero, none stored" | fixed. It was **83 of 98** objects — every source with a function nothing calls. |
+> | one `LINES` record can carry **several file groups** | fixed. It was attributing `mem.h:191` to `bihash_all_vector.c`. |
+> | the **line-count rule** is not `max` and not `sum` | **open** |
+>
+> #### The measurement, and why no formula fits
+>
+> ```
+> loop.c:1   gcov's own blocks 1,4,5,1   gcov says 5    (sum 11, max 5)
+> inl.c:2    gcov's own blocks 1,1,1     gcov says 3    (sum 3,  max 1)
+> t.c:3      gcov's own blocks 1         gcov says 1    (the notes give 3 blocks)
+> ```
+>
+> `max` fits rows 1 and 3, `sum` fits row 2. **The rule is not arithmetic over "every block that
+> lists the line", because gcov's per-line block list is not the notes'.** For `t.c:3` it reports
+> one block where the notes give three; for `loop.c:1`, four where the notes give five.
+>
+> So find what gcov *excludes* before touching the arithmetic. Reproduce with:
+>
+> ```
+> gcov -a -b <stem>        # the .gcov text lists each block of each line with its count
+> cargo run --release -p chiero-gcov --example scale -- <build-dir>
+> ```
+>
+> ⚠️ **Do not fit a formula to three of four rows.** 030 §4 asks for behavioural validation
+> precisely because a plausible-looking rule that is wrong in one shape is undetectable by reading
+> — and `max` was exactly that, measured on `loop` alone, which cannot tell the two apart.
+>
 > ### 🧭 THE ONE IDEA THIS CRATE KEEPS RE-DERIVING
 >
 > Three times now the design has turned on the same distinction, and it is worth naming because
