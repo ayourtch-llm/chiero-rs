@@ -487,31 +487,82 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 480) — 1720 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 480) — M1 268/268 by contract
 >
-> ### 🔴 THE ONE THING TO DO FIRST: read the sweep that is (or was) running
+> ### 🔴 DO THIS FIRST: re-run the corpus sweep. Everything below was measured *before* the
+> ### initializer work, so the tree's current standing is unknown.
 >
-> A full VPP sweep was launched at **99d92d0** with a **frozen** binary
-> (`$SCRATCH/xtask-99d92d0`, the shim points at it). It takes ~2 h at `-j 10`.
+> **The last complete sweep, at 99d92d0: 1871 TUs, 1852 `not-run`, 12 clean, 7 diagnosed.**
+> That number is the *before* for five commits' worth of initializer fixes — the dominant cause
+> in it (`union { … } __u = { .__v = __A };`, every `_mm512_cast*` in gcc's headers) was fixed
+> immediately after. Expect a large move; measure it rather than guessing.
 >
 > ```
-> python3 $SCRATCH/stat.py $VPPBUILD      # records / status counts / slowest TUs
+> S=<this session's scratchpad>            # holds stat.py and the frozen binaries
+> B=/tmp/claude-1000/-home-ubuntu-rust-chiero-rs/5be48d05-…/scratchpad/vppbuild
+> cargo build --release -p xtask && cp target/release/xtask $S/xtask-<sha>
+> printf '#!/bin/bash\nexec %s/xtask-<sha> cc "$@"\n' $S > $B/../chiero-cc   # freeze the shim
+> find $B -name '*.chiero' -delete && (cd $B && ninja -t clean)
+> (cd $B && CCACHE_DISABLE=1 CHIERO_REAL_CC=gcc ninja -j 10)     # ~2 h
+> python3 $S/stat.py $B                    # records / status counts / slowest TUs
 > ```
 >
-> `stat.py` is three lines of json-slurping over `**/*.chiero`; rewrite it if the scratchpad is
-> gone. **If no corpus number is written below this line, the run did not finish — re-run it.**
+> `stat.py` is ten lines of json-slurping over `**/*.chiero`; rewrite it if the scratchpad is
+> gone. **If no newer corpus number appears below this line, that run did not finish.**
+>
+> ### 🐌 AND THE OUTLIER IT FOUND: `drivers/atlantic/format.c` takes **11 minutes**
+>
+> Against a 2.7 s median, on an idle machine, at both 99d92d0 (656 s) and before it. Also
+> `plugins/http/test/http_test.c` at 17 min and `llist_test.c` at 3.7 min. This is a *second*
+> pathology, unrelated to the `const_eval` one — that one is fixed and the median proves it.
+> Reproduce with the command line `ninja -t commands <the .o>` prints. It now reports
+> `bitops.h:113: Shl operand is Int(64), declared Int(32)`, which is a separate lowering gap and
+> may or may not be related to the time.
 >
 > ⚠️ **NEVER `cargo build --release -p xtask` while a sweep is running.** The shim execs
 > `target/release/xtask` and a rebuild swaps the binary underneath it, so the measurement mixes
 > two versions and is worthless. That happened this wave; the fix is to copy the binary to
 > `$SCRATCH/xtask-<sha>` and point the shim at *that* — which the current run does.
 >
-> ### 📉 THREE not-run CAUSES CLOSED THIS WAVE — the sweep drove all three
+> ### 🧾 THE INITIALIZER WAVE — one review, thirteen defects, all against gcc
+>
+> The sweep's fourth cause (`{ .__v = __A }`) opened a seam, and the Fable review in **pty-2**
+> turned it into thirteen. The through-line is one sentence, and it is worth keeping:
+>
+> > **A folder that answers `None` becomes `GlobalInit::Zero` at the caller**, so every gap in the
+> > file-scope initializer walk is a *silently wrong program* rather than a refused one.
+>
+> `static int m[2][3] = {1,2,3,4,5,6};` read back as every byte zero, with no diagnostic, and the
+> same declaration inside a function was correct. **The two walks are mirrors and they had
+> drifted** — `init_list`/`init_flat` for locals, `encode_into`/`encode_flat` for file scope. Every
+> defect in this wave is either that drift or a corner neither walk had.
+>
+> Fixed (20af67f/a5e4a56, 15fdd3c/28f6909, b9618d6/…): aggregate-valued member initializers,
+> file-scope brace elision, compatibility rather than "is an aggregate" in `copy_aggregate_init`,
+> designators stripped before a run, one initializer per union in both walks, a designator ending
+> a run in both walks, multi-component designators (`.in.b`, `[1][2]`), sema's all-or-nothing
+> elision detection, braced scalars, braced and elided strings, `char` members from string
+> literals, and designators naming members of anonymous unions.
+>
+> **The differential file is the assertion throughout.** Not one of these was a verifier error —
+> `CopyMem` of the wrong size verifies perfectly. `agree_with(prelude, body)` compiles the same C
+> with gcc, runs both, compares the integer; if a fix cannot be stated as "gcc says 34 and we say
+> 0", it is not this file's business.
+>
+> ⏭️ **Still open from that review, with reproducers in the commit messages:**
+> - **Flexible array member at file scope**: `static struct {int n; int a[];} s = {1,{2,3}};` —
+>   the `{2,3}` bytes are clipped by the `out.len()` bound and the global is sized without them.
+>   Refused rather than silently wrong, which is why it is last.
+> - **Over-long lists**: sema errors where gcc only warns. A strictness divergence to calibrate,
+>   not a defect — but it should be *decided*, since 042 owns exactly this kind of question.
+>
+> ### 📉 FOUR not-run CAUSES CLOSED THIS WAVE — the sweep drove all of them
 >
 > | commit | defect | share of `not-run` when found |
 > |---|---|---|
 > | 0968cdf | two `static` locals of one name in sibling scopes collide (`<owner>.<name>`) | 175 of 240 |
 > | 99d92d0 | `__builtin_shuffle` has no type, so a vector init copies from a scalar | 26 of 27, then 1300 of 1317 |
+> | a5e4a56 | `union { … } __u = { .__v = __A };` stored the pointer, not the bytes | 84 of 89, then 1852 of 1871 |
 > | 75bfada | (not a corpus cause) a reused `ConstEvaluator` swallowed a diagnostic | — |
 >
 > The second measurement — 1317 records, 1300 `not-run` — is the honest **before** for the
