@@ -308,7 +308,9 @@ fn a_stale_index_forces_its_tests_into_the_selection() {
     );
     match &sel.confidence {
         Confidence::Reduced { reasons } => assert!(
-            reasons.iter().any(|r| r.contains("stale") && r.contains("t.c")),
+            reasons
+                .iter()
+                .any(|r| r.contains("stale") && r.contains("t.c")),
             "and the report names the stale file: {reasons:?}"
         ),
         other => panic!("a stale index cannot be Full confidence, got {other:?}"),

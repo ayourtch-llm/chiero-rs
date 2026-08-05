@@ -75,11 +75,51 @@ pub struct Selection {
     pub confidence: Confidence,
 }
 
+/// What the caller knows and the index cannot (032 §4).
+///
+/// **Both fields are the caller's because neither is derivable from the index.** The index holds
+/// what was *ingested*: it cannot know a test exists in the tree and was never measured, and it
+/// cannot know whether the sources still hash to what they did — `validity` needs a tree root,
+/// which is 030 §7's own division of labour.
+///
+/// The defaults are the honest ones for a caller that has neither: no suite list, and a fresh
+/// index. A caller that omits the suite gets no contract-10 selections, which is a smaller
+/// answer — so this is the one place in the crate where a default is *not* the safe direction,
+/// and it is named here rather than discovered.
+#[derive(Clone, Debug)]
+pub struct Suite {
+    /// Every test in the tree, whether or not the index has heard of it.
+    pub tests: Vec<TestId>,
+    /// What 030 §7 says about the index.
+    pub validity: chiero_gcov::Validity,
+}
+
+impl Default for Suite {
+    fn default() -> Self {
+        Suite {
+            tests: Vec::new(),
+            validity: chiero_gcov::Validity::Fresh,
+        }
+    }
+}
+
 /// Select the tests that must run for a change (032 §1).
+///
+/// Equivalent to [`select_with`] with a caller that knows nothing beyond the index.
 ///
 /// `program` is the **new** side of the comparison: it is what says which lines an entity now
 /// occupies, and therefore what the coverage index is asked about.
 pub fn select(impact: &ImpactSet, program: &Program, coverage: &CoverageIndex) -> Selection {
+    select_with(impact, program, coverage, &Suite::default())
+}
+
+/// Select the tests that must run, given what the caller knows about the suite (032 §1, §4).
+pub fn select_with(
+    impact: &ImpactSet,
+    program: &Program,
+    coverage: &CoverageIndex,
+    suite: &Suite,
+) -> Selection {
     let mut tests: IndexMap<TestId, Vec<SelectionReason>> = IndexMap::new();
     let mut reasons: Vec<String> = Vec::new();
 
@@ -167,6 +207,57 @@ pub fn select(impact: &ImpactSet, program: &Program, coverage: &CoverageIndex) -
             },
             &mut tests,
         );
+    }
+
+    // §4: a test in the tree that the index never heard of. **Never measured is not
+    // unaffected**, and unlike every other trigger here the index cannot see this one at all.
+    for t in &suite.tests {
+        if !coverage.tests().contains(t) {
+            add(
+                *t,
+                SelectionReason::AlwaysRun {
+                    why: "present in the tree and absent from the index: never measured".into(),
+                },
+                &mut tests,
+            );
+        }
+    }
+
+    // §4: the index itself may not be believable (030 §7).
+    match &suite.validity {
+        chiero_gcov::Validity::Fresh => {}
+        chiero_gcov::Validity::Stale { files } => {
+            reasons.push(format!(
+                "the coverage index is stale: {} changed since it was recorded",
+                files.join(", ")
+            ));
+            // Every test that touched a stale file, and — because a stale index cannot be trusted
+            // to say which those are — every test it holds.
+            for t in coverage.tests() {
+                add(
+                    t,
+                    SelectionReason::AlwaysRun {
+                        why: "the coverage index is stale".into(),
+                    },
+                    &mut tests,
+                );
+            }
+        }
+        chiero_gcov::Validity::Partial { missing_tests } => {
+            reasons.push(format!(
+                "the coverage index cannot speak for {} test(s)",
+                missing_tests.len()
+            ));
+            for t in missing_tests {
+                add(
+                    *t,
+                    SelectionReason::AlwaysRun {
+                        why: "the index has no complete coverage for this test".into(),
+                    },
+                    &mut tests,
+                );
+            }
+        }
     }
 
     // §4: an incomplete impact set is a gap, and every gap widens the selection.
