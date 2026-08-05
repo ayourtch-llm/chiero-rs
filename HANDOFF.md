@@ -464,7 +464,9 @@ have entrenched conventions real lowering then had to match.)
   selects has a non-zero count for the line, so some block carrying it was entered). Needs a
   line→block bridge on the change side. Both halves are built: `line_reached` and `changed_lines`.
 - **18, historical replay** — §6's ground-truth oracle, "the one that would catch a real design
-  flaw". Needs VPP tests, which need root and network namespaces.
+  flaw". **Unblocked 2026-08-05 — the user corrected this: `make test` in `/home/ubuntu/vpp`
+  is enough, no root and no network namespaces.** Every note below saying otherwise is wrong
+  and is kept only so the correction is legible.
 
 ### 7.2 `prove_equivalent` — built 2026-08-05, and what is left of it
 
@@ -794,8 +796,9 @@ typing the paths ever would.
 > | **every counter zero ⇒ every arc zero**, by uniqueness of the spanning-tree solution; propagation stalls on a `noreturn` sink beside the exit | 18 lines missing, the last gcc gap |
 > | an LTO `.wpa.gcno` holds a **second artifact** where its records start | 1 of 1895 `.gcno` refused |
 >
-> ⚠️ **`.gcda` coverage is partial by nature here.** VPP's real test suite needs root and network
-> namespaces; what these numbers rest on is the unit-test binaries that run standalone
+> ⚠️ **`.gcda` coverage is partial by nature here.** ~~VPP's real test suite needs root and network
+> namespaces~~ — **wrong, corrected by the user 2026-08-05: `make test` is enough.** What these
+> numbers rest on is the unit-test binaries that run standalone
 > (`test_infra`, `test_pnat`, `vat2`, …), which is 322 of 1895 objects. The *notes* decoder is
 > exercised across all 1895, which is where the format complexity lives.
 
@@ -950,7 +953,7 @@ typing the paths ever would.
 > | 17, 20 budget and report | ✅ reduction and safety always together |
 > | **19 the mutation gate** | ✅ 100% / 14.3% / 65%, whole pipeline |
 > | 7 reachability refinement | ❌ **cannot fire at line granularity — proven, not guessed** (see below) |
-> | 18 historical replay | ❌ needs VPP tests, which need root |
+> | 18 historical replay | ⏳ **unblocked** — `make test` needs no root (user, 2026-08-05) |
 >
 > ### 🚀 032's FOUNDATION (contracts 1, 3, 9, 11, 15, 16)
 >
@@ -1131,7 +1134,7 @@ typing the paths ever would.
 >
 > ⏭️ **Contract 18, the historical-replay gate, does not exist.** It is the ground-truth oracle and
 > "the one that would catch a real design flaw" (§6). It needs VPP commits with a known test
-> failure, and VPP's suite needs root and network namespaces — so the first question is what can
+> failure, and ~~VPP's suite needs root and network namespaces~~ (**wrong — `make test` suffices**) — so the first question is what can
 > actually be run here, not how to write the harness.
 >
 > ⚠️ **Nothing here has met a real tree yet.** `Program::parse` takes a string and preprocesses it
