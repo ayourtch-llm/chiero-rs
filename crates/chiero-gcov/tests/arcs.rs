@@ -18,7 +18,13 @@
 //! is a compile error rather than a `None` a caller can accidentally treat as "no tests".
 
 use chiero_gcov::TestId;
+use chiero_gcov::native::FuncKey;
 use std::path::PathBuf;
+
+/// `main` of the `t` fixture, at `t.c:3`.
+fn main_key() -> FuncKey {
+    FuncKey::new("t.c", "main", 3)
+}
 
 fn corpus() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -34,7 +40,7 @@ fn corpus() -> PathBuf {
 #[test]
 fn fake_arcs_are_absent_from_the_query_surface() {
     let cov = chiero_gcov::native::arc_coverage(&corpus(), "t").expect("t decodes");
-    let main: Vec<(u32, u32)> = cov.arcs_of("main").expect("`main` is in the fixture");
+    let main: Vec<(u32, u32)> = cov.arcs_of(&main_key()).expect("`main` is in the fixture");
     assert_eq!(
         main,
         vec![(0, 2), (2, 3), (3, 4), (4, 5), (5, 1)],
@@ -49,10 +55,10 @@ fn fake_arcs_are_absent_from_the_query_surface() {
 #[test]
 fn fake_arcs_still_participate_in_the_solve() {
     let cov = chiero_gcov::native::arc_coverage(&corpus(), "t").expect("t decodes");
-    assert_eq!(cov.arc_count("main", (0, 2)), Some(1));
-    assert_eq!(cov.arc_count("main", (3, 4)), Some(1));
+    assert_eq!(cov.arc_count(&main_key(), (0, 2)), Some(1));
+    assert_eq!(cov.arc_count(&main_key(), (3, 4)), Some(1));
     assert_eq!(
-        cov.arc_count("main", (2, 1)),
+        cov.arc_count(&main_key(), (2, 1)),
         None,
         "a fake arc has a count internally and is not answerable *as an arc*"
     );
@@ -68,17 +74,17 @@ fn arcs_carry_the_tests_that_took_them() {
     chiero_gcov::native::arc_coverage_into(&mut cov, TestId(1), &corpus(), "t").expect("t as 1");
 
     assert_eq!(
-        cov.tests_for_arc("main", (0, 2)),
+        cov.tests_for_arc(&main_key(), (0, 2)),
         Some(vec![TestId(0), TestId(1)]),
         "both runs took the entry arc"
     );
     assert_eq!(
-        cov.tests_for_arc("main", (2, 1)),
+        cov.tests_for_arc(&main_key(), (2, 1)),
         None,
         "and a fake arc is not an arc to be selected by"
     );
     assert_eq!(
-        cov.tests_for_arc("main", (9, 9)),
+        cov.tests_for_arc(&main_key(), (9, 9)),
         None,
         "nor is an arc the graph does not have"
     );
@@ -89,11 +95,13 @@ fn arcs_carry_the_tests_that_took_them() {
 #[test]
 fn an_untaken_arc_is_zero_rather_than_missing() {
     let cov = chiero_gcov::native::arc_coverage(&corpus(), "loop").expect("loop decodes");
-    let arcs = cov.arcs_of("f").expect("`f` is in the loop fixture");
+    let arcs = cov
+        .arcs_of(&FuncKey::new("loop.c", "f", 1))
+        .expect("`f` is in the loop fixture");
     assert!(!arcs.is_empty());
     for a in arcs {
         assert!(
-            cov.arc_count("f", a).is_some(),
+            cov.arc_count(&FuncKey::new("loop.c", "f", 1), a).is_some(),
             "every arc the graph has must have a count, including the ones this run did not take"
         );
     }

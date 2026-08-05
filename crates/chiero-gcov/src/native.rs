@@ -802,6 +802,53 @@ pub fn ingest_into(
 use crate::CoverageDetail;
 use indexmap::IndexMap;
 
+/// What identifies a function for coverage purposes (030 §5).
+///
+/// **Not the name.** `a.c` and `b.c` may each hold a `static int helper(int)`, and merging them
+/// attributes one file's tests to the other's code — silently, since nothing about the merged
+/// entry looks wrong. The file and the start line separate those; `march` separates the copies
+/// VPP compiles of one source under different `CLIB_MARCH_VARIANT`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct FuncKey {
+    pub file: String,
+    pub name: String,
+    pub start_line: u32,
+    /// The multiarch variant, when a [`MarchResolver`] identified one.
+    pub march: Option<String>,
+}
+
+impl FuncKey {
+    /// A key with no multiarch variant, which is every function outside VPP.
+    pub fn new(file: &str, name: &str, start_line: u32) -> FuncKey {
+        FuncKey {
+            file: file.to_string(),
+            name: name.to_string(),
+            start_line,
+            march: None,
+        }
+    }
+}
+
+/// Splits a symbol into its function name and multiarch variant (030 §5).
+///
+/// **An extension point, because the variant set is VPP's knowledge and 001 §4 rule 4 keeps that
+/// out of this crate.** The default splits nothing. A resolver must never guess from a bare
+/// suffix pattern: collapsing `foo_avx2` into `foo` would attribute the vector variant's coverage
+/// to the scalar path, which is the misattribution [`FuncKey`] exists to prevent.
+pub trait MarchResolver {
+    fn split(&self, symbol: &str) -> (String, Option<String>);
+}
+
+/// The resolver for a tree with no multiarch variants.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct NoMarch;
+
+impl MarchResolver for NoMarch {
+    fn split(&self, symbol: &str) -> (String, Option<String>) {
+        (symbol.to_string(), None)
+    }
+}
+
 /// Line coverage **and** the arc-level data only the native path can produce (030 §5).
 ///
 /// **Contract 4 is met by this type existing separately.** There is no `tests_for_arc` on
@@ -815,11 +862,11 @@ use indexmap::IndexMap;
 pub struct ArcCoverage {
     index: crate::CoverageIndex,
     /// `(function, from, to) -> count`, real arcs only.
-    counts: IndexMap<(String, u32, u32), u64>,
+    counts: IndexMap<(FuncKey, u32, u32), u64>,
     /// The same keys, and who took them.
-    tests: IndexMap<(String, u32, u32), Vec<crate::TestId>>,
+    tests: IndexMap<(FuncKey, u32, u32), Vec<crate::TestId>>,
     /// Arc order per function, so a query can list them as the CFG does.
-    order: IndexMap<String, Vec<(u32, u32)>>,
+    order: IndexMap<FuncKey, Vec<(u32, u32)>>,
 }
 
 impl ArcCoverage {
@@ -832,18 +879,23 @@ impl ArcCoverage {
     ///
     /// `FAKE` arcs are not here: they run to the exit block from a call that may not return, so
     /// they are not control flow a test can be selected by (contract 7).
-    pub fn arcs_of(&self, func: &str) -> Option<Vec<(u32, u32)>> {
+    pub fn arcs_of(&self, func: &FuncKey) -> Option<Vec<(u32, u32)>> {
         self.order.get(func).cloned()
     }
 
     /// How often an arc was taken, or `None` when the graph has no such real arc.
-    pub fn arc_count(&self, func: &str, arc: (u32, u32)) -> Option<u64> {
-        self.counts.get(&(func.to_string(), arc.0, arc.1)).copied()
+    pub fn arc_count(&self, func: &FuncKey, arc: (u32, u32)) -> Option<u64> {
+        self.counts.get(&(func.clone(), arc.0, arc.1)).copied()
     }
 
     /// The tests that took an arc, or `None` when the graph has no such real arc.
-    pub fn tests_for_arc(&self, func: &str, arc: (u32, u32)) -> Option<Vec<crate::TestId>> {
-        self.tests.get(&(func.to_string(), arc.0, arc.1)).cloned()
+    pub fn tests_for_arc(&self, func: &FuncKey, arc: (u32, u32)) -> Option<Vec<crate::TestId>> {
+        self.tests.get(&(func.clone(), arc.0, arc.1)).cloned()
+    }
+
+    /// Every function this coverage knows about.
+    pub fn functions(&self) -> Vec<&FuncKey> {
+        self.order.keys().collect()
     }
 }
 
@@ -890,7 +942,16 @@ fn arc_coverage_read(
             continue; // `ingest_into` has already refused this file.
         };
         let arcs = solve_arcs(f, &d.counters, &data_path)?;
-        let order = cov.order.entry(f.name.clone()).or_default();
+        // **The identity is built here, once.** `march` comes from the resolver rather than from
+        // the artifacts, which carry only the pasted symbol.
+        let (name, march) = NoMarch.split(&f.name);
+        let key = FuncKey {
+            file: f.source.clone(),
+            name,
+            start_line: f.start_line,
+            march,
+        };
+        let order = cov.order.entry(key.clone()).or_default();
         for (i, a) in f.arcs.iter().enumerate() {
             // **Included in the solve above, excluded here** (contract 7). `solve_arcs` saw every
             // arc — conservation at the block a fake arc leaves does not balance without it — and
@@ -898,22 +959,22 @@ fn arc_coverage_read(
             if a.flags.contains(ArcFlags::FAKE) {
                 continue;
             }
-            let key = (f.name.clone(), a.from, a.to);
+            let akey = (key.clone(), a.from, a.to);
             if !order.contains(&(a.from, a.to)) {
                 order.push((a.from, a.to));
             }
-            let slot = cov.counts.entry(key.clone()).or_insert(0);
+            let slot = cov.counts.entry(akey.clone()).or_insert(0);
             *slot = slot.saturating_add(arcs[i]);
             // **Recorded for the test even when the arc was not taken.** The graph knows the arc
             // exists; only the traversal is absent, and that is the crate's absence-versus-zero
             // rule one level down from the line index.
             if let Some(t) = test {
-                let set = cov.tests.entry(key).or_default();
+                let set = cov.tests.entry(akey).or_default();
                 if !set.contains(&t) {
                     set.push(t);
                 }
             } else {
-                cov.tests.entry(key).or_default();
+                cov.tests.entry(akey).or_default();
             }
         }
     }

@@ -51,8 +51,14 @@ fn two_static_helpers_of_one_name_are_two_entities() {
         .collect();
     helpers.sort_by_key(|k| k.start_line);
     assert_eq!(helpers.len(), 2, "one per file: {helpers:?}");
-    assert_eq!((helpers[0].file.as_str(), helpers[0].start_line), ("a.c", 1));
-    assert_eq!((helpers[1].file.as_str(), helpers[1].start_line), ("b.c", 3));
+    assert_eq!(
+        (helpers[0].file.as_str(), helpers[0].start_line),
+        ("a.c", 1)
+    );
+    assert_eq!(
+        (helpers[1].file.as_str(), helpers[1].start_line),
+        ("b.c", 3)
+    );
 }
 
 /// **The counts do not merge**, which is the fact a name-keyed index gets wrong silently.
