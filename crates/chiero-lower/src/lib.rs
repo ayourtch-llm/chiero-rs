@@ -3200,14 +3200,31 @@ impl Lowerer<'_> {
                         // 020 §5: a gap is a diagnostic, not a licence. A designator naming
                         // something that is not there must refuse rather than answer 0 —
                         // which is a plausible offset and so the worst possible guess.
+                        // **A non-constant subscript is arithmetic, not a refusal.** sema folds
+                        // only the constant form, which is the only one C calls a constant
+                        // expression; gcc computes the rest, and so does this.
                         None => {
-                            self.diagnostics.push(LowerDiagnostic {
-                                span,
-                                message: "an `__builtin_offsetof` whose member designator does \
-                                          not resolve"
-                                    .into(),
+                            let root = args.first().and_then(|a| match self.ast.expr(*a).kind {
+                                chiero_ast::ExprKind::TypeName(t) => {
+                                    self.analysis.ty_of_syntactic(t)
+                                }
+                                _ => None,
                             });
-                            Operand::Const(Const::Undef(CTy::Int(bits)))
+                            let computed = root
+                                .zip(args.get(1).copied())
+                                .and_then(|(r, p)| self.offsetof_operand(r, p, bits, span));
+                            match computed {
+                                Some(v) => v,
+                                None => {
+                                    self.diagnostics.push(LowerDiagnostic {
+                                        span,
+                                        message: "an `__builtin_offsetof` whose member designator \
+                                                  does not resolve"
+                                            .into(),
+                                    });
+                                    Operand::Const(Const::Undef(CTy::Int(bits)))
+                                }
+                            }
                         }
                     };
                 }
@@ -5600,6 +5617,140 @@ impl Lowerer<'_> {
     }
 
     /// Lower one of 020 §4.4.1's varargs builtins.
+    /// `offsetof(T, path)` when the path's subscripts are **not** constants.
+    ///
+    /// gcc computes `offsetof(T, qpair[n])` as the address arithmetic it is —
+    /// `&((T *)0)->qpair[n]` — and only the constant form is a constant expression. sema folds
+    /// the constant one; this walks the designator and emits the arithmetic for the rest, so a
+    /// variable index is a value rather than a refusal. VPP's `VIRTCHNL_MSG_SZ` sizes a
+    /// variable-length message this way, in every driver that speaks virtchnl.
+    ///
+    /// Answers `None` for a designator that names nothing — which stays a refusal, because 0 is
+    /// a plausible offset and so the worst possible guess (020 §5).
+    fn offsetof_operand(
+        &mut self,
+        root: TyId,
+        path: ExprId,
+        bits: u32,
+        span: Span,
+    ) -> Option<Operand> {
+        let (_, off) = self.offsetof_walk(root, path, bits, span)?;
+        Some(off)
+    }
+
+    /// One step of the walk: the type reached, and the byte offset to it as an operand.
+    fn offsetof_walk(
+        &mut self,
+        root: TyId,
+        path: ExprId,
+        bits: u32,
+        span: Span,
+    ) -> Option<(TyId, Operand)> {
+        let zero = Operand::Const(Const::Int { bits, val: 0 });
+        match self.ast.expr(path).kind.clone() {
+            // The first component names a member of the root record.
+            chiero_ast::ExprKind::Ident(name) => {
+                let Ty::Record(r) = self.analysis.ty(root).clone() else {
+                    return None;
+                };
+                let f = self.analysis.find_field(r, name)?;
+                Some((
+                    f.ty,
+                    Operand::Const(Const::Int {
+                        bits,
+                        val: f.offset as i128,
+                    }),
+                ))
+            }
+            chiero_ast::ExprKind::Member { base, field, .. } => {
+                let (bty, off) = self.offsetof_walk(root, base, bits, span)?;
+                let Ty::Record(r) = self.analysis.ty(bty).clone() else {
+                    return None;
+                };
+                let f = self.analysis.find_field(r, field)?;
+                let step = Operand::Const(Const::Int {
+                    bits,
+                    val: f.offset as i128,
+                });
+                Some((f.ty, self.add_at(off, step, bits, span)))
+            }
+            chiero_ast::ExprKind::Index { base, index } => {
+                let (bty, off) = self.offsetof_walk(root, base, bits, span)?;
+                let elem = match self.analysis.ty(bty).clone() {
+                    Ty::Array { elem, .. } | Ty::Vector { elem, .. } | Ty::Ptr(elem) => elem,
+                    _ => return None,
+                };
+                let esz = self.analysis.size_of(elem)?;
+                // A constant index folds here rather than emitting a multiply nothing reads.
+                let step = match self.const_of(index) {
+                    Some(k) => Operand::Const(Const::Int {
+                        bits,
+                        val: k * esz as i128,
+                    }),
+                    None => {
+                        let i = self.expr(index);
+                        let i = self.convert_for_store(
+                            i,
+                            index,
+                            &CTy::Int(bits),
+                            self.is_signed(index),
+                            span,
+                        );
+                        let dst = self.new_value();
+                        self.emit(
+                            InstKind::Assign {
+                                dst,
+                                rv: RValue::Bin {
+                                    op: CBinOp::Mul,
+                                    a: i,
+                                    b: Operand::Const(Const::Int {
+                                        bits,
+                                        val: esz as i128,
+                                    }),
+                                    ty: CTy::Int(bits),
+                                    signed: false,
+                                },
+                            },
+                            span,
+                        );
+                        Operand::Value(dst)
+                    }
+                };
+                Some((elem, self.add_at(off, step, bits, span)))
+            }
+            _ => {
+                let _ = zero;
+                None
+            }
+        }
+    }
+
+    /// `a + b` at `bits`, folded when both are constants.
+    fn add_at(&mut self, a: Operand, b: Operand, bits: u32, span: Span) -> Operand {
+        if let (
+            Operand::Const(Const::Int { val: x, .. }),
+            Operand::Const(Const::Int { val: y, .. }),
+        ) = (&a, &b)
+        {
+            return Operand::Const(Const::Int { bits, val: x + y });
+        }
+        let dst = self.new_value();
+        self.emit(
+            InstKind::Assign {
+                dst,
+                rv: RValue::Bin {
+                    op: CBinOp::Add,
+                    a,
+                    b,
+                    ty: CTy::Int(bits),
+                    signed: false,
+                },
+            },
+            span,
+        );
+        Operand::Value(dst)
+    }
+
     fn va_builtin(&mut self, kind: VaBuiltin, args: &[ExprId], e: ExprId, span: Span) -> Operand {
         // The `va_list` object's *address*: §4.4.1 keeps the list in memory so a
         // `va_list *` can cross a function boundary, which VPP's `format` paths need.
