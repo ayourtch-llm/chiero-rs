@@ -125,3 +125,29 @@ dropping it: a wrong file and line is a coverage answer about the wrong code.
 
 None of `t`, `loop`, `unrun` or `prog-a`/`prog-b` has a multi-file block, which is why this
 needed a real tree to surface.
+
+## The line-rule fixtures — `cyc`, `nonmono`, `multi`, `group`, `omp`, `samelin`, `xline`
+
+Seven fixtures added while making the native decoder agree with gcov exactly. Each exists to
+refute one specific wrong reading, and each was built *after* a plausible implementation had
+already passed everything else — so the list doubles as the record of how a rule that fits can
+still be wrong.
+
+| fixture | built with | refutes |
+|---|---|---|
+| `cyc.c` | `gcc --coverage -O0` | that a line's count is the entry arcs into its blocks. A whole `for` loop on line 5: entry-only says 1, gcov says 5. |
+| `nonmono.c` | `gcc --coverage -O0` | that a block belongs to the *last* line of its group. Two force-inlined calls on line 21 make the group read `[21, 10, 11, 12, 13]`; gcov sorts first, so the block belongs to 21. |
+| `multi.c`, `multi.h` | `gcc --coverage -O0` | that a source's lines are accounted per function. `bump` is inlined into both `one` and `two`; gcov reports 2, taking the maximum reports 1. |
+| `group.c` | `gcc --coverage -O0` | that functions sharing a start line share a line table. `two` fits on line 1 and graphs it, `one` starts there and accumulates; one table lets the graph count erase the accumulation. |
+| `omp.c` | `gcc --coverage -fopenmp -O0` | that every function in the notes is counted. The outlined parallel region is `artificial` and carries the source's own lines; gcov erases it. |
+| `samelin.c`, `samelin.h` | `gcc --coverage -O0` | that an empty location group carries nothing. It carries the fact that there *was* a group, and gcov attributes the block a second time because of it. |
+| `xline.c` | `gcc --coverage -O0` | that a file name is a string. `#line` gives two functions one line of `gen.c` under two spellings; gcov canonicalizes, so they are one file and a group. |
+
+Every one is checked against `<stem>.gcov.json.gz` produced by `gcov -b --json-format <stem>.c`,
+committed beside it. `cargo run --release -p chiero-gcov --example scale -- tests/corpus/coverage`
+compares the whole directory in one go.
+
+⚠️ **Four of these took two attempts.** The obvious shape passes under both readings: a group
+whose members agree, an inlined block whose lines happen to be ascending, two blocks of equal
+weight where the sum and the graph answer coincide. If a fixture for a rule of this kind passes
+the moment it is written, suspect the fixture.
