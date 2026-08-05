@@ -211,3 +211,43 @@ fn a_line_the_arcs_do_not_mention_answers_nothing() {
     assert_eq!(cov.line_reached("t.c", 999), None);
     assert_eq!(cov.line_reached("nosuch.c", 3), None);
 }
+
+/// **`line_reached` cannot contradict the line index at line granularity** — and that is why
+/// 032 §3.2's refinement needs a *block*, not a line.
+///
+/// The argument is short. `tests_for_line` names a test only when its count for that line is
+/// non-zero (030's absence-versus-zero rule, applied per test), and a non-zero line count means
+/// flow entered some block carrying the line — which is exactly what `line_reached` asks. So for
+/// every test the line index selects, the arcs agree.
+///
+/// §3.2's value is therefore entirely in the case its own text names:
+///
+/// > line-level coverage attributes a whole line — including a multi-statement macro expansion —
+/// > to a test that only executed part of it.
+///
+/// *Part of it* is a block. To exploit that, the **change** must be located to a block too, and
+/// 031 reports lines. Pinned here so that a refinement which cannot fire is not written and
+/// labelled as the contract; the finding is recorded in HANDOFF beside §3.3's cut, which was made
+/// for a related reason.
+#[test]
+fn the_arcs_never_contradict_the_line_index_at_line_granularity() {
+    for stem in ["t", "loop", "unrun", "inl", "multi"] {
+        let cov = chiero_gcov::native::arc_coverage(&corpus(), stem)
+            .unwrap_or_else(|e| panic!("{stem}: {e}"));
+        let idx = cov.index();
+        for file in idx.files() {
+            for line in idx.lines_of(file) {
+                let counted = idx.line_count(file, line).unwrap_or(0) > 0;
+                if !counted {
+                    continue;
+                }
+                assert_eq!(
+                    cov.line_reached(file, line),
+                    Some(true),
+                    "{stem}: {file}:{line} has a non-zero count, so some block carrying it was \
+                     entered — the arcs cannot say otherwise at this granularity"
+                );
+            }
+        }
+    }
+}
