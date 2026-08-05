@@ -139,3 +139,48 @@ fn an_unreachable_block_is_zero_rather_than_unknown() {
         );
     }
 }
+
+/// **A graph the counters contradict is one function's problem, not the object's.**
+///
+/// `dlmalloc.c`'s `internal_memalign` cannot be solved: block 23 receives flow from a counter
+/// that says zero, while the counters downstream require 24 to have passed through it. Fifteen of
+/// that object's sixty functions have blocks with no predecessor and only this one contradicts,
+/// so the rule that an orphan block is zero is right — this graph is simply broken.
+///
+/// **`llvm-cov` does not notice.** On the real object it prints `internal_memalign` as entered 24
+/// times with `return 0;` executed **48** times; on this fixture it prints `f` as entered *zero*
+/// times with a line inside it executed 24. Both are impossible, and both are printed without a
+/// word. Producing a confident wrong number is the one thing this crate exists not to do.
+///
+/// So the function is skipped and its lines are left with **no record at all** — absence, which
+/// downstream reads as "coverage cannot see this" and 032 answers by running the tests. The other
+/// fifty-nine functions of `dlmalloc.c` are perfectly good and are not thrown away with it, which
+/// is what refusing the whole object did.
+///
+/// # The fixture is synthesized, and says so
+///
+/// The real object is 182 KB, and no compiler emits this shape on demand — it is a defect. So the
+/// `.gcno` and `.gcda` are written byte by byte to the layout measured from clang's own output,
+/// and **`llvm-cov gcov` reads them**, which is what makes them a fixture rather than a guess.
+#[test]
+fn an_unsolvable_function_is_skipped_and_named() {
+    let idx = chiero_gcov::ingest_native(&corpus(), "orphan")
+        .expect("one broken function does not condemn the object");
+
+    assert_eq!(
+        idx.lines_of("orphan.c"),
+        Vec::<u32>::new(),
+        "no line of an unsolvable function gets a count — a number here would be invented"
+    );
+    let named: Vec<&str> = idx
+        .provenance()
+        .iter()
+        .flat_map(|r| r.unsolved.iter().map(|s| s.as_str()))
+        .collect();
+    assert_eq!(
+        named,
+        vec!["f"],
+        "and it is named, because silently dropping a function is how a tool starts under-\
+         reporting without anyone noticing"
+    );
+}

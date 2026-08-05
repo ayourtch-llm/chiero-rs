@@ -1,0 +1,14 @@
+        -:    0:Source:orphan.c
+        -:    0:Graph:orphan.gcno
+        -:    0:Data:orphan.gcda
+        -:    0:Runs:0
+        -:    0:Programs:0
+        -:    1:/* SYNTHETIC — not compiler output. See README.
+        -:    2:   A graph whose counters contradict its arcs: block 3 has no predecessor, so
+        -:    3:   nothing can reach it, yet the counters require flow through the block it
+        -:    4:   feeds. No assignment of the on-tree arcs satisfies conservation. */
+        -:    5:int
+    #####:    6:f (int n)
+       24:    7:{
+    #####:    8:  return n;
+        -:    9:}
