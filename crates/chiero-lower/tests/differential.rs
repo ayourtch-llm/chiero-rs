@@ -6786,3 +6786,43 @@ fn offsetof_in_an_initializer_knows_its_type() {
         "vr_t vr = { .sz = __builtin_offsetof(rk_t, key[2]) }; return (int)vr.sz;",
     );
 }
+
+/// **An enumerator wider than `int` folds at 32 bits.**
+///
+/// ```text
+/// plugins/tap/tap.c:36:36: signed overflow in a constant expression
+///   const static u64 virtio_features = VIRTIO_NET_F_MRG_RXBUF_BIT |
+///                                      VIRTIO_F_VERSION_1_BIT | …;
+/// ```
+///
+/// `plugins/tap/virtio_net.h:87` is `#define _(f, n) VIRTIO_NET_F_##f##_BIT = 1ULL << (n),`, and
+/// `VIRTIO_F_VERSION_1_BIT` is `1ULL << 32`. Measured with `_Generic` against gcc 13.3.0: the
+/// enumeration is `unsigned long`, `sizeof` is 8, the *enumerator* is `unsigned long` too, and
+/// `A_BIT | B_BIT` is 4294967300.
+///
+/// chiero already chooses the widened underlying type and already records each enumerator with
+/// it — `type_expr` was taught this when `enum Big { X = 5000000000 }` lowered truncated. The
+/// **fold** was missed: it types every enumerator reference `int`, so the `|` overflowed 32 bits
+/// and was reported as a defect in VPP's code.
+#[test]
+fn an_enumerator_wider_than_int_folds_at_its_own_width() {
+    const P: &str = "typedef enum { A_BIT = 1ULL << 32, B_BIT = 4 } f_t;\n";
+    agree_with(P, "return (int)((A_BIT | B_BIT) >> 32);");
+    agree_with(P, "return (int)(A_BIT | B_BIT);");
+    // As a file-scope initializer, which is the corpus shape.
+    agree_with(
+        "typedef enum { A_BIT = 1ULL << 32, B_BIT = 4 } f_t;\n\
+         static const unsigned long long feats = A_BIT | B_BIT;\n",
+        "return (int)(feats >> 32) * 10 + (int)(feats & 0xff);",
+    );
+    // A negative enumeration stays signed, so the fix cannot just make everything unsigned.
+    agree_with(
+        "typedef enum { N = -1, M = 3 } s_t;\n",
+        "return (int)(N + M);",
+    );
+    // And one that fits in `int` keeps folding at `int`, sign and all.
+    agree_with(
+        "typedef enum { P = 2147483647 } p_t;\n",
+        "return (int)(P - 1);",
+    );
+}
