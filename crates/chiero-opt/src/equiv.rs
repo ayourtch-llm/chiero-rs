@@ -53,12 +53,21 @@
 //!
 //! §1.1 makes equivalence three claims — return value, observable footprint, ordered side
 //! effects — and only the return value and termination are decided here. The other two are
-//! not silently assumed to hold: a comparison that would have to reason about caller-visible
-//! memory or about a side-effect sequence answers [`Equivalence::Unknown`] naming the claim
-//! it could not check. That is the difference between "chiero proved these agree" and
-//! "chiero checked the easy part and said nothing about the rest".
+//! not silently assumed to hold: [`observable_beyond_the_return`] refuses, before either
+//! version is run, any pair that could touch caller-visible memory or produce an observable
+//! event. That is the difference between "chiero proved these agree" and "chiero checked the
+//! easy part and said nothing about the rest".
+//!
+//! **That paragraph was here for a whole commit before anything implemented it**, and an
+//! adversarial review found `g = x; return 0` against `return 0` reported
+//! `Equivalent { Exact }`. It is worth saying plainly, because documentation is what a
+//! reader checks *instead of* the code: a written intention with no implementation is worse
+//! than an admitted gap. `crates/chiero-opt/tests/adversarial.rs` holds that fixture and the
+//! five others the same review produced.
 
-use chiero_cir::{CTy, Function, Module};
+use chiero_cir::{
+    Body, CTy, Callee, FuncId, Function, InstKind, Module, Operand, RValue, ValueId, Volatility,
+};
 use chiero_exec::{
     Assumption, Binding, Budget, Engine, Fidelity, InputOrigin, SolverTier, State, Status,
     TermReason, Value, Witness,
@@ -266,6 +275,22 @@ pub fn prove_equivalent(before: &Module, after: &Module, cfg: &EquivCfg) -> Equi
              matching objects up to the bijection are not implemented"
         ));
     }
+    // **§1.1's other two claims, refused rather than assumed.** The comparison below decides
+    // return values and termination. If either version can touch caller-visible memory or
+    // produce an observable event, the two claims this cannot check are claims that *matter
+    // for this pair*, and answering `Equivalent` would be answering a different question.
+    //
+    // Found by review, and the review's sharpest point was that this paragraph already
+    // existed in the module documentation with nothing implementing it. `g = x; return 0`
+    // against `return 0` was `Equivalent { Exact }`.
+    for (side, m, f) in [("before", before, fb), ("after", after, fa)] {
+        if let Some(why) = observable_beyond_the_return(m, f) {
+            return unknown(format!(
+                "the {side} version {why}, and comparing caller-visible memory and the \
+                 side-effect sequence (041 §1.1) is not implemented"
+            ));
+        }
+    }
 
     let mut arena = TermArena::new();
     let rb = run_side(before, cfg, &mut arena);
@@ -305,6 +330,9 @@ pub fn prove_equivalent(before: &Module, after: &Module, cfg: &EquivCfg) -> Equi
     // many were cut off before they could. See the check below the loop for why the
     // difference is the whole difference between a verdict and silence.
     let (mut examined, mut cut) = (0usize, 0usize);
+    // Whether any pair actually had two return values to compare. A void function's verdict
+    // that listed `ReturnValue` among what it compared would be naming a claim nobody made.
+    let mut compared_returns = false;
 
     for sb in rb.states() {
         for sa in ra.states() {
@@ -338,6 +366,19 @@ pub fn prove_equivalent(before: &Module, after: &Module, cfg: &EquivCfg) -> Equi
                 cut += 1;
                 continue;
             }
+            // **Two crashes are not agreement.** `TermReason::Crashed` says a path faulted,
+            // not *how*: a null dereference and a use-after-free are the same variant, and
+            // §1.1 counts abnormal termination as observable. Comparing them as `(None,
+            // None)` — which is what "neither returned a value" does — reads two unrelated
+            // faults as the two versions doing the same thing. Refused until the fault
+            // itself is compared.
+            if tb == TermReason::Crashed || ta == TermReason::Crashed {
+                return unknown(
+                    "a path faults on one or both sides, and chiero cannot yet tell two \
+                     abnormal terminations apart (041 §1.1)"
+                        .to_string(),
+                );
+            }
             examined += 1;
 
             // §1.1's third observable, checked structurally: two paths whose termination
@@ -359,6 +400,9 @@ pub fn prove_equivalent(before: &Module, after: &Module, cfg: &EquivCfg) -> Equi
                 continue;
             }
 
+            if sb.return_value().is_some() && sa.return_value().is_some() {
+                compared_returns = true;
+            }
             match compare_returns(&mut solver, &mut arena, &mut pc, sb, sa, &link) {
                 Ok(None) => {}
                 Ok(Some((key, d, w))) => found.push((key, d, w)),
@@ -398,10 +442,18 @@ pub fn prove_equivalent(before: &Module, after: &Module, cfg: &EquivCfg) -> Equi
             }
         }
     }
+    let fidelity = rb.fidelity().degrade(ra.fidelity());
+    if let Err(why) = blessable(fidelity, &assumptions) {
+        return unknown(why);
+    }
     Equivalence::Equivalent {
-        fidelity: rb.fidelity().degrade(ra.fidelity()),
+        fidelity,
         footprint: Footprint {
-            compared: vec![Claim::ReturnValue, Claim::Termination],
+            compared: if compared_returns {
+                vec![Claim::ReturnValue, Claim::Termination]
+            } else {
+                vec![Claim::Termination]
+            },
         },
         assumptions,
     }
@@ -409,6 +461,178 @@ pub fn prove_equivalent(before: &Module, after: &Module, cfg: &EquivCfg) -> Equi
 
 /// One divergence, keyed by the minimized input that produces it.
 type Candidate = (Vec<u128>, Divergence, Witness);
+
+/// Whether this function can do anything observable that the comparison below does not
+/// decide — §1.1's claims 2 and 3.
+///
+/// **Conservative by construction, and deliberately syntactic.** It answers "could this
+/// touch caller-visible memory or produce an observable event", not "does it, on this path".
+/// A precise answer needs the run, and the run is what would be blessed on the strength of
+/// it; a syntactic over-approximation can only cost a refusal, while a precise-but-wrong one
+/// costs a wrong proof. When §1.1's other two claims are actually compared this whole
+/// function goes away rather than getting cleverer.
+///
+/// Walks the entry and every function it can reach with a body, because a store to a global
+/// two calls down is no less a store.
+fn observable_beyond_the_return(m: &Module, entry: &Function) -> Option<String> {
+    let mut seen: Vec<FuncId> = vec![entry.id];
+    let mut queue = vec![entry.id];
+    while let Some(id) = queue.pop() {
+        let Some(f) = m.funcs.iter().find(|f| f.id == id) else {
+            return Some("calls a function that is not in the module".to_string());
+        };
+        for b in &f.blocks {
+            for i in &b.insts {
+                if let Some(why) = observable_inst(m, f, &i.kind, &mut seen, &mut queue) {
+                    return Some(why);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The values in this function that are **provably** the address of one of its own stack
+/// slots. Seeded by `AddrOfLocal` and grown through pointer arithmetic and copies.
+///
+/// Everything else is treated as escaping, `Phi` included: a merge of a local and a global
+/// address is not a local address, and a conservative set is the only kind that is safe to
+/// bless on. `AddrOfLocal` is the one address a function knows nobody else holds — 041 §1.1's
+/// "not stack temporaries, which is what permits most real refactors".
+fn local_addresses(f: &Function) -> Vec<ValueId> {
+    let mut local: Vec<ValueId> = Vec::new();
+    // Two passes, because CIR blocks are in no particular order and a `ptradd` may precede
+    // the `addrlocal` it builds on in block order. A fixpoint would be more general; two
+    // passes is enough for the straight-line shapes and errs by treating a late-discovered
+    // local as escaping, which refuses rather than blesses.
+    for _ in 0..2 {
+        for b in &f.blocks {
+            for i in &b.insts {
+                let InstKind::Assign { dst, rv } = &i.kind else {
+                    continue;
+                };
+                let from = |o: &Operand| match o {
+                    Operand::Value(v) => local.contains(v),
+                    _ => false,
+                };
+                let is_local = match rv {
+                    RValue::AddrOfLocal { .. } => true,
+                    RValue::PtrAdd { base, .. } => from(base),
+                    RValue::Use(o) => from(o),
+                    RValue::Cast { a, .. } => from(a),
+                    _ => false,
+                };
+                if is_local && !local.contains(dst) {
+                    local.push(*dst);
+                }
+            }
+        }
+    }
+    local
+}
+
+fn observable_inst(
+    m: &Module,
+    f: &Function,
+    k: &InstKind,
+    seen: &mut Vec<FuncId>,
+    queue: &mut Vec<FuncId>,
+) -> Option<String> {
+    let local = local_addresses(f);
+    // A write whose destination is not provably a local is a write the caller might see.
+    let escapes = |addr: &Operand| match addr {
+        Operand::Value(v) => !local.contains(v),
+        _ => true,
+    };
+    match k {
+        InstKind::Store { addr, vol, .. } => {
+            if *vol == Volatility::Volatile {
+                return Some("performs a volatile store (020 §4.2)".to_string());
+            }
+            escapes(addr).then(|| "stores through an address that is not a local".to_string())
+        }
+        InstKind::StoreBits { addr, .. } => {
+            escapes(addr).then(|| "stores bits through an address that is not a local".to_string())
+        }
+        InstKind::CopyMem { dst, .. } | InstKind::SetMem { dst, .. } => escapes(dst)
+            .then(|| "writes a block through an address that is not a local".to_string()),
+        InstKind::Opaque { .. } => {
+            Some("contains inline asm or an unmodeled construct".to_string())
+        }
+        InstKind::VaStart { .. } | InstKind::VaCopy { .. } | InstKind::VaEnd { .. } => {
+            Some("manipulates a variadic argument list".to_string())
+        }
+        InstKind::Call { callee, .. } => match callee {
+            Callee::Indirect(_) => Some("makes an indirect call".to_string()),
+            Callee::Direct(id) => {
+                let Some(f) = m.funcs.iter().find(|f| f.id == *id) else {
+                    return Some("calls a function that is not in the module".to_string());
+                };
+                if f.body == Body::Declared {
+                    // A function chiero has never seen the body of is assumed to do
+                    // something. Over-recording costs a refusal; under-recording blesses a
+                    // rewrite that reordered I/O.
+                    return (!f.attrs.no_side_effects)
+                        .then(|| format!("calls `{}`, which has no body and is not pure", f.name));
+                }
+                if !seen.contains(id) {
+                    seen.push(*id);
+                    queue.push(*id);
+                }
+                None
+            }
+        },
+        InstKind::Assign {
+            rv:
+                RValue::Load {
+                    vol: Volatility::Volatile,
+                    ..
+                },
+            ..
+        } => Some("performs a volatile load (020 §4.2)".to_string()),
+        _ => None,
+    }
+}
+
+/// **Which fidelities may carry an `Equivalent`** — §1.2 names exactly two.
+///
+/// > "for a function with an unbounded loop, the result is `Equivalent { fidelity: Bounded }`
+/// > — a statement about inputs within the bound, not a proof."
+///
+/// `Approximated` is 023 §7's phrase for *a deliberate lie about semantics*, and `Unknown`
+/// for *the engine does not know and cannot bound its ignorance*. Neither is a thing to build
+/// a blessing on, and both were reachable: an unmodeled void call gave
+/// `Equivalent { Approximated }`.
+///
+/// **And `Bounded` only when the bound is a loop bound.** A run that hit `max_forks` or
+/// `max_states` dropped a sibling path and degraded the survivor to `Bounded` — correctly,
+/// because that is all the engine can say — but the pairing argument below rests on both runs
+/// being exhaustive, and a dropped path is exactly what it is not. The fixtures that found
+/// this have no loop at all and disagree on 2^32 - 1 inputs; there is no bound within which
+/// the blessing is true.
+///
+/// Keyed on the assumption's own text, which is fragile in the direction that fails *closed*:
+/// a rename in the engine turns a would-be `Bounded` blessing into an `Unknown`.
+fn blessable(f: Fidelity, assumptions: &[Assumption]) -> Result<(), String> {
+    match f {
+        Fidelity::Exact => Ok(()),
+        Fidelity::Bounded => {
+            for a in assumptions {
+                if a.fidelity == Fidelity::Bounded && !a.detail.starts_with("max_loop_iters") {
+                    return Err(format!(
+                        "the search was truncated by something other than a loop bound \
+                         ({}), so paths were dropped rather than bounded",
+                        a.detail
+                    ));
+                }
+            }
+            Ok(())
+        }
+        other => Err(format!(
+            "the run is {other:?}, and 041 §1.2 gives `Equivalent` only `Exact` or `Bounded`"
+        )),
+    }
+}
 
 /// The canonical divergence: smallest witness first, then the divergence kind.
 fn pick(mut found: Vec<Candidate>) -> Option<Candidate> {
@@ -485,6 +709,22 @@ fn link_inputs(a: &mut TermArena, sb: &State, sa: &State) -> Option<Link> {
             .collect()
     };
     let (pb, pa) = (params(sb), params(sa));
+    // **`index` is not a key.** `chiero_make_symbolic` mints `InputOrigin::Param { index }`
+    // where the index is a *byte offset within a buffer*, so two symbolized buffers give two
+    // inputs numbered 0. `find`-first would then equate the second buffer's before-bytes to
+    // the first buffer's after-bytes and leave the rest unconstrained — fabricating some
+    // divergences and masking others. Latent when found by review; refused rather than left
+    // to be discovered by a wrong answer.
+    let unique = |v: &[(usize, Term)]| {
+        let mut ix: Vec<usize> = v.iter().map(|(i, _)| *i).collect();
+        ix.sort_unstable();
+        let n = ix.len();
+        ix.dedup();
+        ix.len() == n
+    };
+    if !unique(&pb) || !unique(&pa) {
+        return None;
+    }
     // Any input that is not an entry parameter is one this code cannot match — an extern's
     // return, a lazily-materialized byte. §1.2 wants those shared too; they are not.
     if pb.len() != sb.inputs().len() || pa.len() != sa.inputs().len() || pb.len() != pa.len() {
@@ -601,11 +841,33 @@ fn minimized_witness_with(
     extra: &[Term],
 ) -> (Vec<u128>, Witness) {
     let mut fixed: Vec<u128> = Vec::with_capacity(link.len());
+    let mut current = m;
     for (tb, _) in link.iter() {
         let w = arena.width(*tb);
-        // `best` is always a value this input is *known* to be able to take given the
-        // inputs already fixed; the search only ever lowers it.
-        let mut best = arena.eval(&m, *tb).map(|c| c.bits()).unwrap_or(0);
+        // **Seeded from a model taken under the pins already chosen, not from the first one.**
+        //
+        // The first `Sat` predates every pin. Where the divergence set is not a product —
+        // the review's fixture diverges at exactly `{(0, 200), (3, 7)}` — minimizing input 0
+        // to 0 makes the first model's value for input 1 unreachable, and a search seeded
+        // from it probes only values that cannot occur, finds every one Unsat, and reports
+        // the seed. That is a witness the solver never agreed to: `(0, 7)`, at which both
+        // versions return the same thing.
+        //
+        // Re-solving costs one query per input and makes the loop's invariant true instead
+        // of asserted: `best` is always a value this input takes in a model of the pins.
+        let mut best = match arena.eval(&current, *tb).map(|c| c.bits()) {
+            Ok(v) => v,
+            // The model does not bind this input. Rather than invent a value — the same
+            // fabrication by a quieter route — take whatever a fresh solve says, and if
+            // there is none, stop: `fixed` so far is still a real prefix.
+            Err(_) => match pin(solver, arena, pc, link, &fixed, extra) {
+                Some(m2) => match arena.eval(&m2, *tb).map(|c| c.bits()) {
+                    Ok(v) => v,
+                    Err(_) => break,
+                },
+                None => break,
+            },
+        };
         let (mut lo, mut hi) = (0u128, best);
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
@@ -617,11 +879,10 @@ fn minimized_witness_with(
             asm.push(le);
             match solver.check_path(arena, pc, &asm) {
                 CheckResult::Sat(m2) => {
-                    best = arena
-                        .eval(&m2, *tb)
-                        .map(|c| c.bits())
-                        .unwrap_or(mid)
-                        .min(mid);
+                    best = match arena.eval(&m2, *tb).map(|c| c.bits()) {
+                        Ok(v) => v.min(mid),
+                        Err(_) => mid,
+                    };
                     hi = best;
                 }
                 CheckResult::Unsat => lo = mid + 1,
@@ -632,6 +893,13 @@ fn minimized_witness_with(
             }
         }
         fixed.push(best);
+        // Re-solve with this input pinned too, so the next iteration's seed is achievable.
+        match pin(solver, arena, pc, link, &fixed, extra) {
+            Some(m2) => current = m2,
+            // Unreachable if `best` is genuinely achievable; if it is not, stopping here
+            // leaves a shorter witness rather than a wrong one.
+            None => break,
+        }
     }
     (fixed.clone(), witness_for(arena, sb, link, &fixed))
 }
