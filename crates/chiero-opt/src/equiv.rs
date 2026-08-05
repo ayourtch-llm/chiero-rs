@@ -301,6 +301,10 @@ pub fn prove_equivalent(before: &Module, after: &Module, cfg: &EquivCfg) -> Equi
     // Every divergence found, each with its minimized witness. Collected rather than
     // returned at the first hit so the reported one can be chosen canonically (contract 13).
     let mut found: Vec<Candidate> = Vec::new();
+    // How many pairs actually reached a point where the two could be compared, and how
+    // many were cut off before they could. See the check below the loop for why the
+    // difference is the whole difference between a verdict and silence.
+    let (mut examined, mut cut) = (0usize, 0usize);
 
     for sb in rb.states() {
         for sa in ra.states() {
@@ -324,9 +328,20 @@ pub fn prove_equivalent(before: &Module, after: &Module, cfg: &EquivCfg) -> Equi
                 CheckResult::Sat(_) => {}
             }
 
+            // **A budget cut is chiero running out, not the program diverging.** A pair
+            // where one side was truncated has nothing to say: the two paths did not reach
+            // a common point, and reporting `Termination { Return, Budget }` would put
+            // chiero's own limit in front of a reader as a defect in their rewrite. §1.2
+            // already has the honest name for this region — it is what `Bounded` means.
+            let (tb, ta) = (term_reason(sb), term_reason(sa));
+            if tb == TermReason::Budget || ta == TermReason::Budget {
+                cut += 1;
+                continue;
+            }
+            examined += 1;
+
             // §1.1's third observable, checked structurally: two paths whose termination
             // differs are not equivalent, whatever they returned.
-            let (tb, ta) = (term_reason(sb), term_reason(sa));
             if tb != ta {
                 let m = match solver.check_path(&mut arena, &mut pc, &[]) {
                     CheckResult::Sat(m) => m,
@@ -350,6 +365,19 @@ pub fn prove_equivalent(before: &Module, after: &Module, cfg: &EquivCfg) -> Equi
                 Err(r) => return unknown(r),
             }
         }
+    }
+
+    // **"No pair disagreed" and "there were no pairs" are the same silence.** Only one of
+    // them is a proof, and the difference is invisible in the verdict unless it is counted:
+    // a run whose every path was cut by a budget would otherwise report `Equivalent` —
+    // hedged to `Bounded`, which reads as "agrees within a bound" and not as "nothing was
+    // looked at". Found by asking what the pairing loop does with nothing to iterate over.
+    if examined == 0 {
+        return unknown(format!(
+            "no pair of paths reached a comparable end: {cut} pair(s) were cut by a budget,              {} before-path(s) and {} after-path(s) in all",
+            rb.states().len(),
+            ra.states().len()
+        ));
     }
 
     if let Some((_, observation, input)) = pick(found) {
