@@ -86,3 +86,44 @@ fn an_unrecorded_test_is_not_complete() {
     let idx = chiero_gcov::CoverageIndex::default();
     assert!(!idx.coverage_complete(TestId(3)));
 }
+
+/// **A test whose ingest failed is not a test the index can speak for.**
+///
+/// Found by adversarial review. `ingest_into` noted the test and its variant *before* the
+/// fallible per-function loop, so an object that fails partway — a checksum mismatch, a function
+/// with no counters, an unsolvable flow graph — left the test in the index with none of its
+/// coverage in it.
+///
+/// The consequence is the one 030 §6 is written to prevent. `coverage_complete` asks whether the
+/// test ran in a way that writes counters *and* whether the index has it; with a `Passed` outcome
+/// recorded, both were true, so the test left the always-run set and 032 skipped it on coverage
+/// that never arrived. Contract 6 already says a corrupt object must leave no partial index — the
+/// lines obeyed that and the test list did not.
+///
+/// `trunc.gcda` is `t.gcda` cut at its second `FUNCTION` record, so the first function ingests and
+/// the second has no counters.
+#[test]
+fn a_failed_ingest_leaves_no_trace_of_its_test() {
+    let mut idx = chiero_gcov::CoverageIndex::default();
+    let err = chiero_gcov::ingest_native_as(&mut idx, TestId(4), &corpus(), "trunc")
+        .expect_err("the truncated data must be refused");
+    assert!(
+        format!("{err}").contains("no counters") || format!("{err}").contains("counters"),
+        "the failure must name the missing counters: {err}"
+    );
+
+    assert!(
+        !idx.tests().contains(&TestId(4)),
+        "a test whose object was refused is not in the index"
+    );
+    idx.record_outcome(TestId(4), chiero_gcov::TestOutcome::Passed);
+    assert!(
+        !idx.coverage_complete(TestId(4)),
+        "the run exited normally, and its coverage still did not arrive"
+    );
+    assert!(
+        idx.always_run().contains(&TestId(4)),
+        "so it must run whatever the change is — this is the safety set 032 depends on"
+    );
+    assert!(idx.variants().is_empty(), "and no build was recorded either");
+}
