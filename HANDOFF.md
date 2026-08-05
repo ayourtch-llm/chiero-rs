@@ -930,7 +930,16 @@ typing the paths ever would.
 > looking up the macro's definition line in a real gcc-built index and finding nothing. That is
 > 030 §1's measurement arriving as a number in a report.
 >
-> ⚠️ **Two harness bugs, both caught by the gate's own output**, and both instructive:
+> ⚠️ **The gate runs the whole pipeline** — 030's index, 031's closure, 032's `select_with` — as
+> of 8a2d461. It did not, before: it called `chiero_diff::impact` and stopped, measuring 031 and
+> reporting the number as selection. Wiring the real pipeline in **dropped recall to 0%**, because
+> `chiero-diff` names a file the way the source does while `chiero-gcov` stores paths *as gcov
+> wrote them*. **That is the third time a path-identity mismatch has silently produced a
+> flattering answer in this project.** The join is the caller's to resolve (030 says so); matching
+> by basename inside `select` is rejected, because it would conflate two files of one name in
+> different directories — the identity mistake `FuncKey` exists to prevent.
+>
+> ⚠️ **Four harness bugs, all caught by the gate's own output**, and all instructive:
 >
 > 1. the ingest found nothing — gcc names a one-step compile-and-link's notes `<output>-<source>`
 >    (`t_scaled-lib.gcno`, not `lib.gcno`). It failed *loudly* with "the baseline is not measured"
@@ -942,6 +951,15 @@ typing the paths ever would.
 >    saw — an absolute path under the build directory. Every lookup missed, silently, and the
 >    failure was **flattering**: 0% on exactly the mutations where the alternative works. *A gate
 >    whose bug favours the tool it is measuring is worse than no gate.*
+> 4. the gate ignored `Confidence`, so a pipeline that quietly found no coverage would have
+>    selected nothing and **looked like an excellent reduction**. Surfacing it is what pointed at
+>    the path bug above.
+>
+> One real fix in `chiero-select` fell out of it: **a `Macro` entity having no coverage lines is
+> not a gap, it is 030 §1 measured.** gcov records the line a macro was *used* on, never the
+> macro's own; 031 §3.2 already turned the macro into the functions that expand it, and those
+> carry the coverage. Reducing confidence there made every macro edit report a caveat that said
+> nothing.
 >
 > ⏭️ **Contract 18, the historical-replay gate, does not exist.** It is the ground-truth oracle and
 > "the one that would catch a real design flaw" (§6). It needs VPP commits with a known test
