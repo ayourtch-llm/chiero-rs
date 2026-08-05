@@ -268,6 +268,22 @@ pub fn select_refined(
             }
             continue;
         }
+        // **"The index has never heard of this file" is a different fact from "this entity has
+        // no coverage", and it is almost always a path that was not resolved.** 030 stores paths
+        // as gcov wrote them and leaves resolution to the caller — the right division, since
+        // matching by basename here would conflate two files of one name in different
+        // directories. But the failure mode is silent and flattering: every lookup misses, no
+        // test is selected, and the result reads as an excellent reduction. It has happened three
+        // times in this project. So it is named.
+        if !coverage.files().any(|f| f == entity.file()) {
+            reasons.push(format!(
+                "`{}` is not in the coverage index at all — if it should be, the paths were not \
+                 resolved against the build directory (030: paths are stored as gcov wrote them)",
+                entity.file()
+            ));
+            continue;
+        }
+
         let mut measured = false;
         for line in lines {
             let Some(covering) = coverage.tests_for_line(entity.file(), *line) else {

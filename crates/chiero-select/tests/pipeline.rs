@@ -451,16 +451,20 @@ fn a_budget_that_fits_is_not_a_caveat() {
 #[test]
 fn an_unknown_file_is_reported_as_a_resolution_problem() {
     let before = Program::parse("/elsewhere/t.c", t_c()).expect("parses");
-    let after = Program::parse("/elsewhere/t.c", "int main (void)\n{\n  M; M;\n  return 1;\n}\n")
-        .expect("parses");
+    let after = Program::parse(
+        "/elsewhere/t.c",
+        "int main (void)\n{\n  M; M;\n  return 1;\n}\n",
+    )
+    .expect("parses");
     // The index holds `t.c`, not `/elsewhere/t.c`.
     let sel = select(&impact(&before, &after), &after, &index_with(&[TestId(0)]));
 
     match &sel.confidence {
         Confidence::Reduced { reasons } => {
             assert!(
-                reasons.iter().any(|r| r.contains("not in the coverage index")
-                    && r.contains("/elsewhere/t.c")),
+                reasons.iter().any(
+                    |r| r.contains("not in the coverage index") && r.contains("/elsewhere/t.c")
+                ),
                 "the reason must name the file and say the index has never heard of it, because \
                  that is a resolution problem and not a coverage gap: {reasons:?}"
             );
@@ -474,14 +478,19 @@ fn an_unknown_file_is_reported_as_a_resolution_problem() {
 #[test]
 fn a_known_file_with_no_coverage_is_a_coverage_gap() {
     // `t.c` is in the index; line 4 of it is not.
-    let before = Program::parse("t.c", "int main (void)\n{\n  M; M;\n  return 0;\n}\n")
-        .expect("parses");
-    let after = Program::parse("t.c", "int main (void)\n{\n  M; M;\n  return 0;\n}\nint spare (void) { return 1; }\n")
-        .expect("parses");
+    let before =
+        Program::parse("t.c", "int main (void)\n{\n  M; M;\n  return 0;\n}\n").expect("parses");
+    let after = Program::parse(
+        "t.c",
+        "int main (void)\n{\n  M; M;\n  return 0;\n}\nint spare (void) { return 1; }\n",
+    )
+    .expect("parses");
     let sel = select(&impact(&before, &after), &after, &index_with(&[TestId(0)]));
     if let Confidence::Reduced { reasons } = &sel.confidence {
         assert!(
-            !reasons.iter().any(|r| r.contains("not in the coverage index")),
+            !reasons
+                .iter()
+                .any(|r| r.contains("not in the coverage index")),
             "the file is in the index; only the entity is unmeasured: {reasons:?}"
         );
     }
