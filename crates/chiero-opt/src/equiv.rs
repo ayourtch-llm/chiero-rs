@@ -52,10 +52,11 @@
 //! # What is not built yet, stated rather than papered over
 //!
 //! §1.1 makes equivalence three claims — return value, observable footprint, ordered side
-//! effects — and only the return value and termination are decided here. The other two are
-//! not silently assumed to hold: [`observable_beyond_the_return`] refuses, before either
-//! version is run, any pair that could touch caller-visible memory or produce an observable
-//! event. That is the difference between "chiero proved these agree" and "chiero checked the
+//! effects — and two of them are decided here: the return value (with termination) and the
+//! effect sequence. **The footprint is not.** It is not silently assumed to hold either:
+//! [`observable_beyond_the_return`] refuses, before either version is run, any pair that could
+//! touch caller-visible memory — a volatile access, a store through an address that is not
+//! provably a stack slot, inline asm, a variadic list, an indirect call. That is the difference between "chiero proved these agree" and "chiero checked the
 //! easy part and said nothing about the rest".
 //!
 //! **That paragraph was here for a whole commit before anything implemented it**, and an
@@ -69,8 +70,8 @@ use chiero_cir::{
     Body, CTy, Callee, FuncId, Function, InstKind, Module, Operand, RValue, ValueId, Volatility,
 };
 use chiero_exec::{
-    Assumption, Binding, Budget, Engine, Fidelity, InputOrigin, SolverTier, State, Status,
-    TermReason, Value, Witness,
+    Assumption, AssumptionKind, Binding, Budget, Engine, Fidelity, InputOrigin, SolverTier, State,
+    Status, TermReason, Value, Witness,
 };
 use chiero_solver::{
     BvConst, CheckResult, Model, PathCondition, SmtLib, Term, TermArena, TieredSolver,
@@ -333,6 +334,7 @@ pub fn prove_equivalent(before: &Module, after: &Module, cfg: &EquivCfg) -> Equi
     // Whether any pair actually had two return values to compare. A void function's verdict
     // that listed `ReturnValue` among what it compared would be naming a claim nobody made.
     let mut compared_returns = false;
+    let mut compared_effects = false;
 
     for sb in rb.states() {
         for sa in ra.states() {
@@ -400,6 +402,21 @@ pub fn prove_equivalent(before: &Module, after: &Module, cfg: &EquivCfg) -> Equi
                 continue;
             }
 
+            // §1.1's third claim, decided before the return: two versions that made
+            // different calls are not equivalent whatever they went on to return, and the
+            // effect is the more legible finding of the two.
+            if !sb.effects().is_empty() || !sa.effects().is_empty() {
+                compared_effects = true;
+            }
+            match compare_effects(&mut solver, &mut arena, &mut pc, sb, sa, &link) {
+                Ok(None) => {}
+                Ok(Some((key, d, w))) => {
+                    found.push((key, d, w));
+                    continue;
+                }
+                Err(r) => return unknown(r),
+            }
+
             if sb.return_value().is_some() && sa.return_value().is_some() {
                 compared_returns = true;
             }
@@ -449,10 +466,15 @@ pub fn prove_equivalent(before: &Module, after: &Module, cfg: &EquivCfg) -> Equi
     Equivalence::Equivalent {
         fidelity,
         footprint: Footprint {
-            compared: if compared_returns {
-                vec![Claim::ReturnValue, Claim::Termination]
-            } else {
-                vec![Claim::Termination]
+            compared: {
+                let mut c = vec![Claim::Termination];
+                if compared_returns {
+                    c.insert(0, Claim::ReturnValue);
+                }
+                if compared_effects {
+                    c.push(Claim::SideEffects);
+                }
+                c
             },
         },
         assumptions,
@@ -569,11 +591,13 @@ fn observable_inst(
                     return Some("calls a function that is not in the module".to_string());
                 };
                 if f.body == Body::Declared {
-                    // A function chiero has never seen the body of is assumed to do
-                    // something. Over-recording costs a refusal; under-recording blesses a
-                    // rewrite that reordered I/O.
-                    return (!f.attrs.no_side_effects)
-                        .then(|| format!("calls `{}`, which has no body and is not pure", f.name));
+                    // **No longer a refusal.** A call to a body-less non-pure function is
+                    // now in the state's effect sequence (`EffectKind::Call`, with its
+                    // arguments), and the comparison below decides §1.1's third claim over
+                    // it. What is *not* decided is what the callee did to memory — but that
+                    // is claim 2, and every version of it reaches this function through the
+                    // store instructions above.
+                    return None;
                 }
                 if !seen.contains(id) {
                     seen.push(*id);
@@ -623,6 +647,44 @@ fn blessable(f: Fidelity, assumptions: &[Assumption]) -> Result<(), String> {
                         "the search was truncated by something other than a loop bound \
                          ({}), so paths were dropped rather than bounded",
                         a.detail
+                    ));
+                }
+            }
+            Ok(())
+        }
+        // **An unmodeled call is a shared approximation, and that is what a relational
+        // proof can carry that an absolute one cannot.**
+        //
+        // The engine degrades to `Approximated` when it calls something with no body and no
+        // model: it cannot say what that function did. Neither can this. It does not have to.
+        // Reaching this point means the effect sequences were compared position by position
+        // and agreed, so every call in the degradation is one of two things:
+        //
+        // - **non-pure**, and therefore in the sequence — same callee, same arguments, same
+        //   position on both sides. Whatever it did, it did to both.
+        // - **pure**, and therefore declared to do nothing observable, so a one-sided one
+        //   changes nothing there is to compare.
+        //
+        // Neither leaves an asymmetry, which is the whole content of the claim. Note what
+        // this does *not* say: nothing here proved anything about the callee, so the verdict
+        // stays `Approximated` and 032 §3.1 still refuses to drop a test on it. The blessing
+        // is "these two agree", not "chiero understands this code".
+        //
+        // Only for assumption kinds that account for a call. `OpaqueCode` is deliberately
+        // absent — inline asm is not a call, has no argument list to compare, and the
+        // observability guard refuses it upstream.
+        Fidelity::Approximated => {
+            for a in assumptions {
+                if a.fidelity == Fidelity::Approximated
+                    && !matches!(
+                        a.kind,
+                        AssumptionKind::UnmodeledCall | AssumptionKind::ModelApproximate
+                    )
+                {
+                    return Err(format!(
+                        "the run is Approximated for a reason other than a call whose \
+                         arguments were compared ({:?}: {})",
+                        a.kind, a.detail
                     ));
                 }
             }
@@ -691,6 +753,16 @@ fn term_reason(s: &State) -> TermReason {
 /// The matched input pairs, and the equality asserting each pair is the same input.
 type Link = (Vec<(Term, Term)>, Vec<Term>);
 
+/// What makes an input on one side *the same input* as one on the other.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum InputKey {
+    /// An entry parameter, by position.
+    Param(usize),
+    /// The return of the *n*th call to a named function along this path — §1.2's shared
+    /// extern-return symbols.
+    Extern(String, usize),
+}
+
 /// Pair up the two paths' symbolic inputs, returning one equality per matched pair.
 ///
 /// `None` means an input on one side has no counterpart on the other. That is a refusal,
@@ -699,15 +771,37 @@ type Link = (Vec<(Term, Term)>, Vec<Term>);
 /// dropping it silently would prove equivalence over a smaller input space than the caller
 /// asked about.
 fn link_inputs(a: &mut TermArena, sb: &State, sa: &State) -> Option<Link> {
-    let params = |s: &State| -> Vec<(usize, Term)> {
+    // **§1.2's "the same extern-return symbols", keyed by (function, nth call).**
+    //
+    // Not by span: the two versions are different modules and their spans are unrelated, so
+    // a span key would match nothing and refuse every function with a callee. The ordinal is
+    // the same thing the effect sequence orders by, which is what makes the two consistent —
+    // if the *n*th call to `f` on this path is a different call on the other side, the
+    // effect comparison says so and the pair diverges there rather than here.
+    let keys = |s: &State| -> Vec<(InputKey, Term)> {
+        let mut nth: Vec<(String, usize)> = Vec::new();
         s.inputs()
             .iter()
             .filter_map(|(t, o)| match o {
-                InputOrigin::Param { index, .. } => Some((*index, *t)),
+                InputOrigin::Param { index, .. } => Some((InputKey::Param(*index), *t)),
+                InputOrigin::ExternReturn { func, .. } | InputOrigin::ModelReturn { func, .. } => {
+                    let n = match nth.iter_mut().find(|(f, _)| f == func) {
+                        Some((_, c)) => {
+                            *c += 1;
+                            *c
+                        }
+                        None => {
+                            nth.push((func.clone(), 0));
+                            0
+                        }
+                    };
+                    Some((InputKey::Extern(func.clone(), n), *t))
+                }
                 _ => None,
             })
             .collect()
     };
+    let params = keys;
     let (pb, pa) = (params(sb), params(sa));
     // **`index` is not a key.** `chiero_make_symbolic` mints `InputOrigin::Param { index }`
     // where the index is a *byte offset within a buffer*, so two symbolized buffers give two
@@ -715,9 +809,9 @@ fn link_inputs(a: &mut TermArena, sb: &State, sa: &State) -> Option<Link> {
     // the first buffer's after-bytes and leave the rest unconstrained — fabricating some
     // divergences and masking others. Latent when found by review; refused rather than left
     // to be discovered by a wrong answer.
-    let unique = |v: &[(usize, Term)]| {
-        let mut ix: Vec<usize> = v.iter().map(|(i, _)| *i).collect();
-        ix.sort_unstable();
+    let unique = |v: &[(InputKey, Term)]| {
+        let mut ix: Vec<InputKey> = v.iter().map(|(i, _)| i.clone()).collect();
+        ix.sort();
         let n = ix.len();
         ix.dedup();
         ix.len() == n
@@ -816,6 +910,114 @@ fn compare_returns(
             }
         }
     }
+}
+
+/// **041 §1.1's third claim**: the ordered sequence of observable side effects.
+///
+/// Positional, because it is a *sequence*: §1.1 settles that "the order of two independent
+/// extern calls **is** observable (C fixes it, and reordering visible I/O is not a safe
+/// refactor)", so index `i` on one side is compared with index `i` on the other and a
+/// difference in length is a difference at the first index one side does not have.
+///
+/// **The arguments are the load-bearing half.** Contract 6's rewrite swaps two calls to the
+/// *same* function: the callee names match position for position, and only the arguments
+/// distinguish the two programs. They are compared symbolically — a solver query asking
+/// whether any argument can differ under this pair's input constraint — because the question
+/// is whether the two calls agree for *every* input, which no concrete pair of values
+/// answers.
+fn compare_effects(
+    solver: &mut TieredSolver,
+    arena: &mut TermArena,
+    pc: &mut PathCondition,
+    sb: &State,
+    sa: &State,
+    link: &[(Term, Term)],
+) -> Result<Divergent, String> {
+    let (eb, ea) = (sb.effects().to_vec(), sa.effects().to_vec());
+    let n = eb.len().max(ea.len());
+    for i in 0..n {
+        let (x, y) = (eb.get(i), ea.get(i));
+        let describe = |e: Option<&chiero_exec::Effect>| e.map(|e| e.detail.clone());
+        // A length difference, or two different events at the same point in the sequence.
+        // Neither needs the solver: the pair is already known feasible, so any input
+        // satisfying it takes both these paths and therefore produces both these sequences.
+        let structural = match (x, y) {
+            (None, _) | (_, None) => true,
+            (Some(p), Some(q)) => p.kind != q.kind || p.detail != q.detail,
+        };
+        if structural {
+            let m = match solver.check_path(arena, pc, &[]) {
+                CheckResult::Sat(m) => m,
+                _ => return Err("a pair known feasible stopped being feasible".to_string()),
+            };
+            let (key, w) = minimized_witness(solver, arena, pc, sb, link, m);
+            return Ok(Some((
+                key,
+                Divergence::SideEffect {
+                    index: i as u32,
+                    before: describe(x),
+                    after: describe(y),
+                },
+                w,
+            )));
+        }
+        // Same event, same callee: do the arguments agree for every input?
+        let (p, q) = (x.expect("checked"), y.expect("checked"));
+        if p.args.len() != q.args.len() {
+            return Err(format!(
+                "the two versions call `{}` with a different number of arguments",
+                p.detail
+            ));
+        }
+        let mut differ: Option<Term> = None;
+        for (ab, aa) in p.args.iter().zip(&q.args) {
+            let (tb, ta) = match (ab, aa) {
+                (Some(Value::Scalar(x)), Some(Value::Scalar(y))) => (*x, *y),
+                // A pointer argument is comparable only up to §1.1's object bijection, and
+                // `None` is an argument the engine could not evaluate. Refusing keeps the
+                // rule this whole module runs on: never bless a question that was not asked.
+                _ => {
+                    return Err(format!(
+                        "an argument to `{}` is a pointer or could not be evaluated; \
+                         comparing it needs the object bijection of 041 §1.1",
+                        p.detail
+                    ));
+                }
+            };
+            if arena.width(tb) != arena.width(ta) {
+                return Err(format!("`{}` is called with differing widths", p.detail));
+            }
+            let eq = arena.eq(tb, ta);
+            let ne = arena.not(eq);
+            differ = Some(match differ {
+                None => ne,
+                Some(d) => arena.or(d, ne),
+            });
+        }
+        let Some(d) = differ else { continue };
+        match solver.check_path(arena, pc, &[d]) {
+            CheckResult::Unsat => {}
+            CheckResult::Unknown(r) => {
+                return Err(format!(
+                    "solver could not decide whether the arguments to `{}` agree: {r:?}",
+                    p.detail
+                ));
+            }
+            CheckResult::Sat(m) => {
+                let (key, w) = minimized_witness_with(solver, arena, pc, sb, link, m, &[d]);
+                return Ok(Some((
+                    key,
+                    Divergence::SideEffect {
+                        index: i as u32,
+                        before: describe(x),
+                        after: describe(y),
+                    },
+                    w,
+                )));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Binary-search each matched input down to its smallest distinguishing value, in index

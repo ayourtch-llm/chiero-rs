@@ -81,7 +81,14 @@ fn the_same_calls_in_the_same_order_are_equivalent() {
             footprint,
             ..
         } => {
-            assert_eq!(fidelity, Fidelity::Exact);
+            // **`Approximated`, not `Exact`, and that is the honest answer.** The engine
+            // cannot say what `p` did — it has no body and no model — so each run on its own
+            // is a lie about semantics (023 §7). What the *relational* comparison can say is
+            // that both versions called the same function with the same arguments in the
+            // same order, so whatever `p` did, it did to both. That licenses the verdict and
+            // not the fidelity: 032 §3.1 still refuses to drop a test on this, which is
+            // right, because nothing here proved anything about `p`.
+            assert_eq!(fidelity, Fidelity::Approximated);
             assert!(
                 footprint.compared.contains(&Claim::SideEffects),
                 "the sequence was compared and must be claimed: {footprint:?}"
@@ -174,31 +181,36 @@ fn dropping_a_call_leaves_a_hole_the_divergence_names() {
 /// **A pure declaration is still not an event.** The relaxation must not turn every call into
 /// an observable, or the operation becomes useless on real code — VPP's headers are full of
 /// them.
+///
+/// The callee returns `void` deliberately. A pure call returning a *value* mints an
+/// `InputOrigin::ExternReturn` on the side that makes it and nothing on the side that does
+/// not, and an input with no counterpart is a refusal — correctly, since matching inputs
+/// pairwise is what makes the two runs about the same program. Recognising that an
+/// unused pure result may be dropped is a separate piece of reasoning this does not do, and
+/// smuggling it into a test about effects would hide which of the two failed.
 #[test]
 fn a_pure_extern_is_still_invisible() {
     let Some(cfg) = cfg() else { return };
     let calls = "\
-func @clean(%0: i32) -> i32 pure
+func @clean(%0: i32) -> void pure
 
 func @f(%0: i32) -> i32 {
 entry:
   .line 1
-  %1 = call @clean(%0)
+  call @clean(%0)
   ret %0
 }";
     let plain = "\
-func @clean(%0: i32) -> i32 pure
+func @clean(%0: i32) -> void pure
 
 func @f(%0: i32) -> i32 {
 entry:
   .line 1
   ret %0
 }";
+    let v = prove_equivalent(&m(calls), &m(plain), &cfg);
     assert!(
-        matches!(
-            prove_equivalent(&m(calls), &m(plain), &cfg),
-            Equivalence::Equivalent { .. }
-        ),
-        "dropping a call to a pure function changes nothing observable"
+        matches!(v, Equivalence::Equivalent { .. }),
+        "dropping a call to a pure function changes nothing observable: {v:?}"
     );
 }
