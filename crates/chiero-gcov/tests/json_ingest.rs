@@ -80,3 +80,40 @@ fn json_ingest_records_line_detail_only() {
     let idx = chiero_gcov::ingest_json(&corpus(), "t").expect("the fixture ingests");
     assert_eq!(idx.detail(), chiero_gcov::CoverageDetail::Lines);
 }
+
+/// **The two ingest paths must agree about what merging two objects means.**
+///
+/// A header's `static inline` function is compiled into every translation unit that includes it,
+/// so the same `(file, line)` arrives from several objects. The JSON path added those counts and
+/// the native path took their maximum, so one index reported a line as executed twice and the
+/// other as executed once, from the same artifacts.
+///
+/// **The sum is the aggregate**, and `line_count` is documented as one: a line compiled into two
+/// objects and executed once in each was executed twice. The maximum was chosen to keep a
+/// multi-build tree from over-reporting — but "how often did the program execute this line" is a
+/// different question from "how often did any one build", the per-build answer is what
+/// `tests_for_line_in` is for, and the sum is the more conservative of the two for 032, which
+/// never skips on a count being too high.
+#[test]
+fn both_ingest_paths_merge_two_objects_the_same_way() {
+    let mut native = chiero_gcov::CoverageIndex::default();
+    chiero_gcov::ingest_native_as(&mut native, chiero_gcov::TestId(0), &corpus(), "loop").expect("once");
+    chiero_gcov::ingest_native_as(&mut native, chiero_gcov::TestId(1), &corpus(), "loop").expect("twice");
+
+    let mut json = chiero_gcov::CoverageIndex::default();
+    chiero_gcov::ingest_json_into(&mut json, &corpus(), "loop").expect("once");
+    chiero_gcov::ingest_json_into(&mut json, &corpus(), "loop").expect("twice");
+
+    for line in json.lines_of("loop.c") {
+        assert_eq!(
+            native.line_count("loop.c", line),
+            json.line_count("loop.c", line),
+            "loop.c:{line} — the same artifacts read two ways must aggregate the same"
+        );
+    }
+    assert_eq!(
+        native.line_count("loop.c", 1),
+        Some(10),
+        "five executions in each of two objects is ten"
+    );
+}
