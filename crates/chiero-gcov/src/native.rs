@@ -1498,6 +1498,39 @@ impl ArcCoverage {
         self.tests.get(&(func.clone(), arc.0, arc.1)).cloned()
     }
 
+    /// Whether flow reached a block — 032 §3.2's question.
+    ///
+    /// **Not `tests_for_arc`'s question.** That one answers "was this test measured against this
+    /// arc", and records a test even for an arc it never took, because an untaken arc is a count
+    /// of zero rather than an absence. This one answers "did flow arrive", which is what may
+    /// *remove* a test, so it is a method rather than something a caller re-derives.
+    ///
+    /// `None` when the function's graph has no such block: "no such block" and "flow never
+    /// reached it" are different facts, and only the second is grounds for dropping anything.
+    ///
+    /// **The entry block is entered whenever the function ran.** Nothing flows *into* block 0, so
+    /// reading "no incoming arc with a count" as "not entered" would call every entry block
+    /// unreached — and the error would be in the direction that removes tests.
+    pub fn entered_block(&self, func: &FuncKey, block: u32) -> Option<bool> {
+        let arcs = self.order.get(func)?;
+        if !arcs.iter().any(|(f, t)| *f == block || *t == block) {
+            return None;
+        }
+        if block == 0 {
+            // The entry block's count is the flow *out* of it.
+            return Some(
+                arcs.iter()
+                    .filter(|(f, _)| *f == block)
+                    .any(|a| self.arc_count(func, *a).unwrap_or(0) > 0),
+            );
+        }
+        Some(
+            arcs.iter()
+                .filter(|(_, t)| *t == block)
+                .any(|a| self.arc_count(func, *a).unwrap_or(0) > 0),
+        )
+    }
+
     /// Every function this coverage knows about.
     pub fn functions(&self) -> Vec<&FuncKey> {
         self.order.keys().collect()
