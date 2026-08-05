@@ -6626,3 +6626,39 @@ fn a_designator_names_a_member_through_an_anonymous_union() {
         "struct F f = { .x = 1, .q = 9 }; return f.x * 10 + f.q;",
     );
 }
+
+/// **A scalar compound literal stores its initializer at the initializer's width.**
+///
+/// ```text
+/// plugins/tap/tx_node.c:357:30: `tap_if_tx_inline` … (store value operand is Int(32),
+///   declared Int(64))
+///   rv = write (txq->kick_fd, &(u64){ 1 }, sizeof (u64));
+/// ```
+///
+/// `(u64){ 1 }` is an object of type `u64` initialized with an `int` — C11 6.7.9p11 converts as
+/// if by assignment, exactly as `u64 x = 1;` does. The compound-literal path stored the value
+/// straight into the slot, so an `int` landed in an eight-byte object and the verifier refused
+/// the function. `(int){ 5 }` was always fine, which is why it went unnoticed: the widths agree.
+///
+/// `&(u64){ 1 }` is how VPP passes a temporary to `write(2)`.
+#[test]
+fn a_scalar_compound_literal_converts_its_initializer() {
+    agree_with(
+        "",
+        "unsigned long long *p = &(unsigned long long){ 1 }; return (int)*p;",
+    );
+    // A narrowing one, where the conversion has to truncate rather than widen.
+    agree_with("", "unsigned char *p = &(unsigned char){ 300 }; return *p;");
+    // A float from an integer literal, which is a conversion of a different kind.
+    agree_with("", "double *p = &(double){ 3 }; return (int)(*p * 2);");
+    // Passed to a function, which is the corpus shape.
+    agree_with(
+        "static int take(const unsigned long long *p) { return (int)*p; }",
+        "return take(&(unsigned long long){ 7 });",
+    );
+    // And the case that already worked.
+    agree_with(
+        "static int take(int *p) { return *p; }",
+        "return take(&(int){ 5 });",
+    );
+}
