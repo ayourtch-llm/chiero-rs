@@ -808,6 +808,74 @@ impl Lowerer<'_> {
     /// hazard, wrong about the outcome, since refusing meant the whole object became zeros.
     /// `RecordLayout` carries the absolute bit offset and the width, so the bits go where 014
     /// put them and the neighbours are untouched by construction.
+    /// Resolve a **multi-component** designator to a byte offset and the type it lands on.
+    ///
+    /// `{[1][2] = 9}` and `{.in.b = 5}` are one designator *list* each, and lowering consulted
+    /// only `designators.first()`: the outer component positioned the cursor and the rest were
+    /// dropped, so `.in.b = 5` wrote `in.a` and `[1][2] = 9` wrote nothing a run could reach.
+    /// sema resolves these fully; this is lowering catching up.
+    ///
+    /// Answers the offset from the start of `ty`, the type at the end of the path, and the
+    /// index the *first* component selected — the cursor for whatever follows, since C11
+    /// 6.7.9p17 continues after the designated object at the level the list started from.
+    ///
+    /// `None` for a path this walk cannot place: a bit-field leaf, whose bits belong to
+    /// `encode_field`, and anything that is not the array or record the component asks for.
+    /// Both fall back to the single-component handling that was already there.
+    fn designated_slot(
+        &mut self,
+        ty: TyId,
+        desigs: &[chiero_ast::Designator],
+    ) -> Option<(u64, TyId, usize)> {
+        let mut off = 0u64;
+        let mut cur = ty;
+        let mut first = 0usize;
+        for (k, d) in desigs.iter().enumerate() {
+            match d {
+                chiero_ast::Designator::Field(name) => {
+                    let Ty::Record(r) = self.analysis.ty(cur).clone() else {
+                        return None;
+                    };
+                    let layout = self.analysis.layout(r).clone();
+                    let i = layout.fields.iter().position(|f| f.name == Some(*name))?;
+                    let f = &layout.fields[i];
+                    if f.bits.is_some() {
+                        return None;
+                    }
+                    off += f.offset;
+                    cur = f.ty;
+                    if k == 0 {
+                        first = i;
+                    }
+                }
+                // A GNU range `[1 ... 2] =` designates several objects, not one, so there is
+                // no single offset to answer with. The single-component path already handles
+                // whatever it handles; this refuses rather than guessing one end of the range.
+                chiero_ast::Designator::Range(..) => return None,
+                chiero_ast::Designator::Index(e) => {
+                    // A vector is an array of its lanes here exactly as it is everywhere else
+                    // in this walk.
+                    let elem = match self.analysis.ty(cur).clone() {
+                        Ty::Array { elem, .. } => elem,
+                        Ty::Vector { elem, .. } => elem,
+                        _ => return None,
+                    };
+                    let esz = self.analysis.size_of(elem)?;
+                    let n = self.const_of(*e)?;
+                    if n < 0 {
+                        return None;
+                    }
+                    off += n as u64 * esz;
+                    cur = elem;
+                    if k == 0 {
+                        first = n as usize;
+                    }
+                }
+            }
+        }
+        Some((off, cur, first))
+    }
+
     fn encode_field(
         &mut self,
         f: &chiero_sema::FieldLayout,
@@ -890,6 +958,14 @@ impl Lowerer<'_> {
                     if f.bits.is_some() {
                         self.encode_field(f, items[used].value, at, out, relocs)?;
                         used += 1;
+                        // **Falls into the union check below rather than `continue`ing past
+                        // it.** A `union U { int a:4; int b; }` first member is a bit-field, and
+                        // skipping the break spent a second item on `b` — storage that overlaps
+                        // what was just written, so `{1,2}` read back as `b=2` and the enclosing
+                        // `y` never got its 2.
+                        if layout.is_union {
+                            break;
+                        }
                         continue;
                     }
                     used += self.encode_run_slot(items, used, f.ty, at + f.offset, out, relocs)?;
@@ -996,6 +1072,16 @@ impl Lowerer<'_> {
                         while taken < items.len() {
                             let it = &items[taken].clone();
                             taken += 1;
+                            // **A multi-component path is placed whole**, and the walk then
+                            // continues after the object its *first* component selected.
+                            if it.designators.len() > 1
+                                && let Some((off, leaf, first)) =
+                                    self.designated_slot(ty, &it.designators)
+                            {
+                                self.encode_into(it.value, leaf, at + off, out, relocs)?;
+                                cursor = first as u64 + 1;
+                                continue;
+                            }
                             if let Some(chiero_ast::Designator::Index(idx)) = it.designators.first()
                             {
                                 let k = self.const_of(*idx)?;
@@ -1028,7 +1114,7 @@ impl Lowerer<'_> {
                                         | chiero_ast::ExprKind::Str { .. }
                                 )
                             {
-                                let rest: Vec<chiero_ast::InitItem> = items[taken - 1..].to_vec();
+                                let rest = run_from(&items, taken - 1);
                                 let used =
                                     self.encode_flat(&rest, elem, at + cursor * esz, out, relocs)?;
                                 taken = taken - 1 + used.max(1);
@@ -1067,6 +1153,13 @@ impl Lowerer<'_> {
                 while taken < items.len() {
                     let it = &items[taken].clone();
                     taken += 1;
+                    if it.designators.len() > 1
+                        && let Some((off, leaf, first)) = self.designated_slot(ty, &it.designators)
+                    {
+                        self.encode_into(it.value, leaf, at + off, out, relocs)?;
+                        cursor = first + 1;
+                        continue;
+                    }
                     // `.field` repositions the cursor, and the walk continues from there —
                     // the same rule as the array case above and as `init_list`.
                     if let Some(chiero_ast::Designator::Field(name)) = it.designators.first() {
@@ -1087,7 +1180,7 @@ impl Lowerer<'_> {
                             chiero_ast::ExprKind::InitList(_) | chiero_ast::ExprKind::Str { .. }
                         )
                     {
-                        let rest: Vec<chiero_ast::InitItem> = items[taken - 1..].to_vec();
+                        let rest = run_from(&items, taken - 1);
                         let used = self.encode_flat(&rest, f.ty, at + f.offset, out, relocs)?;
                         taken = taken - 1 + used.max(1);
                         continue;
@@ -6754,9 +6847,18 @@ impl Lowerer<'_> {
         if matches!(self.ast.expr(value).kind, chiero_ast::ExprKind::InitList(_)) {
             return false;
         }
-        // **The smaller of the two, and normally they are equal.** C requires compatible types
-        // here; taking the minimum means a source sema let through for some other reason cannot
-        // make this read past its end.
+        // **Compatible, not merely aggregate** (C11 6.7.9p13). An aggregate value whose type
+        // matches the slot's *first member* rather than the slot itself begins an elided run one
+        // level deeper: `struct T t = {s, 3, 9}` with `s` a `struct V` and the slot a
+        // `struct In { struct V v; int m; }` means `in.v = s, in.m = 3, z = 9`, which gcc
+        // computes as 945. Copying `s` over the whole slot gave 315 — and the size clamp below
+        // is what made that look reasonable, copying 8 of the 12 bytes instead of rejecting the
+        // mismatch. Unqualified, because a `const struct S` initializes a `struct S`.
+        if self.analysis.unqualified(fty) != self.analysis.unqualified(vty) {
+            return false;
+        }
+        // Equal by the check above; the clamp stays as a floor against a size the layout could
+        // not compute.
         let size = self
             .analysis
             .size_of(fty)
@@ -6861,9 +6963,24 @@ impl Lowerer<'_> {
         span: Span,
     ) -> usize {
         let slots = self.slots_of(ty, items.len(), span);
+        // **A union takes one initializer, for its first member** (C11 6.7.9p15), and
+        // `slots_of` returns every member because a designator may name any of them. Walking
+        // them all spent the enclosing list's next item on storage that overlaps what was just
+        // written: `struct { union U u; int y; } s = {1,2}` read back as `u.b == 2, y == 0`
+        // where gcc says `u.a == 1, y == 2`. The file-scope walk gained this rule in a5e4a56
+        // and this one did not, which is the drift the review caught.
+        let is_union = matches!(self.analysis.ty(ty).clone(), Ty::Record(r)
+            if self.analysis.layout(r).is_union);
         let mut used = 0usize;
         for (off, fty, _, bits) in slots {
             if used >= items.len() {
+                break;
+            }
+            // **A designator ends the run.** C11 6.7.9p17 repositions within the object of the
+            // current brace level, and inside an elided run that level is the *enclosing* list —
+            // so `int m[2][3] = {1, [1]=9}` puts 9 in `m[1][0]`, not in `m[0][1]`. The run's own
+            // first item never carries one: `run_from` strips the component the caller resolved.
+            if !items[used].designators.is_empty() {
                 break;
             }
             let addr = self.offset_addr(base.clone(), off, span);
@@ -6871,20 +6988,32 @@ impl Lowerer<'_> {
             if matches!(self.ast.expr(value).kind, chiero_ast::ExprKind::InitList(_)) {
                 self.init_list(addr, fty, value, span);
                 used += 1;
+                if is_union {
+                    break;
+                }
                 continue;
             }
             if self.copy_aggregate_init(addr.clone(), fty, value, span) {
                 used += 1;
+                if is_union {
+                    break;
+                }
                 continue;
             }
             if self.is_aggregate(fty) {
-                let rest: Vec<chiero_ast::InitItem> = items[used..].to_vec();
+                let rest = run_from(items, used);
                 // `max(1)` so an empty subaggregate still advances rather than spinning.
                 used += self.init_flat(addr, fty, &rest, span).max(1);
+                if is_union {
+                    break;
+                }
                 continue;
             }
             self.store_init_scalar(addr, fty, bits, value, span);
             used += 1;
+            if is_union {
+                break;
+            }
         }
         used
     }
@@ -6903,6 +7032,26 @@ impl Lowerer<'_> {
             let item = items[taken].clone();
             let item = &item;
             taken += 1;
+            // **A multi-component path is stored whole**, and the walk continues after the
+            // object its *first* component selected — the mirror of the file-scope walk. Without
+            // it only `designators.first()` was consulted, so `{.in.b = 5}` wrote `in.a`.
+            if item.designators.len() > 1
+                && let Some((off, leaf, first)) = self.designated_slot(ty, &item.designators)
+            {
+                let addr = self.offset_addr(base.clone(), off, span);
+                if !self.copy_aggregate_init(addr.clone(), leaf, item.value, span) {
+                    if matches!(
+                        self.ast.expr(item.value).kind,
+                        chiero_ast::ExprKind::InitList(_)
+                    ) {
+                        self.init_list(addr, leaf, item.value, span);
+                    } else {
+                        self.store_init_scalar(addr, leaf, None, item.value, span);
+                    }
+                }
+                cursor = first + 1;
+                continue;
+            }
             // A designator repositions the cursor; C11 6.7.9p17 continues from there.
             if let Some(chiero_ast::Designator::Field(name)) = item.designators.first() {
                 if let Some(i) = slots.iter().position(|(_, _, n, _)| *n == Some(*name)) {
@@ -6953,7 +7102,7 @@ impl Lowerer<'_> {
             // begin with `{` takes as many elements from this list as it needs. This item is
             // the first of them, so the walk rewinds one and hands the run over.
             if self.is_aggregate(fty) {
-                let rest: Vec<chiero_ast::InitItem> = items[taken - 1..].to_vec();
+                let rest = run_from(&items, taken - 1);
                 let used = self.init_flat(addr, fty, &rest, span);
                 taken = taken - 1 + used.max(1);
                 continue;
@@ -6961,6 +7110,24 @@ impl Lowerer<'_> {
             self.store_init_scalar(addr, fty, bits, item.value, span);
         }
     }
+}
+
+/// The items of a **brace-elided run**, with the leading designator removed.
+///
+/// The caller has already resolved that designator — it is what positioned the cursor onto the
+/// slot the run is filling — so carrying it into the run means `encode_flat` sees a designator on
+/// its first item and stops by its own rule, returns 0, and the caller's `.max(1)` steps past the
+/// value without writing it. `static int m[2][3] = {[1]=5};` read back 0 where gcc says 5.
+///
+/// Only the first item is touched. A designator on any *later* item genuinely does end the run:
+/// C11 6.7.9p17 repositions within the current brace level, which inside an elided run is the
+/// enclosing list.
+fn run_from(items: &[chiero_ast::InitItem], from: usize) -> Vec<chiero_ast::InitItem> {
+    let mut rest: Vec<chiero_ast::InitItem> = items[from..].to_vec();
+    if let Some(first) = rest.first_mut() {
+        first.designators.clear();
+    }
+    rest
 }
 
 /// Which of 020 §4.4.1's varargs builtins a name is, if any.
