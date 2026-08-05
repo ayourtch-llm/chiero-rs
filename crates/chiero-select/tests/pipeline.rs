@@ -27,7 +27,7 @@
 
 use chiero_diff::{Program, impact};
 use chiero_gcov::{CoverageIndex, TestId, TestOutcome};
-use chiero_select::{Confidence, SelectionReason, select};
+use chiero_select::{Confidence, SelectionReason, Suite, select, select_with};
 use std::path::PathBuf;
 
 fn corpus() -> PathBuf {
@@ -254,5 +254,83 @@ fn a_macro_body_change_in_a_header_selects_the_tests_that_exercise_it() {
             .any(|r| matches!(r, SelectionReason::CoversEntity { entity, .. } if entity == "main")),
         "and it says so: {:?}",
         sel.tests[&TestId(0)]
+    );
+}
+
+/// **Contract 10.** A test in the tree but absent from the index has never had a chance to be
+/// measured, so nothing can say it is unaffected.
+///
+/// The index cannot know this by itself — it only holds what was ingested — so the suite's test
+/// list is the caller's to supply. A tool that inferred "the suite is what the index contains"
+/// would silently never run a new test.
+#[test]
+fn a_test_absent_from_the_index_is_always_selected() {
+    let p = Program::parse("t.c", t_c()).expect("parses");
+    let suite = Suite {
+        tests: vec![TestId(0), TestId(42)],
+        ..Suite::default()
+    };
+    let sel = select_with(&impact(&p, &p), &p, &index_with(&[TestId(0)]), &suite);
+
+    assert!(
+        sel.tests.contains_key(&TestId(42)),
+        "it is in the tree and not in the index: {:?}",
+        sel.tests
+    );
+    assert!(
+        sel.tests[&TestId(42)]
+            .iter()
+            .any(|r| matches!(r, SelectionReason::AlwaysRun { why } if why.contains("never"))),
+        "and it is labelled as never measured: {:?}",
+        sel.tests[&TestId(42)]
+    );
+}
+
+/// **Contract 12.** A stale index forces every test touching the stale files into the selection.
+///
+/// Coverage is a claim about a specific source state (030 §7). Acting on a stale index is worse
+/// than having none: it is a confident answer about code that no longer exists.
+#[test]
+fn a_stale_index_forces_its_tests_into_the_selection() {
+    let p = Program::parse("t.c", t_c()).expect("parses");
+    let suite = Suite {
+        tests: vec![TestId(0)],
+        validity: chiero_gcov::Validity::Stale {
+            files: vec!["t.c".to_string()],
+        },
+    };
+    let sel = select_with(&impact(&p, &p), &p, &index_with(&[TestId(0)]), &suite);
+
+    assert!(
+        sel.tests.contains_key(&TestId(0)),
+        "the empty diff would have selected nothing; the stale index overrides that: {:?}",
+        sel.tests
+    );
+    match &sel.confidence {
+        Confidence::Reduced { reasons } => assert!(
+            reasons.iter().any(|r| r.contains("stale") && r.contains("t.c")),
+            "and the report names the stale file: {reasons:?}"
+        ),
+        other => panic!("a stale index cannot be Full confidence, got {other:?}"),
+    }
+}
+
+/// A `Partial` index — some test's coverage never arrived — is the third of §4's triggers, and it
+/// is distinct from staleness: the sources are current and a *test* is unaccounted for.
+#[test]
+fn a_partial_index_reduces_confidence() {
+    let p = Program::parse("t.c", t_c()).expect("parses");
+    let suite = Suite {
+        tests: vec![TestId(0)],
+        validity: chiero_gcov::Validity::Partial {
+            missing_tests: vec![TestId(9)],
+        },
+    };
+    let sel = select_with(&impact(&p, &p), &p, &index_with(&[TestId(0)]), &suite);
+    assert!(matches!(sel.confidence, Confidence::Reduced { .. }));
+    assert!(
+        sel.tests.contains_key(&TestId(9)),
+        "a test the index cannot speak for must run: {:?}",
+        sel.tests
     );
 }
