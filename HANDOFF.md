@@ -824,9 +824,19 @@ typing the paths ever would.
 >   *splits nothing*. Copy that shape rather than teaching `chiero-diff` about
 >   `CLIB_MARCH_VARIANT`: a resolver that guessed from a bare suffix would collapse `foo_avx2`
 >   into `foo` and attribute the vector variant's impact to the scalar path.
-> - **§5's output**: the machine format for 050 and the human rendering that leads with the
->   closure reason. Self-contained — no other crate involved — and the one piece a person
->   actually reads. §5's ordering is already tested; what is missing is the rendering itself.
+> - ~~**§5's output**~~ — done (c16c8b0). `ImpactSet::render()` and `::to_json()`:
+>
+>   ```
+>   CHANGED  function leaf  (f.c)  BodyChanged
+>     ├─ f.c middle  Calls leaf
+>     └─ f.c top  Calls middle
+>   CHANGED  record hdr  (f.c)  LayoutChanged (size -3)
+>     └─ f.c of  UsesType hdr
+>   ```
+>
+>   Grouped by **root**, because the question is "why am I running 400 tests", not "which 400".
+>   `PARTIAL` is a line rather than a field, and an empty answer says `no impact` — a blank
+>   report is indistinguishable from a crash.
 >
 > ⚠️ **Nothing here has met a real tree yet.** `Program::parse` takes a string and preprocesses it
 > alone; VPP's files need include paths and a `ConfigId`. The frontend lowers all 1871 TUs, so the
