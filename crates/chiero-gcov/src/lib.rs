@@ -256,6 +256,14 @@ pub struct IngestRecord {
     pub artifact: PathBuf,
     pub gcc_version: String,
     pub format_version: String,
+    /// Functions whose flow graph the counters contradict, so no line of them was recorded.
+    ///
+    /// **Named rather than dropped.** A graph that cannot be solved yields no coverage for its
+    /// function, which downstream reads as "coverage cannot see this" and answers by running the
+    /// tests — the safe direction. But a tool that quietly stopped reporting a function would
+    /// look identical to one whose tests stopped covering it, so the fact is recorded where a
+    /// report can reach it.
+    pub unsolved: Vec<String>,
 }
 
 /// Coverage, queryable by (file, line).
@@ -955,6 +963,7 @@ pub fn ingest_json_into(
         artifact: path,
         gcc_version: text(&doc, "gcc_version"),
         format_version: text(&doc, "format_version"),
+        unsolved: Vec::new(),
     });
     Ok(())
 }

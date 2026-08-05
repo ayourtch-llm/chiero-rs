@@ -761,7 +761,16 @@ pub fn read_data(path: &Path) -> Result<Data, IngestError> {
 ///
 /// Anything still unknown at the fixpoint is corrupt data and is reported, never guessed
 /// (contract 6).
-fn solve_arcs(f: &NoteFunction, counters: &[u64], path: &Path) -> Result<Vec<u64>, IngestError> {
+/// The count of every arc, or `None` when the counters contradict the graph.
+///
+/// **`None` rather than an error**, because one broken function must not condemn an object: 59 of
+/// `dlmalloc.c`'s 60 functions are perfectly good. The caller records no lines for it and names
+/// it in the ingest record.
+fn solve_arcs(
+    f: &NoteFunction,
+    counters: &[u64],
+    path: &Path,
+) -> Result<Option<Vec<u64>>, IngestError> {
     let n = f.arcs.len();
     let mut known: Vec<Option<u64>> = vec![None; n];
     let mut next = 0usize;
@@ -854,15 +863,12 @@ fn solve_arcs(f: &NoteFunction, counters: &[u64], path: &Path) -> Result<Vec<u64
                     .filter(|&&i| i != missing[0])
                     .map(|&i| known[i].unwrap())
                     .sum();
+                // **A contradiction is this function's problem, not the object's.** The graph
+                // and the counters disagree — measured, on `internal_memalign` — and no
+                // assignment of the on-tree arcs satisfies conservation. There is no honest
+                // number to record, so the caller records none and names the function.
                 let Some(rest) = total.checked_sub(accounted) else {
-                    return Err(IngestError::Malformed {
-                        path: path.to_path_buf(),
-                        why: format!(
-                            "`{}` block {b}: the arcs into it already exceed the flow out of it, \
-                             so the counters do not belong to this graph",
-                            f.name
-                        ),
-                    });
+                    return Ok(None);
                 };
                 known[missing[0]] = Some(rest);
                 changed = true;
@@ -873,20 +879,9 @@ fn solve_arcs(f: &NoteFunction, counters: &[u64], path: &Path) -> Result<Vec<u64
         }
     }
 
-    known
-        .into_iter()
-        .enumerate()
-        .map(|(i, v)| {
-            v.ok_or_else(|| IngestError::Malformed {
-                path: path.to_path_buf(),
-                why: format!(
-                    "`{}` arc {}->{} could not be determined; the spanning tree guarantees it \
-                     unless the data is corrupt",
-                    f.name, f.arcs[i].from, f.arcs[i].to
-                ),
-            })
-        })
-        .collect()
+    // An arc left undetermined means the same thing: the spanning tree should have guaranteed it,
+    // so the graph and the counters do not describe one program.
+    Ok(known.into_iter().collect::<Option<Vec<u64>>>())
 }
 
 /// A block's execution count is the flow **into** it — except the entry block, which nothing
@@ -1312,6 +1307,7 @@ pub fn ingest_into(
     let data = read_data(&data_path)?;
 
     let mut object = ObjectLines::default();
+    let mut unsolved: Vec<String> = Vec::new();
     let in_group = group_members(&notes.functions);
     for (fi, f) in notes.functions.iter().enumerate() {
         // **A compiler-generated function's lines are not the source's lines.** gcov erases the
@@ -1343,7 +1339,12 @@ pub fn ingest_into(
                 ),
             });
         }
-        let arcs = solve_arcs(f, &d.counters, &data_path)?;
+        let Some(arcs) = solve_arcs(f, &d.counters, &data_path)? else {
+            // No honest count exists for this function, so it contributes none — and is named,
+            // so that a report can tell "not covered" from "not readable".
+            unsolved.push(f.name.clone());
+            continue;
+        };
         let blocks = block_counts(f, &arcs);
         let group = in_group[fi].then(|| GroupRange {
             source: f.source.clone(),
@@ -1378,6 +1379,7 @@ pub fn ingest_into(
             format!("{maj}.{min}")
         },
         format_version: notes.header.version_tag(),
+        unsolved,
     });
     Ok(())
 }
@@ -1535,7 +1537,9 @@ fn arc_coverage_read(
         let Some(d) = data.functions.iter().find(|d| d.ident == f.ident) else {
             continue; // `ingest_into` has already refused this file.
         };
-        let arcs = solve_arcs(f, &d.counters, &data_path)?;
+        let Some(arcs) = solve_arcs(f, &d.counters, &data_path)? else {
+            continue; // `ingest_into` has already recorded this function as unsolvable.
+        };
         // **The identity is built here, once.** `march` comes from the resolver rather than from
         // the artifacts, which carry only the pasted symbol.
         let (name, march) = NoMarch.split(&f.name);
@@ -1577,6 +1581,6 @@ fn arc_coverage_read(
 
 /// Block counts for one function, for the measurement harness in `examples/`.
 pub fn debug_block_counts(f: &NoteFunction, counters: &[u64]) -> Option<Vec<u64>> {
-    let arcs = solve_arcs(f, counters, Path::new("<probe>")).ok()?;
+    let arcs = solve_arcs(f, counters, Path::new("<probe>")).ok()??;
     Some(block_counts(f, &arcs))
 }
