@@ -873,13 +873,14 @@ impl FunctionLines {
     /// This function's own answer for one line: the graph count where it has one, the
     /// accumulation otherwise. This is the resolution gcov performs per *table*, which for a
     /// group member is its private one.
+    ///
+    /// The two maps are disjoint — `line_counts` removes a key from `accumulated` as it graphs it
+    /// — so this is a concatenation rather than a merge, and no key can appear twice.
     fn resolved(&self) -> impl Iterator<Item = (&(String, u32), u64)> {
-        self.graphed.iter().map(|(k, &c)| (k, c)).chain(
-            self.accumulated
-                .iter()
-                .filter(|(k, _)| !self.graphed.contains_key(*k))
-                .map(|(k, &c)| (k, c)),
-        )
+        self.graphed
+            .iter()
+            .chain(self.accumulated.iter())
+            .map(|(k, &c)| (k, c))
     }
 }
 
@@ -942,6 +943,13 @@ fn canonical_path(name: &str) -> String {
 /// **Both members are marked, and the first is only known to be one when the second turns up** —
 /// which is why this is a pass over the whole object before any of it is counted, exactly as
 /// `process_all_functions` does it.
+///
+/// **Scoped to the object, where gcov scopes it to the invocation.** `gcov a.gcda b.gcda` marks
+/// functions across both, so one `static inline` in a header used by two translation units is a
+/// group there and is not one here. That is the right scope for this crate — a `TestId` is
+/// attributed per object, and a group formed across objects would merge two builds' counts into
+/// one line with no record of it — but it does mean `scale`'s per-object comparison cannot see
+/// the difference, so nothing here is evidence either way about the multi-object case.
 fn group_members(functions: &[NoteFunction]) -> Vec<bool> {
     let mut out = vec![false; functions.len()];
     let mut first: IndexMap<(&str, u32), usize> = IndexMap::new();
