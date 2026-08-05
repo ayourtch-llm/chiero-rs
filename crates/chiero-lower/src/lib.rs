@@ -199,6 +199,13 @@ struct FnState {
     /// load: a slot's width is a property of the declaration, not of the expression
     /// reading it, and using the reader's width loaded four bytes from a one-byte slot.
     locals: IndexMap<chiero_span::Symbol, (AllocaId, CTy)>,
+    /// What each open scope's declarations displaced in `locals`, innermost last.
+    ///
+    /// `locals` is one map for the whole function, so a block-scope `int r` overwrote an outer
+    /// `r` and never gave it back — `return r` after the block read the inner object, and where
+    /// the two types differed it read a struct as a `uword`. C 6.2.1p4 ends an inner
+    /// declaration's scope with its block; this is what ends it here.
+    shadowed: Vec<Vec<(chiero_span::Symbol, Option<(AllocaId, CTy)>)>>,
     next_alloca: u32,
     next_block: u32,
     /// The scopes currently open, innermost last. Exits are emitted from the top down, so
@@ -368,11 +375,25 @@ impl Lowerer<'_> {
     /// 015 §4 says "every entering edge", not "at the lexical top", because C gives
     /// automatic objects storage on entry into the block *however entered* (C11 6.2.4p6) —
     /// and a `switch` jumps straight past the top to a case label.
+    /// Bind `name` to a slot for the rest of the current scope, remembering what it displaced.
+    ///
+    /// Every declaration goes through here so that `exit_scope` can undo exactly it. Binding
+    /// straight into `locals` is what let an inner `r` outlive its block.
+    fn bind_local(&mut self, name: chiero_span::Symbol, slot: AllocaId, cty: CTy) {
+        let prev = self.fs().locals.insert(name, (slot, cty));
+        // No open scope means the function's own frame — a parameter, or a declaration the
+        // parser hoisted — and nothing to restore it to.
+        if let Some(scope) = self.fs().shadowed.last_mut() {
+            scope.push((name, prev));
+        }
+    }
+
     fn enter_scope(&mut self, span: Span) -> ScopeId {
         let fs = self.fs();
         let id = ScopeId(fs.next_scope);
         fs.next_scope += 1;
         fs.open_scopes.push(id);
+        self.fs().shadowed.push(Vec::new());
         self.generated(|s| {
             s.emit(
                 InstKind::Marker(MarkerKind::Scope(ScopeEvent {
@@ -387,6 +408,20 @@ impl Lowerer<'_> {
 
     /// Close the innermost scope, emitting its `Exit`.
     fn exit_scope(&mut self, span: Span) {
+        // **Restored innermost-first.** Two declarations of one name in one scope compose only
+        // in reverse, the same rule `restore_static_local_names` needed for the same reason.
+        if let Some(frame) = self.fs().shadowed.pop() {
+            for (name, prev) in frame.into_iter().rev() {
+                match prev {
+                    Some(binding) => {
+                        self.fs().locals.insert(name, binding);
+                    }
+                    None => {
+                        self.fs().locals.shift_remove(&name);
+                    }
+                }
+            }
+        }
         let Some(id) = self.fs().open_scopes.pop() else {
             return;
         };
@@ -1350,6 +1385,7 @@ impl Lowerer<'_> {
             entry: BlockId(0),
             cur: BlockId(0),
             locals: IndexMap::new(),
+            shadowed: Vec::new(),
             next_alloca: 0,
             next_block: 0,
             open_scopes: Vec::new(),
@@ -1456,7 +1492,7 @@ impl Lowerer<'_> {
             };
             if let Some(pn) = pname {
                 let t = cty.clone();
-                self.fs().locals.insert(pn, (slot, t));
+                self.bind_local(pn, slot, t);
             }
             let addr = self.new_value();
             self.emit(
@@ -2265,7 +2301,7 @@ impl Lowerer<'_> {
         if let Some((elem_ty, count_expr)) = self.vla_of(sty) {
             let slot = self.alloca_dynamic(align, text, span);
             if let Some(n) = name {
-                self.fs().locals.insert(n, (slot, cty.clone()));
+                self.bind_local(n, slot, cty.clone());
             }
             let count = self.expr(count_expr);
             let dst = self.new_value();
@@ -2285,7 +2321,7 @@ impl Lowerer<'_> {
 
         let slot = self.alloca_for(sty, align, text, span);
         if let Some(n) = name {
-            self.fs().locals.insert(n, (slot, cty.clone()));
+            self.bind_local(n, slot, cty.clone());
         }
         if let Some(init) = init {
             // **An aggregate initializer is a zero-fill plus the written elements**
@@ -6275,7 +6311,7 @@ impl<'a> Lowerer<'a> {
         let text = name.and_then(|n| self.sym(n));
         let slot = self.alloca_for(sty, align, text, span);
         if let Some(n) = name {
-            self.fs().locals.insert(n, (slot, cty));
+            self.bind_local(n, slot, cty);
         }
     }
 
