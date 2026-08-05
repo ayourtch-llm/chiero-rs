@@ -498,6 +498,26 @@ review, every one of which reproduced. `crates/chiero-opt/tests/adversarial.rs` 
 | termination differing at exactly `{(0,200), (3,7)}` | witness `(0, 7)`, where both return 32 |
 | the same as a return difference | `Unknown`, with a real model thrown away |
 
+**A second review, after contract 6 landed, found five more** — three of them again false
+`Equivalent`, and this time the wrong reasoning was reasoning *I had written down as the
+justification*:
+
+| what was blessed | verdict it got |
+|---|---|
+| a global read either side of a call that may write it | `Equivalent { Approximated }` |
+| `p(x)` against `p(x + 1)`, `p` declared `pure` | `Equivalent { Approximated }` |
+| returning `p(2)` against returning `p(1)` | `Equivalent { Approximated }` |
+| two pure calls reordered, computing the same value | `Differs`, where both return 0 |
+| `memset` against `__builtin_memset`, byte-identical | `Differs` |
+
+**The lesson is about comments, twice.** "The ordinal is the same thing the effect sequence
+orders by" was false — `ExternReturn` is minted only for a call *with a destination*, so a
+discarded result shifts the numbering. "Pure, therefore declared to do nothing observable" was
+false — `pure` means no side effects, not a return value independent of the arguments; `abs` is
+pure. Both were written in the same commit as the code they justified, and both were
+convincing enough to ship. **A plausible rationale is not evidence, and writing one down makes
+it harder to check, not easier.**
+
 **The one worth remembering: the first three were already ruled out in the module
 documentation, in the same commit as the code that did not do it.** *"A comparison that
 would have to reason about caller-visible memory or about a side-effect sequence answers
@@ -532,12 +552,18 @@ guard fires.
    `link_inputs` learned §1.2's shared extern-return symbols, keyed by (function, nth call),
    not by span: the two versions are different modules and a span key would match nothing.
 
-   **`Approximated` can now carry an `Equivalent`,** which is the thing a relational proof
-   can do that an absolute one cannot: the engine cannot say what an unmodeled callee did,
-   and does not have to, because the effect sequences agreed — so every such call is either
-   non-pure and identical on both sides, or pure and declared to do nothing. `proven` stays
-   false and 032 §3.1 still refuses to drop a test on it. **This is the single riskiest piece
-   of reasoning in the crate; it is under adversarial review as of 2026-08-05.**
+   **`Approximated` can carry an `Equivalent` under one narrow condition**, arrived at after
+   two wrong versions of the argument. Three channels connect a callee to the comparison: the
+   effect sequence (compared position by position), memory (loads *and* stores through a
+   non-local address refused, pointer arguments refused outright), and the return value —
+   where both earlier attempts failed. So the condition is that neither side has an
+   extern-return input at all. `proven` stays false; 032 §3.1 still refuses to drop a test.
+
+   **§1.2's shared extern-return symbols are still not matched**, and that is what keeps the
+   operation from answering about most real functions. A sound key is the call's position in
+   the *effect sequence*; `InputOrigin::ExternReturn` does not carry that ordinal. **Adding it
+   is the highest-value next step in this file** — it unblocks every function with a
+   value-returning callee, and it is what the ordinal-by-name attempt was reaching for.
 3. **Pointer parameters and pointer returns**, which currently answer `Unknown` by name.
 4. **032 §3.1's `Prover` seam wired to it.** The blocker is not equivalence — it is that
    `Prover::prove_equivalent(&chiero_diff::Entity)` has to turn an entity into two runnable
