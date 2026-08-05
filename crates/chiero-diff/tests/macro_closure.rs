@@ -225,3 +225,48 @@ fn reformatting_a_header_impacts_nothing() {
         set.entities.keys().map(Entity::name).collect::<Vec<_>>()
     );
 }
+
+/// **Contract 17, and the reason this is not a blunt instrument.**
+///
+/// > Changing `vlib/vlib.h`'s *macro* `m` impacts `m`'s expansion sites, **not** every includer of
+/// > `vlib.h` — the include closure is not applied to entities that resolved.
+///
+/// The tempting shortcut is "the header changed, so everything that includes it is impacted".
+/// That is sound and useless: VPP's `vlib.h` reaches most of the tree, so every macro edit would
+/// select the whole suite — the failure mode contracts 1–3 exist to prevent, arriving by a
+/// different door.
+///
+/// §4's over-approximation licence covers what chiero *cannot* resolve. An expansion site it
+/// **can** resolve is not an unknown, and widening it anyway would be pessimism dressed as
+/// safety.
+#[test]
+fn changing_one_macro_in_a_header_does_not_impact_every_includer() {
+    let header = |bump: &str| {
+        format!("#define BUMP(v) {bump}\n#define OTHER(v) ((v) - 1)\n#define UNUSED(v) ((v) * 7)\n")
+    };
+    let users = "#include \"m.h\"\n\n\
+                 int uses_bump (int x) { return BUMP (x); }\n\
+                 int uses_other (int x) { return OTHER (x); }\n\
+                 int uses_neither (int x) { return x; }\n";
+    let (before, after) = programs(&header("((v) + 1)"), &header("((v) + 2)"), users);
+    let set = impact(&before, &after);
+
+    assert!(
+        set.entities
+            .contains_key(&Entity::function("main.c", "uses_bump"))
+    );
+    assert!(
+        !set.entities
+            .contains_key(&Entity::function("main.c", "uses_other")),
+        "it includes the same header and expands a *different* macro: {:?}",
+        set.entities.keys().map(Entity::name).collect::<Vec<_>>()
+    );
+    assert!(
+        !set.entities
+            .contains_key(&Entity::function("main.c", "uses_neither")),
+        "and including a header is not itself a change"
+    );
+    // The macros that did not change are not in the set either.
+    assert!(!set.entities.contains_key(&Entity::macro_("m.h", "OTHER")));
+    assert!(!set.entities.contains_key(&Entity::macro_("m.h", "UNUSED")));
+}

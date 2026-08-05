@@ -188,3 +188,41 @@ fn mutual_recursion_terminates() {
     assert!(set.entities.contains_key(&Entity::function("f.c", "ping")));
     assert!(set.entities.contains_key(&Entity::function("f.c", "pong")));
 }
+
+/// **Contract 12.** Two `static` functions with one name, in two files: changing one impacts only
+/// its own callers.
+///
+/// 014 §4 makes a `static` function file-scoped and never merged across translation units, and
+/// `Entity` carries the file for exactly this. Merging them by name would select the other file's
+/// tests for a change it never saw — and, worse, would make the two indistinguishable in a report.
+///
+/// The same identity question `chiero-gcov`'s `FuncKey` answers, one layer up: there, two
+/// `helper`s in two objects must not share coverage.
+#[test]
+fn two_static_helpers_of_one_name_are_two_entities() {
+    let a =
+        "static int helper (int x) { return x + 1; }\nint use_a (int x) { return helper (x); }\n";
+    let b =
+        "static int helper (int x) { return x + 1; }\nint use_b (int x) { return helper (x); }\n";
+
+    let a_edited = a.replace("return x + 1;", "return x + 2;");
+    let set = impact(
+        &Program::parse("a.c", a).expect("a.c parses"),
+        &Program::parse("a.c", &a_edited).expect("a.c parses"),
+    );
+    assert!(
+        set.entities
+            .contains_key(&Entity::function("a.c", "helper"))
+    );
+    assert!(set.entities.contains_key(&Entity::function("a.c", "use_a")));
+    assert!(
+        !set.entities
+            .contains_key(&Entity::function("b.c", "helper")),
+        "b.c's helper is a different function that happens to share a name"
+    );
+
+    // And b.c, compared against itself, is untouched by any of it.
+    let b_prog = Program::parse("b.c", b).expect("b.c parses");
+    let b_again = Program::parse("b.c", b).expect("b.c parses");
+    assert!(impact(&b_prog, &b_again).entities.is_empty());
+}
