@@ -124,24 +124,26 @@ struct LineEntry {
 /// whose tree compiles each source once, which is every tree that is not VPP. Holding that as a
 /// one-element `Vec` of pairs costs a second heap allocation per line for a variant tag that is
 /// the same on all of them.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 enum Tests {
-    /// The whole index holds one build, so this is both the union and that build's set.
+    /// **No build recorded per-test information for this line.** `gcov --json-format` reports
+    /// counts and not which test produced them, so a JSON ingest leaves every line here — and
+    /// the honest answer to "which tests covered it" is `None`, not an empty set. Answering the
+    /// empty set claims no test covers a line, from an ingest that never had the evidence.
+    #[default]
+    Unknown,
+    /// One build recorded it. **The set may be empty**, which is the fact 030 §1 is written
+    /// around: gcov saw the line and nothing executed it, and that is what lets 032 skip.
     One(TestBitmap),
     /// Per build, in arrival order. The union is computed.
     Split(Vec<(VariantRef, TestBitmap)>),
 }
 
-impl Default for Tests {
-    fn default() -> Self {
-        Tests::One(TestBitmap::new())
-    }
-}
-
 impl Tests {
-    /// The union across builds, in test order.
-    fn union(&self) -> TestBitmap {
-        match self {
+    /// The union across builds, in test order, or `None` when no build recorded any.
+    fn union(&self) -> Option<TestBitmap> {
+        Some(match self {
+            Tests::Unknown => return None,
             Tests::One(t) => t.clone(),
             Tests::Split(per) => {
                 let mut out: TestBitmap = Vec::new();
@@ -155,13 +157,16 @@ impl Tests {
                 out.sort_unstable_by_key(|t| t.0);
                 out
             }
-        }
+        })
     }
 
     /// The set for one build, creating it if this line has not seen that build.
     fn slot(&mut self, v: VariantRef) -> &mut TestBitmap {
-        if let Tests::One(t) = self {
-            *self = Tests::Split(vec![(VariantRef(0), std::mem::take(t))]);
+        match self {
+            // Nothing recorded here yet, so there is no first build's set to carry over.
+            Tests::Unknown => *self = Tests::Split(Vec::new()),
+            Tests::One(t) => *self = Tests::Split(vec![(VariantRef(0), std::mem::take(t))]),
+            Tests::Split(_) => {}
         }
         let Tests::Split(per) = self else {
             unreachable!("just converted");
@@ -171,6 +176,20 @@ impl Tests {
         }
         per.push((v, TestBitmap::new()));
         &mut per.last_mut().expect("just pushed").1
+    }
+
+    /// The set for the only build the index holds, creating it if this line had none.
+    ///
+    /// Creating it is the point: a build that recorded a line contributes an *empty* set, which
+    /// is what distinguishes "nothing ran it" from "nobody looked".
+    fn sole(&mut self, v: VariantRef) -> &mut TestBitmap {
+        if let Tests::Unknown = self {
+            *self = Tests::One(TestBitmap::new());
+        }
+        match self {
+            Tests::One(t) => t,
+            _ => self.slot(v),
+        }
     }
 }
 
@@ -305,9 +324,7 @@ impl CoverageIndex {
     /// **`None` rather than an empty set.** An empty set is the claim "no test covers this", which
     /// 032 acts on by running nothing; a line gcov never recorded supports no such claim (030 §1).
     pub fn tests_for_line(&self, file: &str, line: u32) -> Option<Vec<TestId>> {
-        self.lines
-            .get(&(self.file_ref(file)?, line))
-            .map(|e| e.tests.union())
+        self.lines.get(&(self.file_ref(file)?, line))?.tests.union()
     }
 
     /// The union of the tests for a set of lines of one file, or `None` when the index recorded
@@ -448,14 +465,12 @@ impl CoverageIndex {
         let vr = self.variant_ref(v)?;
         let e = self.lines.get(&(self.file_ref(file)?, line))?;
         match &e.tests {
-            // **No build recorded tests for this line at all**, so no build may be told it did.
-            // `ingest_json` contributes counts without tests and notes no variant, so a JSON line
-            // reaches here empty — and answering `Some(vec![])` would tell a build that never
-            // compiled the file that it saw the line and ran nothing, which is the claim 032
-            // skips tests on.
-            Tests::One(t) if t.is_empty() => None,
-            // One build has contributed to this line, and its set is the whole entry. Any other
-            // build recorded nothing here: `None`.
+            // **No build recorded this line**, so none may be told it did. A JSON ingest lands
+            // here, and answering `Some(vec![])` would tell a build that never compiled the file
+            // that it saw the line and ran nothing — the claim 032 skips tests on.
+            Tests::Unknown => None,
+            // One build recorded it, and its set is the whole entry — empty if nothing ran it.
+            // Any other build recorded nothing here.
             Tests::One(t) => (self.variants.first() == Some(v)).then(|| t.clone()),
             Tests::Split(per) => per.iter().find(|(x, _)| *x == vr).map(|(_, t)| t.clone()),
         }
@@ -561,12 +576,14 @@ impl CoverageIndex {
         let set = if split {
             e.tests.slot(vr)
         } else {
-            match &mut e.tests {
-                Tests::One(t) => t,
-                Tests::Split(_) => e.tests.slot(vr),
-            }
+            e.tests.sole(vr)
         };
-        if !set.contains(&test) {
+        // **The set is created either way, and the test joins it only if it ran the line.**
+        // gcov writes `0` for a line the compiler emitted and this run never reached; recording
+        // the test there would say it executed a line the same index reports as executed by
+        // nothing (030 §5, contract 10). The empty set that remains is the useful fact — gcov saw
+        // the line, nothing ran it — and it is what 032 skips on.
+        if count > 0 && !set.contains(&test) {
             set.push(test);
         }
     }
