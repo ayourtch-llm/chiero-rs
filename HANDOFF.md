@@ -1057,9 +1057,23 @@ typing the paths ever would.
 > noticing. Restored from git, redone additively, prior tests still pass. **Look before writing:
 > `mkdir -p` on an existing path says nothing.**
 >
-> ⏭️ **Next in 050**, and the operations are mostly assembly now that the envelope exists:
-> `select_tests` (032's `Selection` is ready), and wrapping `expansion_sites` —
-> which already computes truncation and predates the envelope, so it reports it in its own shape.
+> ### 🔗 `select_tests` IS THE WHOLE CHAIN BEHIND ONE CALL (c509b3e)
+>
+> 030's index → 031's closure → 032's selection → 050's envelope. The first place all four specs
+> are visible at once, and the operation an LLM would actually call.
+>
+> ⚠️ **It never claims `Exact`, and that is a fact about the method, not this implementation.**
+> `proven` means proven for all inputs; **coverage is historical** — it records what the tests did
+> on the code as it *was*. 032 §4's safety set covers what was never measured, and 031 §3's
+> closure covers a test reaching new code through a caller it already covered, but neither turns
+> the answer into a proof. `Bounded` at best, with the bound named as a blind spot. Returning
+> `Exact` here would be the failure 050 §2 exists to prevent, committed by the crate that
+> enforces it.
+>
+> ⏭️ **Next in 050**: wrap `expansion_sites`, which predates the envelope and reports truncation
+> in its own shape — contract 7 wants it in the envelope's. Then `explain_macro_expansion`
+> (contract 6). Both are assembly; the judgement is what fidelity each may claim, and the answer
+> is rarely `Exact`.
 >
 > ### ⏭️ AFTER THAT — 032, test selection
 >
