@@ -1472,6 +1472,13 @@ pub struct ArcCoverage {
     tests: IndexMap<(FuncKey, u32, u32), Vec<crate::TestId>>,
     /// Arc order per function, so a query can list them as the CFG does.
     order: IndexMap<FuncKey, Vec<(u32, u32)>>,
+    /// `(file, line) -> the function and blocks carrying it`, from the notes' `LINES` records.
+    ///
+    /// **Every block that carries the line, not the one it is attributed to.** The attribution
+    /// rule — sorted, last entry — decides which line a block's *count* lands on, and that is a
+    /// different question from which blocks a caller must ask about to know whether a line was
+    /// reached. A line inside a multi-statement macro expansion is carried by several.
+    line_blocks: IndexMap<(String, u32), Vec<(FuncKey, u32)>>,
 }
 
 impl ArcCoverage {
@@ -1496,6 +1503,30 @@ impl ArcCoverage {
     /// The tests that took an arc, or `None` when the graph has no such real arc.
     pub fn tests_for_arc(&self, func: &FuncKey, arc: (u32, u32)) -> Option<Vec<crate::TestId>> {
         self.tests.get(&(func.clone(), arc.0, arc.1)).cloned()
+    }
+
+    /// Whether flow reached the code on a line — 032 §3.2's question, in a caller's terms.
+    ///
+    /// **A file and a line, not a block.** 031 reports an entity's lines; gcov's block numbering
+    /// is an internal detail of the graph this crate decoded, and exposing it would make every
+    /// caller learn the decoder's vocabulary to ask one question.
+    ///
+    /// `true` when any block carrying the line was entered — line coverage's own claim, made
+    /// precise. §3.2's whole point is that a line can be several blocks: `M; M;` is one line, two
+    /// expansions of a multi-statement macro, and a run may have entered only part of it.
+    ///
+    /// `None` when no block of any function carries the line. `false` may drop a test; "this line
+    /// is not in the arc data" supports no such claim, and the two must not collapse.
+    pub fn line_reached(&self, file: &str, line: u32) -> Option<bool> {
+        let carriers = self.line_blocks.get(&(file.to_string(), line))?;
+        if carriers.is_empty() {
+            return None;
+        }
+        Some(
+            carriers
+                .iter()
+                .any(|(f, b)| self.entered_block(f, *b).unwrap_or(false)),
+        )
     }
 
     /// Whether flow reached a block — 032 §3.2's question.
@@ -1602,6 +1633,17 @@ fn arc_coverage_read(
             start_line: f.start_line,
             march,
         };
+        // **Every block that carries a line**, for 032 §3.2. Not the attribution — that decides
+        // where a block's *count* lands and is a different question from which blocks a caller
+        // must ask about to know whether a line was reached.
+        for bl in &f.lines {
+            for line in &bl.lines {
+                let slot = cov.line_blocks.entry((bl.file.clone(), *line)).or_default();
+                if !slot.contains(&(key.clone(), bl.block)) {
+                    slot.push((key.clone(), bl.block));
+                }
+            }
+        }
         let order = cov.order.entry(key.clone()).or_default();
         for (i, a) in f.arcs.iter().enumerate() {
             // **Included in the solve above, excluded here** (contract 7). `solve_arcs` saw every
