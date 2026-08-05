@@ -429,3 +429,60 @@ fn a_budget_that_fits_is_not_a_caveat() {
     let n = sel.tests.len();
     assert_eq!(sel.clone().budgeted(n + 5).confidence, sel.confidence);
 }
+
+/// **A file the index has never heard of is a different fact from an entity with no coverage**,
+/// and the difference is almost always a path that was not resolved.
+///
+/// This guard exists because the mistake has now been made three times in this project, each time
+/// silently and each time *flatteringly*:
+///
+/// - `chiero-diff`'s macro-expansion baseline looked up `m.h` and found the `static inline`'s
+///   coverage, so a premise test passed for the wrong reason;
+/// - the mutation gate's coverage-only baseline looked up `lib.c` while gcov had recorded an
+///   absolute path, reporting 0% on exactly the mutations where the baseline works;
+/// - the mutation gate's *own* pipeline did the same and selected nothing, which reads as a 100%
+///   reduction.
+///
+/// 030 is explicit that paths are stored as gcov wrote them and that resolving them belongs to
+/// the caller. That is the right division — matching by basename here would conflate two files of
+/// one name in different directories, the identity mistake `FuncKey` exists to prevent — but a
+/// caller who gets it wrong deserves to be told, in those words, rather than handed a small
+/// answer.
+#[test]
+fn an_unknown_file_is_reported_as_a_resolution_problem() {
+    let before = Program::parse("/elsewhere/t.c", t_c()).expect("parses");
+    let after = Program::parse("/elsewhere/t.c", "int main (void)\n{\n  M; M;\n  return 1;\n}\n")
+        .expect("parses");
+    // The index holds `t.c`, not `/elsewhere/t.c`.
+    let sel = select(&impact(&before, &after), &after, &index_with(&[TestId(0)]));
+
+    match &sel.confidence {
+        Confidence::Reduced { reasons } => {
+            assert!(
+                reasons.iter().any(|r| r.contains("not in the coverage index")
+                    && r.contains("/elsewhere/t.c")),
+                "the reason must name the file and say the index has never heard of it, because \
+                 that is a resolution problem and not a coverage gap: {reasons:?}"
+            );
+        }
+        other => panic!("a file the index does not hold cannot be Full confidence: {other:?}"),
+    }
+}
+
+/// And the ordinary case is unchanged: a file the index *does* hold, with an entity it has no
+/// coverage for, is a coverage gap and says so in those terms.
+#[test]
+fn a_known_file_with_no_coverage_is_a_coverage_gap() {
+    // `t.c` is in the index; line 4 of it is not.
+    let before = Program::parse("t.c", "int main (void)\n{\n  M; M;\n  return 0;\n}\n")
+        .expect("parses");
+    let after = Program::parse("t.c", "int main (void)\n{\n  M; M;\n  return 0;\n}\nint spare (void) { return 1; }\n")
+        .expect("parses");
+    let sel = select(&impact(&before, &after), &after, &index_with(&[TestId(0)]));
+    if let Confidence::Reduced { reasons } = &sel.confidence {
+        assert!(
+            !reasons.iter().any(|r| r.contains("not in the coverage index")),
+            "the file is in the index; only the entity is unmeasured: {reasons:?}"
+        );
+    }
+}
