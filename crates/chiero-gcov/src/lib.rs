@@ -16,6 +16,9 @@
 
 pub mod native;
 
+#[cfg(test)]
+mod memory_budget;
+
 use std::path::{Path, PathBuf};
 
 use indexmap::IndexMap;
