@@ -1133,6 +1133,14 @@ pub fn ingest_into(
     let mut object = ObjectLines::default();
     let in_group = group_members(&notes.functions);
     for (fi, f) in notes.functions.iter().enumerate() {
+        // **A compiler-generated function's lines are not the source's lines.** gcov erases the
+        // artificial ones before it accounts a single line (`gcov.cc` ~1391), so they never
+        // contribute. They carry real source lines — gcc outlines a `#pragma omp parallel` region
+        // into one that holds the lines the region was written on — so counting them adds a
+        // second copy of those counts to the function the reader is actually asking about.
+        if f.artificial {
+            continue;
+        }
         let Some(d) = data.functions.iter().find(|d| d.ident == f.ident) else {
             return Err(IngestError::Malformed {
                 path: data_path.clone(),
@@ -1328,6 +1336,12 @@ fn arc_coverage_read(
     )?;
 
     for f in &notes.functions {
+        // Erased before any accounting, as in `ingest_into` and for the same reason: an outlined
+        // region is not a function a reader can select tests for, and its arcs are not that
+        // reader's control flow.
+        if f.artificial {
+            continue;
+        }
         let Some(d) = data.functions.iter().find(|d| d.ident == f.ident) else {
             continue; // `ingest_into` has already refused this file.
         };
