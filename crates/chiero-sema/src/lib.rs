@@ -5856,6 +5856,42 @@ impl Cx<'_> {
                         self.common_type(cty, ety)
                     }
                 };
+                // **One `void` side is a GNU extension, not a constraint violation.** C 6.5.15p3
+                // wants both operands `void` or neither; gcc accepts the mix — silently under
+                // `gnu11`, as "ISO C forbids conditional expr with only one void side" under
+                // `-pedantic-errors` — and VPP's `vtep.c` writes exactly it, an assignment in one
+                // arm and a `void` call in the other.
+                //
+                // The result is `void`, which is what makes such an expression usable only as a
+                // statement. Coercing instead produced "a `void` value is used where a value is
+                // required" from `coerce`, which reads as a missing return type rather than as a
+                // divergence — so the arms are left alone and the sentence is gcc's.
+                let arm_ty = |cx: &Self, n: Option<TypedId>| {
+                    n.map(|n| cx.out.typed.ty_of(n))
+                        .map(|t| matches!(cx.out.types[t.0 as usize], Ty::Void))
+                };
+                let one_void = t.is_some()
+                    && arm_ty(self, t) != arm_ty(self, Some(e))
+                    && (arm_ty(self, t) == Some(true) || arm_ty(self, Some(e)) == Some(true));
+                if one_void {
+                    if self.dialect.pedantic {
+                        self.error(
+                            span,
+                            "ISO C forbids a conditional expression with only one void side",
+                        );
+                    }
+                    let ty = self.intern(Ty::Void);
+                    let mut ops = vec![c];
+                    if let Some(t) = t {
+                        ops.push(t);
+                    }
+                    ops.push(e);
+                    return self.push_typed(TypedNode::Value {
+                        expr,
+                        ty,
+                        operands: ops,
+                    });
+                }
                 let mut ops = vec![c];
                 if let (Some(t), Some(te)) = (t, then.as_ref()) {
                     let t = self.coerce(t, ty, Conversion::Conditional, *te);
