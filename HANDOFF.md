@@ -597,15 +597,35 @@ typing the paths ever would.
 > | 6 corrupt data, no partial index | done, for the truncation cases the fixtures reach |
 > | 10 `tests_for_line`, union | done (88aae92) |
 > | 12 `expansion_loc` only | done (959e7ea), and the guard is verified to fail on a planted violation |
+> | §6 outcomes, `always_run` | done (32d6005) |
 >
 > **Contract 5 is the one that matters and it discriminates.** Replacing the measured `max` line
 > rule with a sum fails it on `loop.c` with the file and line named. A gate that only ran on `t`
 > would have passed the wrong rule, which is why the second fixture exists.
 >
+> ### 🧭 THE ONE IDEA THIS CRATE KEEPS RE-DERIVING
+>
+> Three times now the design has turned on the same distinction, and it is worth naming because
+> the fourth case will look different again:
+>
+> | | absence | zero |
+> |---|---|---|
+> | a line | gcov recorded no entry — `line_count` is `None` | gcov recorded 0: it *saw* the line, nothing ran it |
+> | a line's tests | `tests_for_line` is `None` | `Some([])` would claim no test covers it |
+> | a test | crashed, no artifacts — `always_run` | ran, covered nothing — skippable on the evidence |
+>
+> Flattening any row gives a confident "nothing to run" built on no evidence, and 032 acts on
+> exactly that. **When a new query is added here, ask what its empty answer claims** before
+> deciding whether it should be able to give one.
+>
 > ⏭️ **Next in 030**, in the order the spec gives them:
 > - **contract 7**: `FAKE` arcs excluded from arc-level queries but included in the conservation
 >   solve. The decoder keeps the flags and the solve already uses them; what is missing is the
->   arc-level *query surface* (`tests_for_arc`), which is also contract 4's other half.
+>   arc-level *query surface* (`tests_for_arc`), which is also contract 4's other half. Note
+>   `t.gcno`'s `main` has two `FAKE` arcs to the exit block, so the fixture already discriminates.
+> - **§5's `tests_for_span` and `uncovered_lines`**, the two queries in the spec's list that have
+>   no implementation yet. `tests_for_span` is where contract 12's rule becomes code rather than a
+>   guard: it must go through `SourceMap::expansion_loc`.
 > - **contract 13**: `tests_for_block` over a CIR block's `gcov_lines` — the join to the rest of
 >   the system, and the first thing here that touches `chiero-cir`.
 > - **contract 11**: the memory budget, 1M lines × 5000 tests. `TestBitmap` is a sorted
