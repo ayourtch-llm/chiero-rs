@@ -92,3 +92,82 @@ fn the_index_knows_which_tests_contributed() {
     let idx = three_tests();
     assert_eq!(idx.tests(), vec![TestId(0), TestId(1), TestId(2)]);
 }
+
+/// **A test that saw a line and did not execute it is not one of the line's tests.**
+///
+/// gcov records `0` for a line the compiler emitted and the run never reached. Ingest was adding
+/// the test to that line's set anyway, so `tests_for_line` reported a test as having executed a
+/// line that `line_count` reports as executed by nothing — two public queries contradicting each
+/// other about the same line, against 030 §5's "tests that **executed** it" and contract 10's
+/// "exactly the covering tests".
+///
+/// The direction is conservative, which is why it survived: 032 would over-run rather than
+/// under-run. But it costs the answer that lets 032 skip anything at all. `Some([])` — *recorded,
+/// and nothing ran it* — is 030 §1's whole reason for distinguishing an empty set from absence,
+/// and while every ingested test joined every line it saw, that answer was unreachable on the
+/// native path, which is the only path 032 uses.
+#[test]
+fn a_line_the_test_never_reached_is_not_covered_by_it() {
+    let mut idx = chiero_gcov::CoverageIndex::default();
+    chiero_gcov::ingest_native_as(&mut idx, TestId(7), &corpus(), "unrun").expect("unrun decodes");
+
+    assert_eq!(
+        idx.line_count("unrun.c", 1),
+        Some(0),
+        "the fixture's point is a function nothing calls"
+    );
+    assert_eq!(
+        idx.tests_for_line("unrun.c", 1),
+        Some(vec![]),
+        "recorded, and no test ran it — which is what lets 032 skip, and is not the same as the \
+         line being absent"
+    );
+    // The lines it did reach still name it.
+    assert_eq!(idx.tests_for_line("unrun.c", 2), Some(vec![TestId(7)]));
+}
+
+/// **A JSON ingest carries no per-test information, so it must not answer a per-test question.**
+///
+/// `gcov --json-format` reports counts, not which test produced them. The index answered
+/// `Some([])` for every line of such an ingest — "no test covers this line" — including for a
+/// line it simultaneously reported as executed five times. That is the empty set 030 §1 warns
+/// about, asserted from an ingest that never had the evidence to assert anything.
+#[test]
+fn a_json_only_line_has_no_test_answer() {
+    let idx = chiero_gcov::ingest_json(&corpus(), "loop").expect("loop's json");
+    assert_eq!(
+        idx.line_count("loop.c", 1),
+        Some(5),
+        "the line was executed five times"
+    );
+    assert_eq!(
+        idx.tests_for_line("loop.c", 1),
+        None,
+        "and which tests did that is a question this ingest cannot answer"
+    );
+}
+
+/// The per-build query makes the same distinction: a build that recorded a line and ran nothing
+/// on it answers with the empty set, not with nothing.
+#[test]
+fn a_build_that_recorded_a_line_and_ran_nothing_says_so() {
+    let mut idx = chiero_gcov::CoverageIndex::default();
+    chiero_gcov::ingest_native_as_variant(
+        &mut idx,
+        TestId(7),
+        chiero_gcov::Variant::named("x86_64_v3"),
+        &corpus(),
+        "unrun",
+    )
+    .expect("unrun as v3");
+    assert_eq!(
+        idx.tests_for_line_in("unrun.c", 1, &chiero_gcov::Variant::named("x86_64_v3")),
+        Some(vec![]),
+        "the v3 build compiled this line and nothing ran it"
+    );
+    assert_eq!(
+        idx.tests_for_line_in("unrun.c", 1, &chiero_gcov::Variant::named("x86_64_v4")),
+        None,
+        "and the v4 build never saw it at all"
+    );
+}
