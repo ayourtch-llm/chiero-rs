@@ -106,3 +106,64 @@ fn an_untaken_arc_is_zero_rather_than_missing() {
         );
     }
 }
+
+/// **030 §4's arc data, asked the question 032 §3.2 needs: did this run enter a block?**
+///
+/// > A test whose arc-level coverage shows it never entered the block containing the change
+/// > cannot observe it. This is bookkeeping rather than solving, and it matters because
+/// > line-level coverage attributes a whole line — including a multi-statement macro expansion —
+/// > to a test that only executed part of it.
+///
+/// # Why `tests_for_arc` cannot answer it
+///
+/// `tests_for_arc` records a test for an arc the graph *has*, whether or not the run took it —
+/// deliberately, and for the crate's absence-versus-zero rule: an arc a test did not take is
+/// recorded with a count of zero, because "the graph has no such arc" and "this run did not take
+/// it" are different facts. So the set it returns is the tests that were *measured against* the
+/// arc, not the tests that traversed it.
+///
+/// §3.2 asks the second question, and it is the one that may *remove* a test — so it gets its own
+/// method rather than a caller re-deriving it from counts and getting the rule slightly wrong.
+#[test]
+fn a_block_is_entered_only_when_flow_reached_it() {
+    let cov = chiero_gcov::native::arc_coverage(&corpus(), "unrun").expect("unrun decodes");
+    let f = cov
+        .functions()
+        .into_iter()
+        .find(|k| k.name == "never_called")
+        .cloned()
+        .expect("the fixture has a function nothing calls");
+
+    // Its entry block is block 0, which the flow solve gives the function's own count.
+    assert_eq!(
+        cov.entered_block(&f, 2),
+        Some(false),
+        "nothing called it, so no flow reached its first real block"
+    );
+}
+
+/// And a function that ran did enter its blocks — otherwise the query would be a constant.
+#[test]
+fn a_block_of_a_function_that_ran_is_entered() {
+    let cov = chiero_gcov::native::arc_coverage(&corpus(), "t").expect("t decodes");
+    assert_eq!(cov.entered_block(&main_key(), 2), Some(true));
+}
+
+/// A block the graph does not have is `None`, not `false` — the crate's rule once more: "no such
+/// block" and "flow never reached it" are different facts, and only the second may drop a test.
+#[test]
+fn a_block_outside_the_graph_answers_nothing() {
+    let cov = chiero_gcov::native::arc_coverage(&corpus(), "t").expect("t decodes");
+    assert_eq!(cov.entered_block(&main_key(), 999), None);
+}
+
+/// **The entry block is entered whenever the function ran**, even though nothing flows *into* it.
+///
+/// Reading "no incoming arcs with a count" as "not entered" would call every function's entry
+/// block unreached and drop every test — the failure being in the direction that removes tests is
+/// exactly why this has its own test.
+#[test]
+fn the_entry_block_is_entered_when_the_function_ran() {
+    let cov = chiero_gcov::native::arc_coverage(&corpus(), "t").expect("t decodes");
+    assert_eq!(cov.entered_block(&main_key(), 0), Some(true));
+}
