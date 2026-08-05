@@ -884,3 +884,132 @@ fn scalar(v: &serde_json::Value) -> String {
         other => other.to_string(),
     }
 }
+
+/// How to run [`find_bugs`].
+#[derive(Clone, Debug)]
+pub struct BugCfg {
+    pub entry: String,
+    pub budget: chiero_exec::Budget,
+    pub backend: Option<chiero_solver::SmtLib>,
+}
+
+impl BugCfg {
+    /// Discovers a solver, as the engine's own default does (022 §4).
+    pub fn new(entry: impl Into<String>) -> BugCfg {
+        BugCfg {
+            entry: entry.into(),
+            budget: chiero_exec::Budget::default(),
+            backend: chiero_solver::SmtLib::discover(),
+        }
+    }
+}
+
+/// [040](../../../docs/specs/040-defect-checkers.md)'s checkers in 050 §2's envelope —
+/// **050 contract 3**, and the operation the envelope exists for.
+///
+/// > "an LLM reading `"findings": []` will report 'the code is safe'."
+///
+/// Every other operation's empty answer is merely uninformative. This one's empty answer is a
+/// claim about the code, and it is wrong in exactly the case that is hardest to notice: when
+/// the search stopped early. So three things an empty list can mean are kept apart, by the
+/// envelope rather than by prose —
+///
+/// - the run finished and found nothing (`Exact`, `proven`),
+/// - the run hit a budget (`Bounded`, and `budgets.hit` names which),
+/// - the run met something it could not model (`Approximated`/`Unknown`, with the assumption).
+///
+/// # `budgets.hit` names the budget, not the fact
+///
+/// Contract 3 asks for "a non-empty `budgets.hit`". A list containing `"a budget was hit"`
+/// would satisfy that string-wise and tell a reader nothing: the actionable difference between
+/// `max_loop_iters` and `max_states` is which knob to turn, and a reader who cannot tell them
+/// apart cannot decide whether re-running would help.
+pub fn find_bugs(module: &chiero_cir::Module, cfg: &BugCfg) -> Envelope {
+    if !module.funcs.iter().any(|f| &*f.name == cfg.entry) {
+        // **An error, not an empty finding list.** A typo in an entry name would otherwise
+        // produce the most confident possible all-clear.
+        return Envelope::new(
+            serde_json::json!({
+                "findings": [],
+                "budgets": { "hit": [] },
+                "error": format!("no function named `{}` in this module", cfg.entry),
+            }),
+            Fidelity::Unknown,
+        )
+        .with_assumption("nothing_analysed", &cfg.entry)
+        .with_blind_spot(&format!(
+            "`{}` was not found, so nothing was analysed and this list is not about your code",
+            cfg.entry
+        ));
+    }
+
+    let mut arena = chiero_solver::TermArena::new();
+    let mut engine = chiero_exec::Engine::new(module)
+        .with_entry(&cfg.entry)
+        .with_budget(cfg.budget);
+    engine = match cfg.backend.clone() {
+        Some(b) => engine.with_backend(b),
+        None => engine.with_solver(chiero_exec::SolverTier::LiteOnly),
+    };
+    for c in chiero_check::default_checkers() {
+        engine = engine.with_checker(c);
+    }
+    let run = engine.run(&mut arena);
+
+    let findings: Vec<serde_json::Value> = run
+        .reports()
+        .iter()
+        .map(|f| {
+            serde_json::json!({
+                "message": f.message,
+                "fidelity": format!("{:?}", f.fidelity),
+                "solver": f.solver,
+                // 023 contract 15: a witness, or the reason there is none. The absence is
+                // allowed; the silence is not.
+                "witness": f.witness.as_ref().map(|w| {
+                    w.bindings.iter().map(binding_json).collect::<Vec<_>>()
+                }),
+                "unwitnessed": f.unwitnessed,
+            })
+        })
+        .collect();
+
+    // **Which budgets, from the assumptions the run actually recorded** — not from comparing
+    // the configured limits against counters, which would be a second implementation of what
+    // the engine already knows and would drift from it.
+    let mut hit: Vec<String> = Vec::new();
+    let mut assumptions: Vec<chiero_exec::Assumption> = Vec::new();
+    for s in run.states() {
+        for a in s.assumptions() {
+            if !assumptions.iter().any(|x| x == a) {
+                assumptions.push(a.clone());
+            }
+            if a.kind == chiero_exec::AssumptionKind::BudgetHit && !hit.contains(&a.detail) {
+                hit.push(a.detail.clone());
+            }
+        }
+    }
+
+    let result = serde_json::json!({
+        "findings": findings,
+        "budgets": { "hit": hit },
+    });
+
+    let fidelity = exec_fidelity(run.fidelity());
+    let mut env = Envelope::new(result, fidelity);
+    for a in &assumptions {
+        env = env.with_assumption(&format!("{:?}", a.kind), &a.detail);
+    }
+    // **The blind spot is about the empty case even when the list is not empty**, because a
+    // reader deciding what to do next needs to know what was *not* searched either way.
+    if fidelity != Fidelity::Exact {
+        env = env.with_blind_spot(
+            "the search did not cover the whole program, so an absent finding is not an \
+             absent defect",
+        );
+    }
+    env.with_blind_spot(&format!(
+        "only the {} checkers of 040 ran; a defect no checker looks for is not reported",
+        chiero_check::default_checkers().len()
+    ))
+}

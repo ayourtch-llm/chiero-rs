@@ -268,6 +268,7 @@ dependencies = [
  "chiero-pp",
  "chiero-recipe",
  "chiero-select",
+ "chiero-solver",
  "chiero-span",
  "chiero-vpp",
  "indexmap",

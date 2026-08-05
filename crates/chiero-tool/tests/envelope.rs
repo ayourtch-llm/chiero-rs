@@ -173,3 +173,37 @@ fn the_rendering_still_qualifies_itself() {
     assert!(r.contains("not proven"), "{r}");
     assert!(r.contains("loops were unrolled"), "{r}");
 }
+
+/// **Nesting deeper than two levels must keep its shape.**
+///
+/// The array renderer rebuilt each element by trimming every line and re-padding it, which
+/// works for a flat record and flattens anything inside it. A `find_bugs` finding carrying a
+/// witness came out with the witness's fields at the same indent as the bullet that introduced
+/// them, so the answer read as one list of unrelated keys.
+#[test]
+fn a_list_inside_a_list_keeps_its_indentation() {
+    let env = Envelope::new(
+        serde_json::json!({
+            "findings": [{
+                "message": "division-by-zero",
+                "witness": [{ "origin": "parameter 0", "value": "0" }],
+            }],
+        }),
+        Fidelity::Exact,
+    );
+    let r = env.render();
+    let indent = |needle: &str| {
+        r.lines()
+            .find(|l| l.trim_start().starts_with(needle))
+            .map(|l| l.len() - l.trim_start().len())
+            .unwrap_or_else(|| panic!("`{needle}` missing from:\n{r}"))
+    };
+    assert!(
+        indent("value:") > indent("- origin:"),
+        "the witness's fields must sit under the witness, not beside it:\n{r}"
+    );
+    assert!(
+        indent("- origin:") > indent("witness:"),
+        "and the witness under the finding:\n{r}"
+    );
+}

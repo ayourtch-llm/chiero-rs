@@ -136,7 +136,7 @@ fn a_signed_overflow_is_found_and_witnessed() {
 func @f() -> i32 {
 entry:
   .line 1
-  %0 = add i32 2147483647i32, 1i32
+  %0 = add i32 2147483647i32, 1i32 signed
   ret %0
 }";
     let env = find_bugs(&m(definite), &cfg("f"));
@@ -166,5 +166,49 @@ fn a_missing_entry_is_not_an_empty_finding_list() {
     assert!(
         v["result"]["error"].as_str().is_some_and(|e| e.contains("nosuch")),
         "the error must name what was not found: {v}"
+    );
+}
+
+/// A division by zero after a loop: the engine reports it once per unrolled iteration, because
+/// 023 §6.1 is explicit that those are separate reports of one bug and it will not merge them.
+const DIV_AFTER_LOOP: &str = "\
+func @f(%0: i32) -> i32 {
+entry:
+  .line 1
+  goto bb1
+bb1:
+  .line 2
+  %1 = phi i32 [entry 0i32] [bb1 %2]
+  %2 = add i32 %1, 1i32
+  %3 = cmp slt i32 %2, %0
+  br %3, bb1, bb2
+bb2:
+  .line 3
+  %4 = sub i32 %0, %0
+  %5 = sdiv i32 %0, %4
+  ret %5
+}";
+
+/// **One bug is one entry, and the count of paths that reached it is not thrown away.**
+///
+/// Nine identical `division-by-zero` lines differing only in which loop iteration produced
+/// them is a worse answer than one line saying nine — a reader scrolling past eight
+/// near-duplicates is a reader who stops reading. But collapsing them *silently* would be the
+/// other failure: "1 finding" and "1 finding seen on 9 paths" are different facts, and the
+/// second is what tells a reader the loop matters.
+#[test]
+fn identical_findings_are_one_entry_that_says_how_many_paths_reached_it() {
+    let env = find_bugs(&m(DIV_AFTER_LOOP), &cfg("f"));
+    let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
+    let findings = v["result"]["findings"].as_array().expect("findings");
+    assert_eq!(
+        findings.len(),
+        1,
+        "one bug, one entry — got {}: {v}",
+        findings.len()
+    );
+    assert!(
+        findings[0]["paths"].as_u64().is_some_and(|n| n > 1),
+        "and the paths that reached it are counted, not discarded: {v}"
     );
 }

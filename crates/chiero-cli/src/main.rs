@@ -26,6 +26,10 @@ OPERATIONS:
             Adjudicate a rewrite. Either a proof that the two agree for every
             input, or a concrete input at which they do not.  (041 §1)
 
+    find-bugs <file.c> --entry <fn>
+            Run 040's defect checkers from a function. An empty list is an
+            answer only when the envelope says the search finished.  (050 §3)
+
     impact <before.c> <after.c>
             What a source change reaches — through calls, types, globals and
             macro expansions.  (031)
@@ -89,6 +93,7 @@ fn run(args: &[String]) -> Result<String, Fault> {
     let opts = Options::parse(&args[1..])?;
     let env = match args[0].as_str() {
         "prove-equivalent" => prove_equivalent(&opts)?,
+        "find-bugs" => find_bugs(&opts)?,
         "impact" => impact(&opts)?,
         "select-tests" => select_tests(&opts)?,
         "expansion-sites" => expansion_sites(&opts)?,
@@ -258,6 +263,16 @@ fn programs(
             .ok_or_else(|| Fault::Failed(format!("{}: could not be parsed", p.display())))
     };
     Ok((parse(&f[0])?, parse(&f[1])?))
+}
+
+fn find_bugs(o: &Options) -> Result<chiero_tool::Envelope, Fault> {
+    let f = o.files(1, "find-bugs")?;
+    let entry = o
+        .entry
+        .clone()
+        .ok_or_else(|| Fault::Usage("find-bugs needs --entry <fn>".into()))?;
+    let m = lower(&f[0], &read(&f[0])?, o.frontend()).map_err(Fault::Failed)?;
+    Ok(chiero_tool::find_bugs(&m, &chiero_tool::BugCfg::new(entry)))
 }
 
 fn impact(o: &Options) -> Result<chiero_tool::Envelope, Fault> {
