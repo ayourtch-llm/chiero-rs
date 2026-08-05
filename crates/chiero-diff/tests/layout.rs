@@ -23,10 +23,13 @@
 //! the wrong reason: it would say the same about a renamed field, which changes no offset, and it
 //! has no size delta to report because it never computed one.
 //!
-//! The direction that matters is the other one. `__attribute__((packed))` on a struct whose
-//! fields are already tightly packed changes **nothing**, and a `#pragma pack` interaction can
-//! change every offset while the struct's own tokens are untouched. Only asking 014 for the two
-//! layouts and comparing them answers those.
+//! And the *reordering* case is subtler than it reads. Swapping two **same-size** fields moves no
+//! offset in the list — `int a; short b; short c;` lays out at 0, 4, 6 either way — but the offset
+//! of the field *named* `b` goes from 4 to 6, and `p->b` reads different bytes. A comparison of
+//! bare offsets calls that unchanged, which is why the layout is keyed by field name.
+//!
+//! Both directions are why only 014 can answer this: it computes what gcc computes, and its own
+//! corpus gate checks that against gcc itself.
 
 use chiero_diff::{ChangeClass, Entity, ImpactEdge, Program, impact};
 
@@ -97,45 +100,52 @@ fn a_layout_change_propagates_to_the_enclosing_record() {
     );
 }
 
-/// **The computed comparison earns its keep here.** Renaming a field moves no offset, so it is
-/// *not* a layout change — but it is still a change, because its users name the field.
+/// **`packed` on an already-tight struct is still a layout change** — and this test asserted the
+/// opposite until gcc was asked.
 ///
-/// A syntactic comparison cannot tell these apart: both are "two tokens differ in the tail". The
-/// class is what a report leads with and what §3.3 closes over, so getting it wrong is not
-/// cosmetic.
-#[test]
-fn renaming_a_field_is_a_change_but_not_a_layout_change() {
-    let before = "struct pair { int a; int b; };\nint get (struct pair *p) { return p->b; }\n";
-    let after = "struct pair { int a; int renamed; };\nint get (struct pair *p) { return p->b; }\n";
-    let set = impact(&prog(before), &prog(after));
-
-    let class = set.entities[&Entity::record("f.c", "pair")].class;
-    assert_ne!(
-        class,
-        ChangeClass::LayoutChanged { size_delta: 0 },
-        "no offset moved; `renamed` sits exactly where `b` did"
-    );
-    assert_eq!(class, ChangeClass::BodyChanged);
-}
-
-/// And the other direction: a struct whose fields were already tightly packed is **not** changed
-/// by `packed`, however loudly the tokens differ.
+/// The premise was that removing no padding changes nothing. It does not change the *size*, and
+/// it changes the alignment from 4 to 1:
 ///
-/// This is the one a syntactic comparison gets wrong in the *dangerous* direction — it would
-/// report a layout change, and 032 would run the tests of everything touching the type for a
-/// diff that moved nothing.
+/// ```text
+/// struct tight  { int a; int b; };                      size 8  align 4
+/// struct tightp { int a; int b; } __attribute__((packed));  size 8  align 1
+/// struct wrap  { char c; struct tight  t; };   offsetof(t) == 4
+/// struct wrapp { char c; struct tightp t; };   offsetof(t) == 1
+/// ```
+///
+/// So a struct embedding it moves, which is exactly what contract 11 is about. Measured with gcc
+/// rather than argued — the same discipline the gcov work needed, and for the same reason: a
+/// plausible story about what a compiler does is not a fact about what it does.
+///
+/// The `size_delta` being 0 is not "no change"; it is the report saying the size held while
+/// something else did not.
 #[test]
-fn packing_an_already_packed_struct_changes_no_layout() {
+fn packing_an_already_tight_struct_changes_its_alignment() {
     let before = "struct tight { int a; int b; };\nint get (struct tight *p) { return p->b; }\n";
     let after = "struct tight { int a; int b; } __attribute__((packed));\n\
                  int get (struct tight *p) { return p->b; }\n";
     let set = impact(&prog(before), &prog(after));
 
-    assert_ne!(
-        set.entities
-            .get(&Entity::record("f.c", "tight"))
-            .map(|j| j.class),
-        Some(ChangeClass::LayoutChanged { size_delta: 0 }),
-        "every field was already at its natural offset and the size is unchanged"
+    assert_eq!(
+        set.entities[&Entity::record("f.c", "tight")].class,
+        ChangeClass::LayoutChanged { size_delta: 0 },
+        "no padding was removed, and the alignment still went from 4 to 1"
+    );
+}
+
+/// The one that genuinely moves nothing: a field renamed, which changes no offset and no size.
+///
+/// This is the case a syntactic comparison cannot separate from a reordering — both are "two
+/// tokens differ" — and §2 says plainly that renaming "is not layout-affecting but *is* a
+/// source-compatibility change for its users".
+#[test]
+fn a_rename_moves_no_byte() {
+    let before = "struct pair { int a; int b; };\nint get (struct pair *p) { return p->b; }\n";
+    let after = "struct pair { int a; int renamed; };\nint get (struct pair *p) { return p->b; }\n";
+    let set = impact(&prog(before), &prog(after));
+    assert_eq!(
+        set.entities[&Entity::record("f.c", "pair")].class,
+        ChangeClass::BodyChanged,
+        "`renamed` sits exactly where `b` did"
     );
 }

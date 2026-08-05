@@ -136,6 +136,15 @@ pub enum ChangeClass {
     Added,
     /// Also a build break for every user, which is why it is not merely "the entity is gone".
     Removed,
+    /// A record's **computed layout** differs: its size, alignment, or any field offset.
+    ///
+    /// **Computed, never syntactic** (031 §2). Reordering two same-size fields moves every
+    /// offset after the first while changing two tokens; renaming a field changes the same two
+    /// tokens and moves nothing. `size_delta` is `new - old` in bytes, so a report can say
+    /// "8 → 5" — which is what tells a maintainer whether a wire format moved.
+    LayoutChanged {
+        size_delta: i64,
+    },
     /// **chiero could not read this entity**, so it must be assumed changed (031 §4).
     ///
     /// Not a guess about what happened to it. A file that failed to parse tells you nothing about
@@ -217,6 +226,41 @@ pub struct ImpactSet {
     pub completeness: Completeness,
 }
 
+/// `ParsedTu`'s symbol table, as 014 wants it.
+struct Names<'a>(&'a chiero_parse::ParsedTu);
+
+impl chiero_sema::SymbolText for Names<'_> {
+    fn text(&self, sym: chiero_span::Symbol) -> Option<&str> {
+        self.0.text(sym)
+    }
+}
+
+/// Where one named field sits: its byte offset, and its bit offset and width if it is a
+/// bit-field.
+///
+/// A bit-field's offset is absolute rather than relative to the byte, because gcc's straddling
+/// rules move the byte offset around (014 §3).
+type FieldPlace = (String, u64, Option<(u64, u64)>);
+
+/// What a change to a record would have to alter for its users to care.
+///
+/// Field *names* are deliberately absent: renaming one is a change, and the token fingerprint
+/// already sees it. What this holds is what only 014 can compute.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RecordShape {
+    size: u64,
+    align: u64,
+    is_union: bool,
+    packed: bool,
+    /// Each named field's byte offset, and its bit offset and width where it is a bit-field.
+    ///
+    /// **Keyed by name, and that is the whole subtlety.** Reordering two *same-size* fields moves
+    /// no offset in the list — `int a; short b; short c;` and `int a; short c; short b;` both lay
+    /// out at 0, 4, 6 — but the offset *of the field named `b`* goes from 4 to 6, and `p->b` now
+    /// reads different bytes. Comparing a bare offset list would call that unchanged.
+    fields: Vec<FieldPlace>,
+}
+
 /// A loader for a translation unit that includes nothing.
 ///
 /// Reaching a `#include` through this is an error rather than an empty file, so a fixture that
@@ -254,6 +298,12 @@ pub struct Program {
     /// (031 §4), so the program is still built from whatever the parser recovered — and the flag
     /// is what stops that partial recovery being read as a complete answer.
     parsed_cleanly: bool,
+    /// Each record's computed layout, by tag — 014 §3's answer, not this crate's.
+    ///
+    /// **The one thing tokens cannot supply.** `__attribute__((packed))` on an already-tight
+    /// struct changes no byte, and a field rename changes no offset; both differ in the token
+    /// stream and neither is a layout change.
+    layouts: IndexMap<String, RecordShape>,
     /// Which names each entity mentions, for §3's closure.
     ///
     /// **Names, not resolved bindings.** A local variable shadowing a global's name puts its
@@ -304,6 +354,46 @@ impl Program {
         let mut oracle = chiero_parse::ScopedTypedefs::new();
         let parsed = chiero_parse::parse_tu(&tu, &mut oracle);
         let parsed_cleanly = tu.diagnostics.is_empty() && parsed.diagnostics.is_empty();
+        // **014 computes the layouts; this crate must not.** Duplicating the rules here is
+        // exactly the syntactic comparison 031 §2 rules out, and gcc's straddling and packing
+        // behaviour is measured in 014's own corpus gate against gcc itself.
+        let analysis = chiero_sema::analyze(
+            &parsed.ast,
+            &chiero_sema::TargetConfig::x86_64_linux(),
+            &Names(&parsed),
+        );
+        let mut layouts: IndexMap<String, RecordShape> = IndexMap::new();
+        for (i, l) in analysis.records().iter().enumerate() {
+            if !l.complete {
+                continue;
+            }
+            let Some(tag) = analysis
+                .tag_of(chiero_sema::RecordId(i as u32))
+                .and_then(|t| parsed.text(t))
+            else {
+                // An anonymous record has no name for an entity to be keyed by, and nothing
+                // outside its declaration can refer to it.
+                continue;
+            };
+            layouts.insert(
+                tag.to_string(),
+                RecordShape {
+                    size: l.size,
+                    align: l.align,
+                    is_union: l.is_union,
+                    packed: l.packed,
+                    fields: l
+                        .fields
+                        .iter()
+                        .filter_map(|f| {
+                            let name = parsed.text(f.name?)?.to_string();
+                            Some((name, f.offset, f.bits.map(|b| (b.bit_offset, b.width))))
+                        })
+                        .collect(),
+                },
+            );
+        }
+
         let (entities, refs, spans) = extract(file, &tu, &parsed);
         let (macros, expands) = extract_macros(&tu, &spans);
         let mut entities = entities;
@@ -311,6 +401,7 @@ impl Program {
         Some(Program {
             file: file.to_string(),
             parsed_cleanly,
+            layouts,
             entities,
             expands,
             refs,
@@ -521,7 +612,16 @@ pub fn impact(old: &Program, new: &Program) -> ImpactSet {
     for (e, before) in &old.entities {
         match new.entities.get(e) {
             Some(after) => {
-                if let Some(class) = classify(before, after) {
+                // **A record is compared by its computed layout first** (031 §2). Two tokens
+                // differ whether a field was reordered or renamed, and only 014 knows which of
+                // those moved a byte.
+                let class = match e {
+                    Entity::Record { tag, .. } => {
+                        layout_class(old.layouts.get(tag), new.layouts.get(tag), before, after)
+                    }
+                    _ => classify(before, after),
+                };
+                if let Some(class) = class {
                     direct(e, class);
                 }
             }
@@ -651,6 +751,52 @@ fn edge_to(target: &Entity) -> ImpactEdge {
         Entity::Macro { name, .. } => ImpactEdge::ExpandsMacro { name: name.clone() },
         Entity::EnumConst { name, .. } => ImpactEdge::UsesGlobal { name: name.clone() },
     }
+}
+
+/// How a record changed: its layout if any byte moved, otherwise whatever its tokens say.
+///
+/// **The layout question is asked first and answered by 014.** `__attribute__((packed))` on an
+/// already-tight struct changes no offset and no size — the tokens differ loudly and nothing
+/// downstream can observe it — while a `#pragma pack` can move every offset without touching the
+/// struct's own tokens. Neither is answerable syntactically.
+///
+/// A record with no computed layout on one side — incomplete, or anonymous — falls back to the
+/// token comparison rather than being silently called unchanged.
+fn layout_class(
+    before: Option<&RecordShape>,
+    after: Option<&RecordShape>,
+    before_tokens: &Fingerprint,
+    after_tokens: &Fingerprint,
+) -> Option<ChangeClass> {
+    let (Some(b), Some(a)) = (before, after) else {
+        // Incomplete or anonymous on one side: fall back to the tokens rather than silently
+        // calling it unchanged.
+        return classify(before_tokens, after_tokens);
+    };
+
+    // Size, alignment, and packing are observable whether or not a field moved. `packed` on an
+    // already-tight struct removes no padding and still drops the alignment from 4 to 1 —
+    // measured against gcc — so a struct embedding it moves from offset 4 to offset 1.
+    let shape_moved = b.size != a.size || b.align != a.align || b.is_union != a.is_union;
+
+    // **A field that exists on both sides and sits somewhere else.** Restricted to the common
+    // names, because a name that appears on one side only is a field added, removed or renamed —
+    // a source-compatibility change for its users, and 031 §2 is explicit that it is not a layout
+    // one.
+    let moved_field = a.fields.iter().any(|(name, off, bits)| {
+        b.fields
+            .iter()
+            .find(|(n, _, _)| n == name)
+            .is_some_and(|(_, o, bt)| o != off || bt != bits)
+    });
+
+    if shape_moved || moved_field {
+        return Some(ChangeClass::LayoutChanged {
+            size_delta: a.size as i64 - b.size as i64,
+        });
+    }
+    // No byte moved. The definition may still differ — a renamed field — and its users name it.
+    (before_tokens != after_tokens).then_some(ChangeClass::BodyChanged)
 }
 
 /// Which class of change, or `None` for none at all.
