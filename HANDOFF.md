@@ -844,7 +844,20 @@ typing the paths ever would.
 >
 > ⚠️ Both guard `is_dummy` first — the **third** place in this codebase that has needed it.
 >
-> ### 🚀 032 HAS STARTED — the join is made (contracts 1, 3, 9, 11, 15, 16)
+> ### 📊 032 IS 18 OF 20 CONTRACTS GREEN
+>
+> | | |
+> |---|---|
+> | 1, 2, 3, 15, 16 the join and its discipline | ✅ contract 2 works because **031** decided it — nothing in 032 knows what whitespace is |
+> | **4 the headline** | ✅ and it passed on arrival |
+> | 5, 6, 8 refinement | ✅ the rule is the type; `NoProver` removes nothing |
+> | 9, 10, 11, 12, 13, 14 the safety set | ✅ and each states *why*, not merely *that* |
+> | 17, 20 budget and report | ✅ reduction and safety always together |
+> | **19 the mutation gate** | ✅ 100% / 14.3% / 65%, whole pipeline |
+> | 7 reachability refinement | ❌ needs per-test **block** coverage from the native path |
+> | 18 historical replay | ❌ needs VPP tests, which need root |
+>
+> ### 🚀 032's FOUNDATION (contracts 1, 3, 9, 11, 15, 16)
 >
 > `chiero-select` runs steps ①, ③ and ④ of §1's pipeline. `chiero-diff` gained
 > `Program::lines_of`, the entity's lines **through `expansion_loc`** — which is what makes the
