@@ -127,3 +127,44 @@ fn an_unknown_variant_answers_nothing() {
         "nothing was ingested for that variant, which is not the same as it covering nothing"
     );
 }
+
+/// **A build that never compiled a file must not claim its lines.**
+///
+/// Found by adversarial review of the representation change (7d35375), which introduced it. When
+/// `per_variant` is empty the per-build query answers from the union, on the reasoning that with
+/// one build the union *is* that build's set. That reasoning does not cover a line no build
+/// contributed to at all — a JSON ingest adds line counts and no tests, and `ingest_json` never
+/// notes a variant.
+///
+/// The answer was `Some(vec![])`: "the avx2 build recorded this line and no test ran it". That is
+/// the empty-set claim 030 §1 exists to keep rare, it is what 032 skips tests on, and here it is
+/// made for a build that never saw the file.
+#[test]
+fn a_variant_does_not_claim_lines_it_never_recorded() {
+    let mut idx = chiero_gcov::CoverageIndex::default();
+    chiero_gcov::ingest_native_as_variant(
+        &mut idx,
+        TestId(0),
+        Variant::named("x86_64_v3"),
+        &corpus(),
+        "loop",
+    )
+    .expect("loop as v3");
+    // Adds counts for `t.c` and no tests, and notes no variant.
+    chiero_gcov::ingest_json_into(&mut idx, &corpus(), "t").expect("t from json");
+
+    assert!(
+        idx.line_count("t.c", 3).is_some(),
+        "the fixture must actually record the line, or this proves nothing"
+    );
+    assert_eq!(
+        idx.tests_for_line_in("t.c", 3, &Variant::named("x86_64_v3")),
+        None,
+        "the v3 build never compiled t.c; `Some([])` would say it did and that nothing ran it"
+    );
+    // The build that did record a line still answers for it.
+    assert_eq!(
+        idx.tests_for_line_in("loop.c", 1, &Variant::named("x86_64_v3")),
+        Some(vec![TestId(0)])
+    );
+}
