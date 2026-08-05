@@ -6409,3 +6409,50 @@ fn va_arg_has_the_type_it_names() {
         "return (int)two(2, 100L, 5);",
     );
 }
+
+/// **A null pointer constant initializing a pointer member stores an `int`.**
+///
+/// ```text
+/// vppinfra/vec.h:312:27: `show_node_graphviz` lowered to CIR the verifier rejects
+///   (store value operand is Int(32), declared Ptr)
+///   _vec_alloc_internal (N, &((vec_attr_t){ …, .heap = (P), … }))     /* P is 0 */
+/// ```
+///
+/// C11 6.3.2.3p3: an integer constant expression with value 0 is a null pointer constant and
+/// converts to a null pointer of the target type. `store_init_scalar` converts the initializer
+/// as if by assignment, and that conversion did not cover integer-zero to pointer — so
+/// `struct S { void *p; } s = { .p = 0 };` put four bytes of integer where an address belongs.
+///
+/// **File scope was already right** and so was leaving the member out, which is why this
+/// survived: the folder writes zero bytes for both, and zero bytes are a null pointer. Only the
+/// local path, and only when the member is written explicitly.
+///
+/// `vec_new_generic` passes `.heap = (P)` with `P` usually `0`, and every `vec_new` in VPP goes
+/// through it.
+#[test]
+fn a_null_pointer_constant_initializes_a_pointer_member() {
+    agree_with(
+        "struct S { void *p; };",
+        "struct S s = { .p = 0 }; return s.p == 0;",
+    );
+    // Through a compound literal, which is the corpus shape.
+    agree_with(
+        "struct S { int a; void *p; };\nstatic int g(struct S *q) { return q->a + (q->p == 0); }",
+        "return g(&(struct S){ .a = 1, .p = 0 });",
+    );
+    // A cast-to-void-pointer zero and a `(void *)0` spelling, both null pointer constants.
+    agree_with(
+        "struct S { char *p; };",
+        "struct S s = { (void *)0 }; return s.p == 0;",
+    );
+    // And a non-null initializer through the same path, so a fix cannot just store null.
+    agree_with(
+        "struct S { int *p; };",
+        "int x = 4; struct S s = { &x }; return *s.p;",
+    );
+    // An array of pointers, which takes the same store per element.
+    agree_with(
+        "",
+        "char *a[2] = { 0, 0 }; return (a[0] == 0) + (a[1] == 0);",
+    );
+}
