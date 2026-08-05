@@ -511,7 +511,23 @@ typing the paths ever would.
 >
 > If `probe_cmds.txt` is gone, rebuild it: `cd $VPPBUILD && ninja -t commands <the .o>` for each.
 >
-> ### ⏭️ THE QUEUE, as the probe reports it at dba4b35 — three causes, each its own defect
+> ### ✅ THE PROBE IS CLEAN AT 3180a49 — all five translation units analyse
+>
+> `vlib/main.c`, `vppinfra/format.c`, `vnet/interface.c`, `vlib/node_cli.c` and
+> `vppinfra/mem_dlmalloc.c`. The wave began with all five failing and the last full sweep at
+> **1852 of 1871 `not-run`**. A sweep at 3180a49 was launched the moment the probe came back
+> clean; **its number belongs here and is the headline of this wave.**
+>
+> Twelve causes closed, in order: same-named sibling statics, `__builtin_shuffle`, aggregate-valued
+> member initializers, file-scope brace elision, five more initializer defects from the review,
+> three more initializer classes, a shift count wider than its value, a shift count narrower than
+> `int`, the GNU elvis form, the `__atomic_*`/`__sync_*` families, block-scope shadowing,
+> `va_arg`, block-scope `extern`, and null pointer constants.
+>
+> **Every one was found by the probe or the sweep, reduced to under ten lines, and fixed against
+> gcc.** None of them looked like what the message first suggested.
+>
+> ### ⏭️ SUPERSEDED QUEUE, as the probe reported it at dba4b35
 >
 > | where | message | shape |
 > |---|---|---|
