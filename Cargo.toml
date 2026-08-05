@@ -43,7 +43,12 @@ smallvec = "1"
 regex = "1"
 # Surface crates only.
 anyhow = "1"
-serde_json = "1"
+# **`preserve_order`.** Without it `serde_json`'s map is a `BTreeMap`, so every rendered
+# result comes out in alphabetical key order — `verdict` last, under `replay`. Insertion order
+# is fixed by the code that builds each result, so this is still byte-deterministic (001 §5),
+# and it uses `indexmap`, which is the type this workspace already prefers for exactly that
+# reason.
+serde_json = { version = "1", features = ["preserve_order"] }
 # gcov writes `--json-format` gzipped and the stem rule is gcc's to set (030 §3), so reading it
 # is not optional. **`rust_backend`, with default features off**: the default links miniz via C,
 # and §3 of the working notes makes "builds and runs with no external toolchain" a hard

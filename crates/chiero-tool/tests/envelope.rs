@@ -147,12 +147,21 @@ fn the_rendering_is_not_a_json_blob() {
         r.lines().count() >= 5,
         "a nested result rendered onto one line is the blob again:\n{r}"
     );
-    for want in ["verdict", "differs", "origin", "parameter 0", "before_signed"] {
+    for want in [
+        "verdict",
+        "differs",
+        "origin",
+        "parameter 0",
+        "before_signed",
+    ] {
         assert!(r.contains(want), "`{want}` is missing from:\n{r}");
     }
     // A JSON null is "nothing here", and printing the word `null` at a reader is a programmer's
     // habit. Whatever it says, it must not be that.
-    assert!(!r.contains("null"), "raw JSON null in a human rendering:\n{r}");
+    assert!(
+        !r.contains("null"),
+        "raw JSON null in a human rendering:\n{r}"
+    );
 }
 
 /// And an unproven one still leads with what it is worth — the property the blob obscured.

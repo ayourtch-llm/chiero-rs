@@ -363,15 +363,16 @@ impl Envelope {
     ///
     /// > "no defects found **within** <bound>", never "no defects found", unless `proven` is true.
     pub fn render(&self) -> String {
-        let head = if self.proven {
-            format!("{} (proven, Exact)", self.result)
+        let mut out = render_value(&self.result, 0);
+        out.push('\n');
+        out.push_str(&if self.proven {
+            "proven — this holds for all inputs (Exact)".to_string()
         } else {
             format!(
-                "{} — within this run's bounds ({:?}); not proven",
-                self.result, self.fidelity
+                "not proven — within this run's bounds ({:?})",
+                self.fidelity
             )
-        };
-        let mut out = head;
+        });
         for b in &self.blind_spots {
             out.push_str(&format!("\n  blind spot: {b}"));
         }
@@ -817,5 +818,69 @@ fn entity_kind(e: &chiero_diff::Entity) -> &'static str {
         chiero_diff::Entity::Macro { .. } => "macro",
         chiero_diff::Entity::Record { .. } => "record",
         chiero_diff::Entity::EnumConst { .. } => "enum_const",
+    }
+}
+
+/// A result as lines a person reads, rather than as the JSON a program does.
+///
+/// **Deliberately generic.** It walks the value and knows nothing about any operation — a
+/// renderer with a case per operation would be a second description of every result, and the
+/// second one is the one that goes stale. Keys keep their names, so a reader who moves between
+/// this and `--json` is reading the same words.
+///
+/// A JSON `null` prints as `(none)`: the word `null` is a programmer's habit, and the thing it
+/// means here is always "there is nothing here", which is worth saying in a language.
+fn render_value(v: &serde_json::Value, indent: usize) -> String {
+    let pad = "  ".repeat(indent);
+    match v {
+        serde_json::Value::Object(map) => map
+            .iter()
+            .map(|(k, val)| match val {
+                serde_json::Value::Object(_) | serde_json::Value::Array(_) if !is_empty(val) => {
+                    format!("{pad}{k}:\n{}", render_value(val, indent + 1))
+                }
+                _ => format!("{pad}{k}: {}", scalar(val)),
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .map(|item| match item {
+                serde_json::Value::Object(_) => {
+                    // The first line of an element carries the bullet, so a list of records
+                    // reads as a list rather than as a wall.
+                    let body = render_value(item, indent + 1);
+                    let mut lines = body.lines();
+                    let first = lines.next().unwrap_or("").trim_start();
+                    let rest: Vec<&str> = lines.collect();
+                    let mut s = format!("{pad}- {first}");
+                    for l in rest {
+                        s.push_str(&format!("\n{pad}  {}", l.trim_start()));
+                    }
+                    s
+                }
+                _ => format!("{pad}- {}", scalar(item)),
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        other => format!("{pad}{}", scalar(other)),
+    }
+}
+
+fn is_empty(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Object(m) => m.is_empty(),
+        serde_json::Value::Array(a) => a.is_empty(),
+        _ => false,
+    }
+}
+
+fn scalar(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::Null => "(none)".to_string(),
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(a) if a.is_empty() => "(empty)".to_string(),
+        serde_json::Value::Object(m) if m.is_empty() => "(empty)".to_string(),
+        other => other.to_string(),
     }
 }
