@@ -13,15 +13,15 @@
 //! That failure is silent, survives every unit test, and would be found by someone wondering why
 //! a `vec.h`-heavy change selects no tests. Hence a check a machine makes.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn src_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src")
 }
 
-fn hits_in(dir: &PathBuf, needle: &str) -> Vec<String> {
+fn hits_in(dir: &Path, needle: &str) -> Vec<String> {
     let mut out = Vec::new();
-    let mut stack = vec![dir.clone()];
+    let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
         for e in std::fs::read_dir(&d).expect("readable source directory") {
             let p = e.expect("readable entry").path();

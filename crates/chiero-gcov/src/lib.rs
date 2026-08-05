@@ -43,6 +43,32 @@ pub enum CoverageDetail {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TestId(pub u32);
 
+/// How a test run ended (030 §6).
+///
+/// **The outcome is a claim about the process, not about coverage.** It is recorded separately
+/// from the ingest because the two can disagree in both directions: a test can exit 0 and write
+/// nothing, and a test can fail loudly having recorded everything.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum TestOutcome {
+    Passed,
+    Failed,
+    /// Killed by a signal. Writes no `.gcda` — the counters are flushed at a normal exit.
+    Crashed,
+    TimedOut,
+    NotRun,
+}
+
+impl TestOutcome {
+    /// Whether the process ended in a way that flushes counters at all.
+    ///
+    /// A pass or a failure both exit normally and write; a crash, a timeout and a test that never
+    /// ran do not. This is necessary for complete coverage and not sufficient — the artifacts
+    /// still have to arrive, which is what [`CoverageIndex::coverage_complete`] also asks.
+    fn writes_coverage(self) -> bool {
+        matches!(self, TestOutcome::Passed | TestOutcome::Failed)
+    }
+}
+
 /// The tests that executed one line.
 ///
 /// **A sorted `Vec` today, roaring eventually.** 030 §5 specifies roaring bitmaps and contract 11
@@ -83,6 +109,8 @@ pub struct CoverageIndex {
     /// Kept even when a test covered nothing, so a selection can tell "ran and covered nothing"
     /// from "never ran" — 032 does different things about those.
     tests: Vec<TestId>,
+    /// What the runner reported about each test, when it reported anything.
+    outcomes: IndexMap<TestId, TestOutcome>,
     provenance: Vec<IngestRecord>,
 }
 
@@ -127,6 +155,44 @@ impl CoverageIndex {
     /// Every test that contributed an ingest, in arrival order.
     pub fn tests(&self) -> Vec<TestId> {
         self.tests.clone()
+    }
+
+    /// Record how a test run ended (030 §6).
+    pub fn record_outcome(&mut self, test: TestId, outcome: TestOutcome) {
+        self.outcomes.insert(test, outcome);
+    }
+
+    /// Whether this index holds the whole of a test's coverage.
+    ///
+    /// **Both halves are required**: the process must have ended in a way that flushes counters,
+    /// *and* its artifacts must have been ingested. A test that exits 0 while `GCOV_PREFIX` points
+    /// somewhere nothing is written satisfies the first and fails the second, and it is the case a
+    /// runner gets wrong most easily.
+    ///
+    /// A test nobody recorded an outcome for is incomplete: this answers about what it was told,
+    /// and silence is not a pass.
+    pub fn coverage_complete(&self, test: TestId) -> bool {
+        self.outcomes
+            .get(&test)
+            .is_some_and(|o| o.writes_coverage())
+            && self.tests.contains(&test)
+    }
+
+    /// The tests that must run whatever the change is (030 §6, 032's safety set).
+    ///
+    /// Every test this index cannot speak for: it crashed, it timed out, it never ran, or its
+    /// coverage never arrived. **Not the same as a test that covers nothing** — that one is
+    /// skippable on the evidence, and this one is skippable only by pretending the absence of
+    /// evidence is evidence.
+    pub fn always_run(&self) -> Vec<TestId> {
+        let mut out: Vec<TestId> = self
+            .outcomes
+            .keys()
+            .copied()
+            .filter(|&t| !self.coverage_complete(t))
+            .collect();
+        out.sort();
+        out
     }
 
     /// Every file the index holds coverage for, in ingest order.
