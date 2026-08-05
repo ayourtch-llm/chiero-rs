@@ -237,3 +237,36 @@ fn an_empty_location_group_still_attributes_its_block() {
         "the empty `samelin.h` group re-attributes block 2 to line 2, and gcov counts it twice"
     );
 }
+
+/// **A file name is canonicalized before it becomes a source.**
+///
+/// gcov runs every name through `canonicalize_name` on the way to a source index
+/// (`find_source`), so `gen.c` and `./gen.c` are one file. Everything downstream compares those
+/// indices — including whether two functions share a source and are therefore a group.
+///
+/// `xline.c` uses `#line` to give two functions the same line of the same file under two
+/// spellings, which is what generated C looks like: yacc, bison and protoc all emit `#line`, and
+/// `./`- or `..`-bearing paths come from ordinary build systems. Keyed by the raw string they are
+/// two files, the group is not seen, and `gen.c:5` reports one function's count instead of both.
+///
+/// # What is deliberately *not* reproduced
+///
+/// gcov elides a `..` only after `stat`ing the prefix and finding it is not a symlink, so its
+/// answer depends on the filesystem the artifacts are read on. chiero canonicalizes lexically and
+/// leaves `..` alone. That can only leave two spellings apart which gcov would have joined — it
+/// can never join two files that are actually different — and it keeps decoding a pure function
+/// of the bytes, which 001 §5 asks for and which matters because artifacts get read on machines
+/// that never built them.
+#[test]
+fn two_spellings_of_one_path_are_one_source() {
+    assert_eq!(
+        count("xline", "gen.c", 5),
+        Some(2),
+        "`p` and `q` are both at line 5 of `gen.c`, however it is spelled"
+    );
+    assert_eq!(
+        count("xline", "./gen.c", 5),
+        None,
+        "and the uncanonical spelling is not a second file"
+    );
+}
