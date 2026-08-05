@@ -340,3 +340,72 @@ entry:
         cases.len()
     );
 }
+
+/// A loop whose trip count is an input — so the bound the engine applies is chiero's, not
+/// the program's. `int f(int n) { int i = 0; while (i < n) i++; return i; }`
+const LOOP_TO_N: &str = "\
+func @f(%0: i32) -> i32 {
+entry:
+  .line 1
+  goto bb1
+bb1:
+  .line 2
+  %1 = phi i32 [entry 0i32] [bb1 %2]
+  %2 = add i32 %1, 1i32
+  %3 = cmp slt i32 %2, %0
+  br %3, bb1, bb2
+bb2:
+  .line 3
+  ret %1
+}";
+
+/// **Contract 9: a function with an unbounded loop returns `Equivalent { fidelity: Bounded }`
+/// and the bound is stated.**
+///
+/// §1.2: "for a function with an unbounded loop, the result is `Equivalent { fidelity:
+/// Bounded }` — a statement about inputs within the bound, not a proof."
+///
+/// The other half of the contract — that 032 §3.1 does not accept it — is already asserted
+/// in `chiero-select`'s `refinement.rs`, over the seam rather than over this producer.
+#[test]
+fn an_unbounded_loop_is_equivalent_only_within_the_bound() {
+    let Some(cfg) = cfg() else { return };
+    match prove_equivalent(&m(LOOP_TO_N), &m(LOOP_TO_N), &cfg) {
+        Equivalence::Equivalent {
+            fidelity,
+            assumptions,
+            ..
+        } => {
+            assert_eq!(
+                fidelity,
+                Fidelity::Bounded,
+                "a loop chiero cut is not a proof over all inputs"
+            );
+            assert!(
+                !assumptions.is_empty(),
+                "§1.2 requires the bound be stated, not merely the fidelity lowered"
+            );
+        }
+        other => panic!("contract 9 wants Equivalent with a bound, got {other:?}"),
+    }
+}
+
+/// **A comparison that examined no paths is `Unknown`, never `Equivalent`.**
+///
+/// Not a numbered contract — a hole found by asking what the implementation does when the
+/// pairing loop has nothing to iterate over. "No pair disagreed" is the same sentence
+/// whether every pair agreed or there were no pairs, and only one of those is a proof.
+/// This is the project's recurring flattering-failure shape: silence read as success.
+#[test]
+fn a_comparison_with_no_paths_is_not_a_proof() {
+    let Some(mut cfg) = cfg() else { return };
+    cfg.budget.max_states = 0;
+    cfg.budget.max_depth = 0;
+    match prove_equivalent(&m(SUM), &m(SUM), &cfg) {
+        Equivalence::Unknown { reason } => assert!(
+            reason.contains("path"),
+            "the reason must say what was missing, got {reason:?}"
+        ),
+        other => panic!("a comparison with no paths must not be a verdict, got {other:?}"),
+    }
+}
