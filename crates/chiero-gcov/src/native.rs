@@ -340,6 +340,14 @@ pub fn records(path: &Path) -> Result<Vec<Record>, IngestError> {
         if tag == 0 {
             break;
         }
+        // **A second artifact's magic ends this one's records.** gcc's whole-program analysis
+        // pass writes a `.wpa.gcno` whose header is followed directly by another complete
+        // `.gcno`, and gcov reads the first as having no functions at all. Read as a record, a
+        // magic is a tag whose length word is whatever the next header happens to hold —
+        // 1110651690 in the file this was found in — and the artifact looks truncated.
+        if tag == MAGIC_NOTES || tag == MAGIC_DATA {
+            break;
+        }
         // **Bytes, not words.** Measured: `FUNCTION` at 121 with length 49 is followed by
         // `BLOCKS` at 178.
         //

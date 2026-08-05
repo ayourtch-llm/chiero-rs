@@ -87,8 +87,11 @@ fn two_ingests_of_one_corpus_are_identical() {
 /// Re-runs this test binary in a child process and compares the rendering it prints.
 #[test]
 fn an_index_is_identical_in_another_process() {
+    // **Delimited**, because the child's stdout also carries the test harness's own output —
+    // including "finished in 0.01s", which differs between two runs of anything. Comparing the
+    // whole stream made this test fail on a timing line and say the index was non-deterministic.
     if std::env::var("CHIERO_DETERMINISM_CHILD").is_ok() {
-        print!("{:?}", build());
+        print!("<<<INDEX{:?}INDEX>>>", build());
         return;
     }
     let exe = std::env::current_exe().expect("this test binary");
@@ -103,7 +106,10 @@ fn an_index_is_identical_in_another_process() {
             .output()
             .expect("re-running this test binary");
         assert!(out.status.success(), "the child run failed");
-        String::from_utf8_lossy(&out.stdout).into_owned()
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        let from = text.find("<<<INDEX").expect("the child printed its index") + 8;
+        let to = text.find("INDEX>>>").expect("the child closed its index");
+        text[from..to].to_string()
     };
     let (a, b) = (run(), run());
     assert!(
