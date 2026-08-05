@@ -134,6 +134,33 @@ fn a_function_that_never_ran_decodes_as_zeros() {
     assert_eq!(native.line_count("unrun.c", 3), Some(1));
 }
 
+/// **One block, lines from two files.** A `LINES` record is a block followed by a *stream* of
+/// file groups, and a decoder that keeps one file per record attributes every line to whichever
+/// group came last.
+///
+/// ```text
+/// block 2   FILE inl.c 2   FILE inl.h 3 4   END
+/// ```
+///
+/// Collapsed, `inl.h:3` becomes `inl.c:3` — a line that need not even exist. That is worse than
+/// losing it: a coverage answer about the wrong code reads exactly like a right one. gcov's own
+/// answer is `inl.c:2` count 3 and `inl.h:3` and `:4` count 2.
+#[test]
+fn a_block_may_carry_lines_from_more_than_one_file() {
+    let native = chiero_gcov::ingest_native(&corpus(), "inl").expect("inl decodes");
+    let mut files: Vec<&str> = native.files().collect();
+    files.sort();
+    assert_eq!(files, vec!["inl.c", "inl.h"]);
+    assert_eq!(native.line_count("inl.c", 2), Some(3));
+    assert_eq!(native.line_count("inl.h", 3), Some(2));
+    assert_eq!(native.line_count("inl.h", 4), Some(2));
+    assert_eq!(
+        native.line_count("inl.c", 3),
+        None,
+        "`inl.c` has no line 3; a collapsed record would invent one"
+    );
+}
+
 /// **Contract 4's other half.** The native path recovers arcs, so it says so — and that is what
 /// makes `tests_for_arc` available on this index and unavailable on a JSON one.
 #[test]
