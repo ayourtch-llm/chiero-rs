@@ -487,7 +487,41 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 480) — 1712 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 480) — 1720 tests, 4 ignored, M1 268/268 by contract
+>
+> ### 🔴 THE ONE THING TO DO FIRST: read the sweep that is (or was) running
+>
+> A full VPP sweep was launched at **99d92d0** with a **frozen** binary
+> (`$SCRATCH/xtask-99d92d0`, the shim points at it). It takes ~2 h at `-j 10`.
+>
+> ```
+> python3 $SCRATCH/stat.py $VPPBUILD      # records / status counts / slowest TUs
+> ```
+>
+> `stat.py` is three lines of json-slurping over `**/*.chiero`; rewrite it if the scratchpad is
+> gone. **If no corpus number is written below this line, the run did not finish — re-run it.**
+>
+> ⚠️ **NEVER `cargo build --release -p xtask` while a sweep is running.** The shim execs
+> `target/release/xtask` and a rebuild swaps the binary underneath it, so the measurement mixes
+> two versions and is worthless. That happened this wave; the fix is to copy the binary to
+> `$SCRATCH/xtask-<sha>` and point the shim at *that* — which the current run does.
+>
+> ### 📉 THREE not-run CAUSES CLOSED THIS WAVE — the sweep drove all three
+>
+> | commit | defect | share of `not-run` when found |
+> |---|---|---|
+> | 0968cdf | two `static` locals of one name in sibling scopes collide (`<owner>.<name>`) | 175 of 240 |
+> | 99d92d0 | `__builtin_shuffle` has no type, so a vector init copies from a scalar | 26 of 27, then 1300 of 1317 |
+> | 75bfada | (not a corpus cause) a reused `ConstEvaluator` swallowed a diagnostic | — |
+>
+> The second measurement — 1317 records, 1300 `not-run` — is the honest **before** for the
+> shuffle fix, taken at 75bfada with everything else in. `__MM512_REDUCE_OP` is the body of
+> every `_mm512_reduce_*`, `x86intrin.h` reaches it and `vppinfra/clib.h` includes that, so it
+> was in essentially every translation unit.
+>
+> ⏭️ **The next cause is whatever that sweep now reports.** Read the top of the message
+> histogram before theorising; each of the three above was a four-line reproducer once the
+> message was grouped, and each looked like a different problem before it was.
 >
 > ### ✅ THE 673-SECOND REGRESSION IS FIXED (bd5fc12) — the sweep is runnable again
 >
@@ -509,9 +543,13 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > with the module's function count. RED (4a12028) counts `SymbolText::text` calls at F=40/F=80
 > rather than timing anything: 3.90x before, 1.99x after.
 >
-> ⏭️ **A full VPP corpus sweep was launched immediately after** (the `cc-report` recipe below,
-> ~30 min). **If no corpus number appears in this file below this line, that run did not finish
-> — re-run it.** It is the first honest, lowering-inclusive number the project will have.
+> The adversarial review of this commit found one real defect — `Cx::unknown_names` dedups
+> "was not declared" per context, so a *reused* evaluator reported it once and was then silent
+> where a fresh `const_eval` reported every call. Fixed in 75bfada by rewinding the set to the
+> mark preparation left; the review's own fixture is now
+> `crates/chiero-sema/tests/const_evaluator_reuse.rs`, which sweeps every expression of an
+> awkward TU forwards, backwards and twice over against fresh `const_eval`. **Values never
+> diverged** — it was diagnostics only.
 >
 > ### 🎯 WHERE THINGS STAND
 >
@@ -558,7 +596,14 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > memset, constant_p, trap, clzll, add_overflow, types_compatible_p. `__builtin_alloca` is a
 > **second, distinct** gap with its own message.
 >
-> ### ⏭️ NEXT: an **explicit cast** of an unmodeled-builtin call rejects the CIR
+> ### ✅ CLOSED (99d92d0) — the cast/vector shape was `__builtin_shuffle` all along
+>
+> The "explicit cast of an unmodeled-builtin call" reading below was the right symptom and the
+> wrong cause: what the AVX headers actually do is `__v4si __T7 = __builtin_shuffle (__T6, …)`,
+> and an untyped call initializing a vector object is a `Copy` from a scalar. Typing the two
+> shuffle builtins per call fixed the whole family without a single table row.
+>
+> ### 🕰️ SUPERSEDED — how that symptom read before the cause was found
 >
 > Three lowering gaps are closed (5e1de70 builtins, a726689 asm, db4c43d block-scope function
 > declarations) and the fourth measurement's ratio improved sharply — 2 not-run in the first 8
