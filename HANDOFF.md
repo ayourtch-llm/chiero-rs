@@ -650,6 +650,19 @@ operation existing, by using it on ordinary C. Nothing in the test suite was goi
    `compile_commands.json` flags. And `find_bugs` findings do not emit one yet (040 contract 4).
    *"Your rewrite is wrong" is an opinion; "here is the program" ends the discussion.* Nothing
    in the tree emits a C replay harness yet — 040 §3 wants one too.
+1b. ~~**041 §3 locality**~~ — **built 2026-08-06.** `chiero_opt::locality`: line straddling
+   (contract 18's boundary both ways), padding waste with the byte delta, hot/cold placement.
+   Contract 21's advisory rule and contract 22's honest labelling are most of the module —
+   `advisory` is *derived* from the obligations, `Benefit::Estimated` is in the enum and never
+   produced (no cycle model, and §3 says not to pretend), and `Measured` is reachable only from
+   real counts. The layout arrives as data: 014 §3 computes it and is measured against gcc, so
+   re-deriving it here would be a second answer.
+
+   *Left:* contracts 19, 20, 23 need the `FieldAccessProfile` §3 specifies — false sharing needs
+   025's `Sharing` classification, prefetch distance needs loop stride. And nothing calls
+   `analyse` yet: it wants a caller that turns 014's `RecordLayout` into a `Record`, which is
+   a natural `chiero-vpp` or CLI job.
+
 2. **§1.1's remaining claim — caller-visible memory** (with the object bijection, contracts
    13c/13d). `observable_beyond_the_return` refuses anything that could touch it: a volatile
    access, a store through an address that is not provably a stack slot, inline asm, a
