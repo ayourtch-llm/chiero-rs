@@ -71,6 +71,11 @@ const OPS: &[Op] = &[
         never_exact: None,
     },
     Op {
+        name: "find_optimizations",
+        samples: find_optimizations_samples,
+        never_exact: None,
+    },
+    Op {
         name: "layout_envelope",
         samples: layout_samples,
         never_exact: None,
@@ -209,6 +214,19 @@ entry:
   %1 = mul i32 %0, 3i32
   ret %1
 }";
+
+fn find_optimizations_samples() -> Vec<Envelope> {
+    // `if (x > 0) { if (x > 0) ... }` — the inner test is decided by the outer.
+    let nested = "func @f(%0: i32) -> i32 {\nentry:\n  .line 1\n  %1 = cmp sgt i32 %0, 0i32\n                    br %1, bb1, bb4\nbb1:\n  .line 2\n  %2 = cmp sgt i32 %0, 0i32\n                    br %2, bb2, bb3\nbb2:\n  .line 3\n  ret 1i32\nbb3:\n  .line 4\n                    ret 2i32\nbb4:\n  .line 5\n  ret 3i32\n}";
+    let plain = "func @f(%0: i32) -> i32 {\nentry:\n  .line 1\n  ret %0\n}";
+    vec![
+        chiero_tool::find_optimizations(&m(nested), &chiero_opt::opportunity::OppCfg::new("f")),
+        // Nothing to propose, from a finished run: the one place an empty answer here is real.
+        chiero_tool::find_optimizations(&m(plain), &chiero_opt::opportunity::OppCfg::new("f")),
+        // The error-shaped response.
+        chiero_tool::find_optimizations(&m(plain), &chiero_opt::opportunity::OppCfg::new("nope")),
+    ]
+}
 
 fn layout_samples() -> Vec<Envelope> {
     use chiero_opt::locality::{Field, LocalityCfg, Record};

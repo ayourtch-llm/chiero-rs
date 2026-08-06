@@ -38,6 +38,10 @@ OPERATIONS:
             Cache-line and padding analysis of the structs in a translation
             unit. Proposals only — nothing is ever rewritten.  (041 §3)
 
+    find-optimizations <file.c> --entry <fn>
+            Proposals with obligations and benefit labels. Never rewrites
+            anything.  (041 §2)
+
     impact <before.c> <after.c>
             What a source change reaches — through calls, types, globals and
             macro expansions.  (031)
@@ -109,6 +113,7 @@ fn run(args: &[String]) -> Result<String, Fault> {
         "prove-equivalent" => prove_equivalent(&opts)?,
         "find-bugs" => find_bugs(&opts)?,
         "check-reachable" => check_reachable(&opts)?,
+        "find-optimizations" => find_optimizations(&opts)?,
         "layout" => layout(&opts)?,
         "impact" => impact(&opts)?,
         "select-tests" => select_tests(&opts)?,
@@ -361,6 +366,19 @@ fn layout(o: &Options) -> Result<chiero_tool::Envelope, Fault> {
         counts: Vec::new(),
     };
     Ok(chiero_tool::layout_envelope(&records, &cfg))
+}
+
+fn find_optimizations(o: &Options) -> Result<chiero_tool::Envelope, Fault> {
+    let f = o.files(1, "find-optimizations")?;
+    let entry = o
+        .entry
+        .clone()
+        .ok_or_else(|| Fault::Usage("find-optimizations needs --entry <fn>".into()))?;
+    let m = lower(&f[0], &read(&f[0])?, o.frontend()).map_err(Fault::Failed)?;
+    Ok(chiero_tool::find_optimizations(
+        &m,
+        &chiero_opt::opportunity::OppCfg::new(entry),
+    ))
 }
 
 fn impact(o: &Options) -> Result<chiero_tool::Envelope, Fault> {

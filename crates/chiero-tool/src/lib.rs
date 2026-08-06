@@ -1591,3 +1591,78 @@ fn proposal_json(p: &chiero_opt::locality::Proposal) -> serde_json::Value {
     );
     v
 }
+
+/// [041 §2](../../../docs/specs/041-optimization-analysis.md)'s opportunity detection in
+/// 050 §2's envelope — 050 §3's `find_optimizations`.
+///
+/// # The fidelity, which is the judgement here
+///
+/// **Never better than the proposals it carries.** A proposal is `advisory` when an obligation
+/// is open, which for the dead-branch detector means the search did not finish — and an
+/// envelope reporting `Exact` over a list of advisory proposals would be the two layers
+/// disagreeing about the same fact. So `Exact` requires every proposal to be discharged, and
+/// an empty list from a finished run is the one place an empty answer here is a real one.
+pub fn find_optimizations(
+    module: &chiero_cir::Module,
+    cfg: &chiero_opt::opportunity::OppCfg,
+) -> Envelope {
+    if !module.funcs.iter().any(|f| *f.name == cfg.entry) {
+        return Envelope::new(
+            serde_json::json!({
+                "proposals": [],
+                "error": format!("no function named `{}` in this module", cfg.entry),
+            }),
+            Fidelity::Unknown,
+        )
+        .with_blind_spot(&format!(
+            "`{}` was not found, so nothing was analysed and this list is not about your code",
+            cfg.entry
+        ));
+    }
+    let proposals = chiero_opt::opportunity::detect(module, cfg);
+    let any_advisory = proposals.iter().any(|p| p.advisory);
+    let rendered: Vec<serde_json::Value> = proposals
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "kind": match &p.kind {
+                    chiero_opt::opportunity::OppKind::DeadBranch { taken } =>
+                        serde_json::json!({ "kind": "dead_branch", "reachable_side": taken }),
+                },
+                "rationale": p.rationale,
+                "advisory": p.advisory,
+                "benefit": format!("{:?}", p.benefit),
+                "evidence": p.evidence,
+                "obligations": p
+                    .obligations
+                    .iter()
+                    .map(|o| match o {
+                        chiero_opt::opportunity::Obligation::Discharged { what } =>
+                            serde_json::json!({ "state": "discharged", "what": what }),
+                        chiero_opt::opportunity::Obligation::Open { why } =>
+                            serde_json::json!({ "state": "open", "why": why }),
+                    })
+                    .collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+
+    let env = Envelope::new(
+        serde_json::json!({
+            "proposals": rendered,
+            "count": proposals.len(),
+        }),
+        if any_advisory {
+            Fidelity::Bounded
+        } else {
+            Fidelity::Exact
+        },
+    )
+    .with_blind_spot(
+        "only the dead-branch detector of 041 §2 ran; a redundant load, a dead store or a \
+         loop-invariant computation is not reported",
+    );
+    // **Nothing here rewrites anything** (041 contract 17), and a consumer reading proposals
+    // should be told that rather than inferring it from an absence.
+    env.with_assumption("proposals_only", "chiero never patches code (041 §1)")
+}
