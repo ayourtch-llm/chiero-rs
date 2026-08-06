@@ -713,8 +713,15 @@ does not exist while the doc comments cite contract 12 as though it did.
   parameter, and an absent entry is an objection rather than silence); `cfg.entry` must equal
   `src.entry`; the compile gets the same wall clock as the run; `-fcommon` is refused by name;
   a relative or quoted scratch path is refused with a message about the path.
-- **S7 — the kill leaks grandchildren** (no `setsid`, no process-group kill). A resource leak
-  rather than a wrong answer, which is why it is last.
+- ~~S7~~ — **fixed 2026-08-06.** The timeout kills anything still running with this call's
+  unique path on its command line, in *both* the run and the compile paths. Writing the test
+  found the same leak where the fix would not have reached: a compiler driver spawns `cc1` as a
+  child, so the compile timeout killed `cc` and left `cc1` grinding on the blocked source.
+
+**All ten of the fifth review are closed.** The harness is narrow — return-value divergences,
+integer parameters and returns of ≤64 bits, an entry that matches the module chiero analysed —
+and it refuses everything else by name. Within that, `Demonstrated` now survives every
+fabrication the review could construct.
 - ~~Refusal whitespace~~ and ~~`sandbox()`'s per-call `unshare` spawn~~ — fixed.
 
 Probes: `$SCRATCH/rev5` (20 fixtures, `cargo run -- <name>`); `$SCRATCH/replayprobe` (13).
