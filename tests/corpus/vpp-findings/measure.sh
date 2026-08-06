@@ -1,0 +1,49 @@
+#!/bin/bash
+# Measure `chiero find-bugs` over a fixed list of VPP entry points.
+#
+# See README.md for the numbers this produced and what they mean. The point of checking it
+# in is that the numbers are reproducible by somebody other than the person who took them —
+# an unreproducible measurement is an assertion.
+#
+#   ./measure.sh                      the default run
+#   ./measure.sh --entry-ptr-nonnull  with the caller-checks-its-pointers assumption
+#
+# Environment:
+#   CHIERO   path to the release binary   (default: ../../../target/release/chiero)
+#   VPP      a VPP checkout               (default: /home/ubuntu/vpp)
+#   VPPBUILD its cmake build directory    (default: $VPP/build-root/build-vpp-native)
+#   TIMEOUT  seconds per entry point      (default: 60)
+#
+# Output is one TSV line per entry: file<TAB>fn<TAB>status<TAB>findings<TAB>exact.
+# Summarise with:
+#   ./measure.sh | awk -F'\t' '{s[$3]++;n+=$4;e+=$5} END{for(k in s)printf "%s=%d ",k,s[k];
+#                               printf "findings=%d exact=%d\n",n,e}'
+set -u
+HERE=$(cd "$(dirname "$0")" && pwd)
+CHIERO=${CHIERO:-$HERE/../../../target/release/chiero}
+VPP=${VPP:-/home/ubuntu/vpp}
+VPPBUILD=${VPPBUILD:-$VPP/build-root/build-vpp-native}
+TIMEOUT=${TIMEOUT:-60}
+
+# VPP's own flags, from `INCLUDES`/`DEFINES` in $VPPBUILD/vpp/build.ninja. Taken from the
+# build rather than guessed: a header reached under different `-D`s is a different header,
+# and the whole claim is about the code VPP actually compiles.
+INC="-I$VPP/src -I$VPPBUILD/vpp/CMakeFiles"
+DEF="-DHAVE_FCNTL64 -DHAVE_LIBUNWIND=1 -D_FORTIFY_SOURCE=2"
+
+[ -x "$CHIERO" ] || { echo "no chiero binary at $CHIERO — cargo build --release" >&2; exit 2; }
+[ -d "$VPP/src" ] || { echo "no VPP checkout at $VPP" >&2; exit 2; }
+
+J=$(mktemp)
+trap 'rm -f "$J"' EXIT
+while IFS=$'\t' read -r f fn; do
+  case "$f" in ''|'#'*) continue ;; esac
+  timeout "$TIMEOUT" "$CHIERO" find-bugs "$VPP/src/$f" --entry "$fn" --json \
+      $INC $DEF "$@" >"$J" 2>/dev/null
+  rc=$?
+  # A timeout and a crash are different facts and neither is "no findings" — the whole
+  # project's rule, applied to its own measurement harness.
+  if [ $rc -eq 124 ]; then printf '%s\t%s\ttimeout\t0\t0\n' "$f" "$fn"; continue; fi
+  if [ ! -s "$J" ]; then printf '%s\t%s\tfailed\t0\t0\n' "$f" "$fn"; continue; fi
+  python3 "$HERE/count.py" "$f" "$fn" "$J"
+done < "$HERE/entries.tsv"
