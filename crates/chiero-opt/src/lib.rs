@@ -29,6 +29,7 @@
 
 pub mod equiv;
 pub mod locality;
+pub mod opportunity;
 pub use equiv::{
     Claim, Divergence, EquivCfg, Equivalence, Footprint, Replay, Unmatched, prove_equivalent,
 };

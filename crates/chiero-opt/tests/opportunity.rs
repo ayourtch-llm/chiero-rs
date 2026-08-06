@@ -65,9 +65,19 @@ fn a_branch_the_path_condition_already_decides_is_proposed_as_dead() {
         !p.evidence.is_empty(),
         "the constraints that imply it must be listed: {p:?}"
     );
+    // Real SMT-LIB terms mentioning the parameter, not a count and not a sentence. The
+    // operator is whatever the arena canonicalised to — `x > 0` arrives as `0 < x`, and a test
+    // that pinned the spelling would be testing the arena's normalisation rather than the
+    // detector.
     assert!(
-        p.evidence.iter().any(|e| e.contains("bvsgt") || e.contains(">")),
+        p.evidence
+            .iter()
+            .any(|e| e.contains("param0") && e.contains("bv")),
         "and they must be the actual constraints, not a count: {p:?}"
+    );
+    assert!(
+        p.evidence.iter().any(|e| e.starts_with("decided:")),
+        "and the condition that was decided, so a reader sees what as well as by what: {p:?}"
     );
 }
 
@@ -90,7 +100,9 @@ bb2:
 }";
     let props = detect(&m(live), &cfg("f"));
     assert!(
-        !props.iter().any(|p| matches!(p.kind, OppKind::DeadBranch { .. })),
+        !props
+            .iter()
+            .any(|p| matches!(p.kind, OppKind::DeadBranch { .. })),
         "both sides of `x > 0` are reachable: {props:?}"
     );
 }
