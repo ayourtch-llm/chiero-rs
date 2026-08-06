@@ -7,7 +7,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-chiero-gcov.workspace = true
 chiero-span.workspace = true
 chiero-ast.workspace = true
 chiero-sema.workspace = true

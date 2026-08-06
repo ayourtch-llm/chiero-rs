@@ -232,16 +232,26 @@ pub fn run(r: &Replay, cc: &Path, dir: &Path) -> Outcome {
             detail: format!("cannot create {}", dir.display()),
         };
     }
-    // **Named after the harness, not after the crate.** A fixed filename meant two harnesses
-    // built in one directory — two threads of one test binary, or two findings of one run —
-    // overwrote each other's source and binary, and the loser reported `DidNotBuild` about a
-    // program that compiles. Found by four tests failing in parallel and passing by hand.
+    // **A name unique to this call, not to the harness text.**
     //
-    // FNV-1a over the source: deterministic (001 §5), so re-running a harness reuses its own
-    // files rather than accumulating them, and distinct for distinct programs.
-    let tag = fnv1a(&r.source);
-    let src = dir.join(format!("chiero_replay_{tag:032x}.c"));
-    let bin = dir.join(format!("chiero_replay_{tag:032x}.bin"));
+    // A fixed filename meant two harnesses built in one directory overwrote each other and the
+    // loser reported `DidNotBuild` about a program that compiles. Naming them after an FNV of
+    // the source fixed that and left a subtler one: two callers running the *same* harness
+    // concurrently — which is exactly what a test suite does — still collide, and `cc` writing
+    // one binary from two processes yields a corrupt file and a `DidNotRun` about nothing.
+    //
+    // Nothing downstream sees these names, so uniqueness costs nothing. The FNV stays in the
+    // name so a leftover file can be traced back to its harness; the counter is what makes it
+    // safe.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tag = format!(
+        "{:032x}_{}_{}",
+        fnv1a(&r.source),
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let src = dir.join(format!("chiero_replay_{tag}.c"));
+    let bin = dir.join(format!("chiero_replay_{tag}.bin"));
     if let Err(e) = std::fs::write(&src, &r.source) {
         return Outcome::DidNotRun {
             detail: format!("cannot write the harness: {e}"),

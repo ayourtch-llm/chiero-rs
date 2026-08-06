@@ -19,6 +19,17 @@
 
 use indexmap::IndexMap;
 
+/// **The preprocessor types [`Program::parse_with`] requires**, re-exported.
+///
+/// Without these a caller cannot invoke `parse_with` at all — it takes a `chiero_pp::Config`
+/// and a `chiero_pp::FileLoader`, so every caller had to depend on `chiero-pp` directly, and
+/// 001 §4 rule 7 permits that to exactly two crates. `chiero-select`'s pipeline test did it and
+/// the dependency gate caught it; the rule was not the problem, an incomplete public API was.
+///
+/// Re-exported rather than wrapped: a `Config` of this crate's own would be a second
+/// description of the preprocessor's options, and the one that goes stale.
+pub use chiero_pp::{Config, FileLoader};
+
 /// One thing a change can be *about* (031 §1).
 ///
 /// **Keyed by name, not by `FileId` and `Symbol`.** 031 §1 writes those, and both are indices

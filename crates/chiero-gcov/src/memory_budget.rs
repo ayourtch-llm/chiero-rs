@@ -152,7 +152,7 @@ fn measure(variants: &[Variant]) -> usize {
     let mut idx = crate::CoverageIndex::default();
     let mut lines = 0u64;
     for f in 0..FILES {
-        let file = format!("src/vppinfra/generated_{f}.c");
+        let file = format!("src/lib/generated_{f}.c");
         for l in 1..=LINES_PER_FILE {
             let tests = spread(lines, tests_on_line(lines));
             for v in variants {
@@ -174,14 +174,14 @@ fn measure(variants: &[Variant]) -> usize {
 
     // Read something back, so the index cannot be optimised away and so a representation that
     // saved memory by losing answers fails here rather than passing quietly.
-    assert_eq!(idx.lines_of("src/vppinfra/generated_0.c").len(), 200);
+    assert_eq!(idx.lines_of("src/lib/generated_0.c").len(), 200);
     assert!(
-        idx.tests_for_line("src/vppinfra/generated_0.c", 1)
+        idx.tests_for_line("src/lib/generated_0.c", 1)
             .is_some()
     );
     for v in variants {
         assert!(
-            idx.tests_for_line_in("src/vppinfra/generated_0.c", 1, v)
+            idx.tests_for_line_in("src/lib/generated_0.c", 1, v)
                 .is_some_and(|t| !t.is_empty()),
             "every build must still answer for its own lines"
         );

@@ -229,7 +229,6 @@ dependencies = [
  "chiero-exec",
  "chiero-gcov",
  "chiero-opt",
- "chiero-pp",
  "chiero-span",
  "indexmap",
 ]

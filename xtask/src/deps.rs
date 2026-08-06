@@ -26,7 +26,7 @@ pub fn layer(crate_name: &str) -> Option<Layer> {
             Layer::Core
         }
         "chiero-gcov" | "chiero-diff" | "chiero-select" | "chiero-check" | "chiero-opt"
-        | "chiero-recipe" => Layer::Vertical,
+        | "chiero-recipe" | "chiero-replay" => Layer::Vertical,
         "chiero-vpp" | "chiero-tool" | "chiero-cli" => Layer::Surface,
         _ => return None,
     })
@@ -43,7 +43,20 @@ const ALLOWED_VERTICAL_EDGES: &[(&str, &str)] = &[
     ("chiero-select", "chiero-opt"),
     ("chiero-opt", "chiero-check"),
     ("chiero-recipe", "chiero-check"),
+    // **A dev-dependency, and a deliberate one.** `chiero-diff`'s `macro_closure` test states
+    // the project's premise by measuring it: a coverage index sees nothing when a header macro
+    // changes, and the impact set sees every expansion site. Asserting that needs both crates
+    // in one test, and the claim is worth more than the edge costs. `chiero-diff`'s *source*
+    // does not use `chiero-gcov` at all — that edge was declared and unused, and removing it
+    // is what left this one.
+    ("chiero-diff", "chiero-gcov"),
 ];
+
+// **`chiero-replay` has no vertical edges**, which is deliberate. 040 §3 makes it a producer
+// of C text from a `Witness`, and a `Witness` is 023's — a core type. Giving it an edge to
+// `chiero-check` or `chiero-opt` would let a harness know what kind of finding it is emitting
+// for, which is exactly the coupling that would make it agree with the analysis by
+// construction rather than by asking a compiler.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Violation {

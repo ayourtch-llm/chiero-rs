@@ -71,6 +71,16 @@ const OPS: &[Op] = &[
         never_exact: None,
     },
     Op {
+        name: "layout_envelope",
+        samples: layout_samples,
+        never_exact: None,
+    },
+    Op {
+        name: "prove_equivalent_with_replay",
+        samples: prove_equivalent_replay_samples,
+        never_exact: None,
+    },
+    Op {
         name: "check_reachable",
         samples: check_reachable_samples,
         never_exact: None,
@@ -199,6 +209,85 @@ entry:
   %1 = mul i32 %0, 3i32
   ret %1
 }";
+
+fn layout_samples() -> Vec<Envelope> {
+    use chiero_opt::locality::{Field, LocalityCfg, Record};
+    let padded = Record {
+        tag: "p".into(),
+        size: 24,
+        align: 8,
+        packed: false,
+        externally_visible: false,
+        fields: vec![
+            Field {
+                name: "a".into(),
+                offset: 0,
+                size: 1,
+            },
+            Field {
+                name: "big".into(),
+                offset: 8,
+                size: 8,
+            },
+        ],
+    };
+    let wire = Record {
+        tag: "hdr".into(),
+        packed: true,
+        ..padded.clone()
+    };
+    vec![
+        chiero_tool::layout_envelope(std::slice::from_ref(&padded), &LocalityCfg::default()),
+        // A layout that escapes: proposals, all advisory.
+        chiero_tool::layout_envelope(&[wire], &LocalityCfg::default()),
+        // The empty answer: no records at all.
+        chiero_tool::layout_envelope(&[], &LocalityCfg::default()),
+    ]
+}
+
+fn prove_equivalent_replay_samples() -> Vec<Envelope> {
+    let d = std::env::temp_dir().join(format!("chiero-ops-replay-{}", std::process::id()));
+    std::fs::create_dir_all(&d).expect("scratch");
+    let before = d.join("b.c");
+    let after = d.join("a.c");
+    std::fs::write(&before, "int f (int x) { return x * 2; }\n").expect("write");
+    std::fs::write(&after, "int f (int x) { return x * 3; }\n").expect("write");
+    let sources = chiero_tool::ReplaySources {
+        before: before.clone(),
+        after: after.clone(),
+        entry: "f".into(),
+        scratch: d.clone(),
+    };
+    let cfg = chiero_opt::EquivCfg::new("f");
+    let mut out = vec![
+        // No sources: the same answer prove_equivalent gives.
+        chiero_tool::prove_equivalent_with_replay(
+            &m(DOUBLE),
+            &m(TRIPLED),
+            &cfg,
+            None,
+            chiero_tool::ReplayPolicy::EmitOnly,
+        ),
+        // Emitted and not run — 050 contract 11's default.
+        chiero_tool::prove_equivalent_with_replay(
+            &m(DOUBLE),
+            &m(TRIPLED),
+            &cfg,
+            Some(&sources),
+            chiero_tool::ReplayPolicy::EmitOnly,
+        ),
+    ];
+    if cfg.backend.is_some() && chiero_replay::compiler().is_some() {
+        out.push(chiero_tool::prove_equivalent_with_replay(
+            &m(DOUBLE),
+            &m(TRIPLED),
+            &cfg,
+            Some(&sources),
+            chiero_tool::ReplayPolicy::Run,
+        ));
+    }
+    out
+}
 
 fn check_reachable_samples() -> Vec<Envelope> {
     let branch = "func @f(%0: i32) -> i32 {\nentry:\n  .line 1\n  %1 = cmp eq i32 %0, 0i32\n                    br %1, bb1, bb2\nbb1:\n  .line 3\n  ret 1i32\nbb2:\n  .line 5\n  ret 2i32\n}";

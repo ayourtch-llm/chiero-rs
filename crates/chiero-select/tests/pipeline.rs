@@ -192,7 +192,7 @@ fn the_selection_is_deterministic() {
 fn a_macro_body_change_in_a_header_selects_the_tests_that_exercise_it() {
     /// The fixture's own two headers, in memory.
     struct Headers(&'static str);
-    impl chiero_pp::FileLoader for Headers {
+    impl chiero_diff::FileLoader for Headers {
         fn load(&mut self, path: &std::path::Path) -> std::io::Result<String> {
             match path.file_name().and_then(|f| f.to_str()) {
                 Some("m.h") => Ok(self.0.to_string()),
@@ -214,7 +214,7 @@ fn a_macro_body_change_in_a_header_selects_the_tests_that_exercise_it() {
     const AFTER: &str = "#define ADD1(V) do { (V) = (V) + 3; (V) = (V) * 2; } while (0)\n\
                          static inline int hdr_fn(int x){ return x < 0 ? -x : x; }\n";
 
-    let mut cfg = chiero_pp::Config::default();
+    let mut cfg = chiero_diff::Config::default();
     cfg.iquote_paths.push(std::path::PathBuf::from("."));
     cfg.system_paths.push(std::path::PathBuf::from("."));
     let before = Program::parse_with("t.c", T_C, cfg.clone(), &mut Headers(BEFORE))
