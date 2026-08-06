@@ -174,3 +174,114 @@ fn a_tight_struct_yields_no_proposals_and_that_is_an_answer() {
     assert_eq!(t["proposals"].as_array().map(Vec::len), Some(0));
     assert_eq!(v["proven"].as_bool(), Some(true), "{v}");
 }
+
+/// **A member with no name still occupies bytes** — and dropping it made the proposal claim
+/// a 72-byte struct could be 8.
+///
+/// Reported from a real header: `chiero layout` on VPP's `fib_route_path_t` said
+///
+/// ```text
+///   recoverable: 64
+///   rationale: `fib_route_path_t_` is 72 bytes and would be 8 with its fields ordered by size
+/// ```
+///
+/// The size and the alignment were right — gcc agrees, 72 and 8. What was wrong is the number
+/// underneath: that struct is a 1-byte enum, a **56-byte anonymous union**, two `u8`s and a
+/// 4-byte enum, and the anonymous union was not in the field list at all. `frontend::records`
+/// built each field from `names.text(fl.name?)` inside a `filter_map`, so a member with no
+/// name was silently skipped — the ideal layout was then computed over 7 bytes of fields, and
+/// "would be 8" is what 7 bytes rounded up to the struct's alignment looks like.
+///
+/// **A number computed from part of a struct is not a smaller number, it is a wrong one.** The
+/// reader is being told they can recover 64 bytes from a struct whose real floor is 64.
+///
+/// The fixture is the same shape, reduced: 1 + (7 padding) + 56 + 1 + (7 padding) = 72, and a
+/// reorder that puts the union first gets to 58 → 64. Eight bytes, not sixty-four.
+#[test]
+fn an_anonymous_member_is_counted_in_the_padding_it_costs() {
+    let p = write(
+        "anon_union.c",
+        "struct with_anon {\n\
+         \x20 char tag;\n\
+         \x20 union { long a; char b[56]; };   /* 56 bytes, and no name */\n\
+         \x20 char w;\n\
+         };\n\
+         struct with_anon instance;\n",
+    );
+    let (code, v, err) = run(&["layout", p.to_str().expect("utf-8"), "--json"]);
+    assert_eq!(code, 0, "{err}");
+    let rec = v["result"]["records"]
+        .as_array()
+        .expect("records")
+        .iter()
+        .find(|r| r["tag"] == "with_anon")
+        .expect("the record is analysed");
+    assert_eq!(rec["size"], 72, "gcc says 72: {rec}");
+
+    let props = rec["proposals"].as_array().expect("proposals");
+    let Some(pad) = props.iter().find(|p| p["kind"] == "padding_waste") else {
+        panic!("expected a padding proposal — there are 8 real bytes to recover: {rec}");
+    };
+    assert_eq!(
+        pad["recoverable"], 8,
+        "56 of those bytes are the union and no reorder removes them: {pad}"
+    );
+    assert!(
+        pad["rationale"]
+            .as_str()
+            .is_some_and(|s| s.contains("would be 64")),
+        "the floor is the union plus its two bytes, rounded to alignment: {pad}"
+    );
+}
+
+/// **A bit-field cannot be described by (offset, size), and the answer to that is not to
+/// pretend the struct is smaller.**
+///
+/// The same `filter_map` that dropped anonymous members drops bit-fields — deliberately, and
+/// the comment says why: "a bit-field's extent is bits within a byte, which straddling and
+/// padding do not describe". That is right for the *straddle* finding and wrong for the
+/// padding sum, which then adds up a struct that is missing members.
+///
+/// So the padding proposal is withheld when the field list is known to be partial, and the
+/// envelope says which records that happened to. `with_bits` below sums to 9 bytes of visible
+/// fields against a real 16, and a proposal computed from that is arithmetic about a struct
+/// nobody declared.
+#[test]
+fn a_record_with_a_bitfield_gets_no_padding_number_it_cannot_stand_behind() {
+    let p = write(
+        "bits.c",
+        "struct with_bits {\n\
+         \x20 char tag;\n\
+         \x20 unsigned a : 3;\n\
+         \x20 unsigned b : 5;\n\
+         \x20 long big;\n\
+         };\n\
+         struct with_bits instance;\n",
+    );
+    let (code, v, err) = run(&["layout", p.to_str().expect("utf-8"), "--json"]);
+    assert_eq!(code, 0, "{err}");
+    let rec = v["result"]["records"]
+        .as_array()
+        .expect("records")
+        .iter()
+        .find(|r| r["tag"] == "with_bits")
+        .expect("the record is analysed");
+    assert!(
+        rec["proposals"]
+            .as_array()
+            .expect("proposals")
+            .iter()
+            .all(|p| p["kind"] != "padding_waste"),
+        "the field list is missing two members, so there is no honest padding number: {rec}"
+    );
+    // **Said, not swallowed.** A record chiero could not judge is not a record with nothing
+    // to find, and the envelope is where that distinction lives.
+    assert!(
+        v["blind_spots"]
+            .as_array()
+            .expect("blind_spots")
+            .iter()
+            .any(|b| b.as_str().is_some_and(|s| s.contains("bit-field"))),
+        "the envelope names what it could not judge: {v}"
+    );
+}
