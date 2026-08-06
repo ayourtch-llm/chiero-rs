@@ -929,6 +929,13 @@ pub struct BugCfg {
     /// chiero's semantics with nothing saying so.
     pub source: Option<ReplaySources>,
     pub replay: ReplayPolicy,
+    /// Assume the entry's pointer parameters are not null.
+    ///
+    /// **An assumption that removes a real path**, so it is off by default and appears in the
+    /// envelope when on. Measured over 40 VPP functions: with it off, 178 findings and not one
+    /// `Exact` — every one a null dereference of an unconstrained parameter, which is a
+    /// statement about the caller contract rather than about the function.
+    pub entry_ptr_nonnull: bool,
 }
 
 impl BugCfg {
@@ -940,6 +947,7 @@ impl BugCfg {
             backend: chiero_solver::SmtLib::discover(),
             source: None,
             replay: ReplayPolicy::EmitOnly,
+            entry_ptr_nonnull: false,
         }
     }
 }
@@ -986,7 +994,8 @@ pub fn find_bugs(module: &chiero_cir::Module, cfg: &BugCfg) -> Envelope {
     let mut arena = chiero_solver::TermArena::new();
     let mut engine = chiero_exec::Engine::new(module)
         .with_entry(&cfg.entry)
-        .with_budget(cfg.budget);
+        .with_budget(cfg.budget)
+        .with_entry_ptr_nullable(!cfg.entry_ptr_nonnull);
     engine = match cfg.backend.clone() {
         Some(b) => engine.with_backend(b),
         None => engine.with_solver(chiero_exec::SolverTier::LiteOnly),
@@ -1093,6 +1102,13 @@ pub fn find_bugs(module: &chiero_cir::Module, cfg: &BugCfg) -> Envelope {
 
     let fidelity = exec_fidelity(run.fidelity());
     let mut env = Envelope::new(result, fidelity);
+    if cfg.entry_ptr_nonnull {
+        env = env.with_assumption(
+            "entry_ptr_nonnull",
+            "the entry's pointer parameters were assumed non-null; a caller that does not \
+             check has paths this run did not explore",
+        );
+    }
     for a in &assumptions {
         env = env.with_assumption(&format!("{:?}", a.kind), &a.detail);
     }
