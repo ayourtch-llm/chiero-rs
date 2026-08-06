@@ -1397,7 +1397,12 @@ pub fn prove_equivalent_with_replay(
     // sharper one in every other case.
     env.blind_spots.retain(|b| !b.contains("replay harness"));
     match &outcome {
-        chiero_replay::Outcome::Demonstrated { .. } => env,
+        // **A confirmation says what bounded the program that produced it.** 050 §6's limits
+        // are not all enforceable everywhere, and a reader weighing "a compiler agreed" needs
+        // to know the code ran with no network and a memory cap — or that it did not.
+        chiero_replay::Outcome::Demonstrated { .. } => {
+            env.with_assumption("replay_sandbox", &chiero_replay::sandbox().describe())
+        }
         chiero_replay::Outcome::NotRun => env.with_blind_spot(
             "a replay harness was emitted and has not been run; the divergence is still \
              chiero's semantics (050 contract 11 gates execution)",

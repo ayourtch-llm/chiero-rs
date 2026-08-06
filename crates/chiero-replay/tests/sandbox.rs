@@ -103,7 +103,9 @@ fn what_a_harness_may_write_is_claimed_accurately() {
         return;
     };
     let d = dir("write");
-    let outside = d.join("..").join(format!("chiero-escape-{}", std::process::id()));
+    let outside = d
+        .join("..")
+        .join(format!("chiero-escape-{}", std::process::id()));
     let _ = std::fs::remove_file(&outside);
     let src = format!(
         "{REPORT}\
@@ -129,7 +131,11 @@ fn what_a_harness_may_write_is_claimed_accurately() {
         escaped,
         !sandbox().writes_confined,
         "the sandbox reports writes {} and a harness {} — the report must match reality:\n{}",
-        if sandbox().writes_confined { "confined" } else { "unconfined" },
+        if sandbox().writes_confined {
+            "confined"
+        } else {
+            "unconfined"
+        },
         if escaped { "escaped" } else { "did not escape" },
         sandbox().describe()
     );

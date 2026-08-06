@@ -98,6 +98,91 @@ impl Outcome {
     }
 }
 
+/// **What running a harness is actually bounded by, on this machine** — 050 §6.
+///
+/// > "a sandbox with no network, a scratch working directory, a wall-clock limit, and a memory
+/// > cap"
+///
+/// Reported rather than assumed, because not all of it is enforceable everywhere and **a limit
+/// claimed and not enforced is worse than one honestly absent** — the first gets acted on. A
+/// test asserts this report against what a fixture harness actually manages.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Sandbox {
+    /// The harness runs in a network namespace of its own, so it has no route anywhere.
+    pub network: bool,
+    /// An address-space cap, applied via the shell's `ulimit`.
+    pub memory_bytes: Option<u64>,
+    /// **Not enforced today, and said so rather than hoped.** Confining writes without root
+    /// needs more than an unprivileged user namespace: remounting the filesystem read-only
+    /// inside one fails on the underlying device, and building a pivoted root is more
+    /// machinery than this warrants. The working directory *is* the scratch directory, which
+    /// bounds a well-behaved program and nothing else.
+    pub writes_confined: bool,
+    /// The wall-clock limit, which is enforced by the runner rather than by the shell.
+    pub timeout: std::time::Duration,
+}
+
+impl Sandbox {
+    /// One line per limit, in the words a reader needs to decide what the verdict rests on.
+    pub fn describe(&self) -> String {
+        format!(
+            "replay sandbox: network is {}; memory is {}; writes are NOT confined to the \
+             scratch directory (050 §6 wants them to be); wall clock {}s",
+            if self.network {
+                "isolated (a namespace of its own)"
+            } else {
+                "NOT isolated — this machine cannot create a network namespace unprivileged"
+            },
+            match self.memory_bytes {
+                Some(b) => format!("capped at {} MiB", b / (1024 * 1024)),
+                None => "NOT capped".to_string(),
+            },
+            self.timeout.as_secs()
+        )
+    }
+}
+
+/// What this machine can enforce, discovered once.
+///
+/// Discovery at run time, like the compiler's and the solver's: whether an unprivileged user
+/// namespace may be created is a property of the kernel's configuration, not of the build.
+pub fn sandbox() -> Sandbox {
+    Sandbox {
+        network: unshare_works(),
+        memory_bytes: shell().map(|_| 2 * 1024 * 1024 * 1024),
+        writes_confined: false,
+        timeout: std::time::Duration::from_secs(10),
+    }
+}
+
+/// Whether `unshare -rn` can be used here — an unprivileged user namespace plus a network one.
+///
+/// Probed by running it, because the answer depends on `kernel.unprivileged_userns_clone`, on
+/// AppArmor, and on whether the binary exists. Asking is cheaper than being wrong.
+fn unshare_works() -> bool {
+    which("unshare").is_some_and(|u| {
+        std::process::Command::new(u)
+            .args(["-rn", "--", "true"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    })
+}
+
+fn shell() -> Option<PathBuf> {
+    which("sh")
+}
+
+fn which(name: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|p| {
+        std::env::split_paths(&p)
+            .map(|d| d.join(name))
+            .find(|f| f.is_file())
+    })
+}
+
 /// A C compiler, if one is on `PATH`.
 ///
 /// Discovery at *run* time, like the solver's (022 §4): 010 §1's build rule keeps chiero from
@@ -379,7 +464,7 @@ pub fn run_with(r: &Replay, cc: &Path, dir: &Path, flags: &[String]) -> Outcome 
     // input for one is precisely the input that does not terminate. Running that under
     // `Command::output()` blocks forever, so `--allow-replay-exec` on a true non-termination
     // finding hung the tool at the witness picked to show the hang. Found by review.
-    if let Err(e) = bounded(&bin, std::time::Duration::from_secs(10)) {
+    if let Err(e) = bounded(&bin, dir, sandbox().timeout) {
         return Outcome::DidNotRun { detail: e };
     }
 
@@ -413,8 +498,37 @@ pub fn run_with(r: &Replay, cc: &Path, dir: &Path, flags: &[String]) -> Outcome 
 ///
 /// Polling rather than a thread with a channel: this is the whole of the requirement, and a
 /// helper that spawns a thread per run would be more machinery than the thing it guards.
-fn bounded(bin: &Path, limit: std::time::Duration) -> Result<(), String> {
-    let mut child = std::process::Command::new(bin)
+fn bounded(bin: &Path, dir: &Path, limit: std::time::Duration) -> Result<(), String> {
+    let sb = sandbox();
+    // **The limits are applied by what is available, and `sandbox()` says which.** `ulimit -v`
+    // through a shell rather than `setrlimit` keeps this crate's dependency list at zero, and
+    // `unshare -rn` gives the harness a network namespace with no route out of it.
+    let mut cmd = match (sb.network.then(|| which("unshare")).flatten(), shell()) {
+        (Some(u), Some(sh)) => {
+            let mut c = std::process::Command::new(u);
+            c.arg("-rn").arg("--").arg(sh).arg("-c").arg(format!(
+                "ulimit -v {}; exec '{}'",
+                sb.memory_bytes.unwrap_or(2 << 30) / 1024,
+                bin.display()
+            ));
+            c
+        }
+        (None, Some(sh)) => {
+            let mut c = std::process::Command::new(sh);
+            c.arg("-c").arg(format!(
+                "ulimit -v {}; exec '{}'",
+                sb.memory_bytes.unwrap_or(2 << 30) / 1024,
+                bin.display()
+            ));
+            c
+        }
+        _ => std::process::Command::new(bin),
+    };
+    // The scratch directory is the working directory: it bounds a well-behaved program, which
+    // is not the same as confining a misbehaving one, and `Sandbox::writes_confined` says so.
+    let mut child = cmd
+        .current_dir(dir)
+        .env_clear()
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
