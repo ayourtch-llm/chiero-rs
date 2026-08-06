@@ -782,23 +782,22 @@ operation existing, by using it on ordinary C. Nothing in the test suite was goi
    chiero can see through and across one it cannot, and only the strength of the claim differs
    (all `Discharged` vs one `Open` and `advisory`).
 
-   > ⚠️ **It still reports nothing for real C, and the cause is the identity criterion.**
-   > Two fixes went in and neither was enough, which is worth recording as one entry:
-   >
-   > 1. Every store was a barrier, so the stack traffic in `int a = *p;` suppressed it. Fixed
-   >    with an **escape check** — a store through the address of a local that never leaves the
-   >    function cannot touch what a pointer parameter points at. Sound, and it made the lowered
-   >    *shape* work.
-   > 2. Detection now runs on a `mem2reg`-promoted copy (020 §9's pass is observationally
-   >    transparent, so a proposal about it is a proposal about this program).
-   >
-   > **Neither reaches the actual problem.** The criterion is "the same *value* loaded twice",
-   > and unoptimized C keeps a pointer parameter in a stack slot, so `*p` twice is two loads of
-   > two different values. Promotion does not reach that slot. What it needs is redundant-load
-   > analysis one level down — knowing two loads of the slot yield the same pointer — which is
-   > this problem recursively.
+   **It works on real C** (2026-08-06, after two wrong diagnoses). `int a = *p; quiet(a);
+   int b = *p;` as gcc hands it over comes back `redundant_load` with every obligation
+   *discharged*; the same function with an `extern` between comes back **advisory**.
 
-   *Left:* that escape check, and the rest of §2's detector list — dead store,
+   > **Both wrong turns were the same mistake: matching on how the CIR spelled something
+   > instead of asking what it was.** The identity criterion was "the same `ValueId` loaded
+   > twice", which unoptimized C never satisfies because `p` lives in a slot and is reloaded —
+   > it is now the engine's own `Pointer` (object + offset), which is 021's answer rather than
+   > a second one. And "a callee with no store" cleared nothing, because lowering stores every
+   > parameter into a slot — it is now "a callee whose every store is into its own confined
+   > local", reusing the caller-side escape check.
+   >
+   > I recorded the limitation as needing "redundant-load analysis one level down". That was
+   > the wrong diagnosis: **the level below already had the answer and was not being asked.**
+
+   *Left:* the rest of §2's detector list — dead store,
    loop-invariant computation, redundant bounds check, call-site specialization.
 
 1b. ~~**041 §3 locality**~~ — **built 2026-08-06.** `chiero_opt::locality`: line straddling
