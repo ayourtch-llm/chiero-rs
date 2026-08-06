@@ -318,3 +318,59 @@ fn system_headers_can_be_turned_off_and_supplied_by_hand() {
         "a file needing no headers is unaffected"
     );
 }
+
+/// **`--entry-ptr-nonnull` — the flag that makes `find-bugs` usable on real code.**
+///
+/// Measured over 40 VPP entry points: 178 findings, not one of them `Exact`, every one a null
+/// dereference or an out-of-bounds access reached through *an unconstrained pointer parameter*.
+/// Those are statements about the caller contract, not about the function, and a reader hunting
+/// defects cannot act on any of them.
+///
+/// The flag says "the callers check", and the envelope has to say the flag was used — the
+/// assumption is what separates a narrowed search from a quieter one.
+#[test]
+fn entry_pointers_can_be_declared_non_null_from_the_command_line() {
+    let p = write(
+        "entry_nonnull.c",
+        "int f(int *p) { return *p; }\n",
+    );
+    let path = p.to_str().expect("utf-8 path");
+
+    let loose = run(&["find-bugs", path, "--entry", "f", "--json"]);
+    let lv = json(&loose);
+    assert!(
+        lv["result"]["findings"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty()),
+        "by default an unconstrained pointer parameter may be null: {lv}"
+    );
+
+    let tight = run(&[
+        "find-bugs",
+        path,
+        "--entry",
+        "f",
+        "--entry-ptr-nonnull",
+        "--json",
+    ]);
+    let v = json(&tight);
+    assert_eq!(tight.code, 0, "stderr: {}", tight.err);
+    assert_eq!(
+        v["result"]["findings"].as_array().map(Vec::len),
+        Some(0),
+        "the null path was assumed away: {v}"
+    );
+    assert!(
+        v["assumptions"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|x| x[0] == "entry_ptr_nonnull")),
+        "and the envelope has to carry the assumption that bought the quiet: {v}"
+    );
+
+    let help = run(&["--help"]);
+    assert!(
+        help.out.contains("--entry-ptr-nonnull"),
+        "a flag nobody can discover is not a feature: {}",
+        help.out
+    );
+}
