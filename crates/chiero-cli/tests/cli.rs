@@ -631,4 +631,39 @@ fn builtin_expect_is_its_first_argument() {
         !nulls("h").is_empty(),
         "`h`'s guard is inverted and the null path is the one that reaches the dereference"
     );
+
+    // **A narrower argument than `long`, which is the case that broke real code.**
+    //
+    // `self.expr` emits sema's conversion chain, so a `char` argument arrives already promoted
+    // to `int`; taking the source type from `type_of` — which walks *down* that chain to the
+    // innermost value — declared `Int(8)` for an `Int(32)` operand and the verifier refused the
+    // whole function. `mem_dlmalloc.c` stopped lowering, and **the workspace suite stayed
+    // green**: nothing in it passed a narrow value through this builtin. Measured instead, by
+    // 18 of 40 VPP entry points going from `ok` to `failed`.
+    let narrow = write(
+        "predict_narrow.c",
+        "int f (char c)\n\
+         {\n\
+         \x20 if (__builtin_expect (c, 0))\n\
+         \x20   return 1;\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    let r = run(&[
+        "find-bugs",
+        narrow.to_str().expect("utf-8 path"),
+        "--entry",
+        "f",
+        "--json",
+    ]);
+    assert_eq!(
+        r.code, 0,
+        "a `char` through the builtin still lowers: {}",
+        r.err
+    );
+    let v = json(&r);
+    assert_eq!(
+        v["fidelity"], "Exact",
+        "and the function is analysed rather than skipped: {v}"
+    );
 }

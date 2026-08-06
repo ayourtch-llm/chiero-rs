@@ -3312,11 +3312,15 @@ impl Lowerer<'_> {
                     // applied, and the verifier caught it: "Ne operand is Int(32), declared
                     // Int(64)". The truth value is the same either way; the *width* is what
                     // CIR is strict about.
-                    let from = match self.type_of(exp).map(|t| self.cty(t)) {
-                        Some(t) => t,
-                        None => CTy::Int(self.width_of(exp)),
-                    };
-                    let to = self.type_of(e).map_or(CTy::Int(64), |t| self.cty(t));
+                    // **The *top* type, not `type_of`.** `type_of` walks down through sema's
+                    // conversion chain to the innermost value, and `self.expr` above emits that
+                    // chain — so on a `char` argument it declared the source `Int(8)` for an
+                    // operand lowering had already promoted to `Int(32)`, and the verifier
+                    // refused the whole function ("cast source operand is Int(32), declared
+                    // Int(8)"). `width_of` reads the same top node the emitted operand came
+                    // from. Found on `mem_dlmalloc.c`, which stopped lowering entirely.
+                    let from = CTy::Int(self.width_of(exp));
+                    let to = CTy::Int(self.width_of(e));
                     if from == to {
                         return a;
                     }
