@@ -782,13 +782,21 @@ operation existing, by using it on ordinary C. Nothing in the test suite was goi
    chiero can see through and across one it cannot, and only the strength of the claim differs
    (all `Discharged` vs one `Open` and `advisory`).
 
-   > ⚠️ **It fires almost never on unoptimized lowered C, and the reason is worth knowing.**
-   > `int a = *p;` lowers to an alloca, a load and a *store into the stack slot*, and every
-   > store is a barrier — so stack traffic between two source-level loads suppresses the
-   > proposal. Checked: a function loading `*p` four times around two calls yields nothing.
-   > **The fix is an escape check**, not a better aliasing rule: a store through an
-   > `AddrOfLocal` whose alloca's address never leaves the function cannot touch what a pointer
-   > parameter points at. Small, real, and not written.
+   > ⚠️ **It still reports nothing for real C, and the cause is the identity criterion.**
+   > Two fixes went in and neither was enough, which is worth recording as one entry:
+   >
+   > 1. Every store was a barrier, so the stack traffic in `int a = *p;` suppressed it. Fixed
+   >    with an **escape check** — a store through the address of a local that never leaves the
+   >    function cannot touch what a pointer parameter points at. Sound, and it made the lowered
+   >    *shape* work.
+   > 2. Detection now runs on a `mem2reg`-promoted copy (020 §9's pass is observationally
+   >    transparent, so a proposal about it is a proposal about this program).
+   >
+   > **Neither reaches the actual problem.** The criterion is "the same *value* loaded twice",
+   > and unoptimized C keeps a pointer parameter in a stack slot, so `*p` twice is two loads of
+   > two different values. Promotion does not reach that slot. What it needs is redundant-load
+   > analysis one level down — knowing two loads of the slot yield the same pointer — which is
+   > this problem recursively.
 
    *Left:* that escape check, and the rest of §2's detector list — dead store,
    loop-invariant computation, redundant bounds check, call-site specialization.

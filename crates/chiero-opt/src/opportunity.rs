@@ -138,6 +138,27 @@ pub fn detect(m: &Module, cfg: &OppCfg) -> Vec<Proposal> {
     // through a shared handle rather than out of the checker.
     let found: Arc<Mutex<Vec<Seen>>> = Arc::new(Mutex::new(Vec::new()));
 
+    // **Detect on a promoted copy**, because the detector's identity criterion is "the same
+    // value loaded twice" and unoptimized C never has that shape: every local — including a
+    // pointer parameter — lives in a stack slot and is reloaded, so `*p` twice is two loads of
+    // two *different* values.
+    //
+    // `mem2reg` is 020 §9's promotion pass and is **observationally transparent** — the same
+    // findings and the same counterexamples, only faster — so a proposal about the promoted
+    // module is a proposal about this program. Taking a copy keeps 041 contract 17's promise:
+    // `detect` takes `&Module` and rewrites nothing a caller can see.
+    //
+    // **Measured, and it is not enough.** Promotion does not reach a pointer parameter's slot
+    // here, so the detector still reports nothing for `int a = *p; g(); int b = *p;` as gcc
+    // hands it to us. What the criterion actually needs is redundant-load analysis one level
+    // down — knowing two loads of the *slot* give the same pointer — which is the same problem
+    // recursively. Left here because it is the right layer for the fix and costs a clone;
+    // recorded as not having achieved its aim, because a change that looks like a fix and is
+    // not is worse than an admitted gap.
+    let mut promoted = m.clone();
+    crate::mem2reg(&mut promoted);
+    let m = &promoted;
+
     let mut arena = TermArena::new();
     let mut engine = Engine::new(m)
         .with_entry(&cfg.entry)
@@ -147,6 +168,7 @@ pub fn detect(m: &Module, cfg: &OppCfg) -> Vec<Proposal> {
         }))
         .with_checker(Box::new(RedundantLoad {
             found: Arc::clone(&found),
+            confined_by_func: Vec::new(),
         }));
     engine = match cfg.backend.clone() {
         Some(b) => engine.with_backend(b),
@@ -300,6 +322,83 @@ impl Checker for DeadBranch {
 /// what 041 contract 14 is about, and less than §2's sentence promises.
 struct RedundantLoad {
     found: Arc<Mutex<Vec<Seen>>>,
+    confined_by_func: Vec<(chiero_cir::FuncId, Vec<u32>)>,
+}
+
+/// The values in `f` that are the address of a local whose address **never leaves the
+/// function** — so a store through one cannot touch what a pointer parameter points at.
+///
+/// **A fact about the local, not about aliasing.** Deciding which addresses might be equal is
+/// 021's question and stays there; this asks only whether anything could have got hold of the
+/// address at all. An alloca whose address is passed to a call, stored anywhere, or returned is
+/// excluded, and so is one reached through a `Phi`, because a merge of a local and something
+/// else is not a local.
+///
+/// Without this the detector is blind to the shape real C lowers to: `int a = *p;` is an
+/// alloca, a load and a *store into the stack slot*, and that store was a barrier.
+fn confined_locals(f: &chiero_cir::Function) -> Vec<u32> {
+    use chiero_cir::{InstKind, Operand, RValue};
+    // Values that are the address of a local, grown through pointer arithmetic and copies.
+    let mut local: Vec<(u32, chiero_cir::AllocaId)> = Vec::new();
+    for _ in 0..2 {
+        for b in &f.blocks {
+            for i in &b.insts {
+                let InstKind::Assign { dst, rv } = &i.kind else {
+                    continue;
+                };
+                let from = |o: &Operand| match o {
+                    Operand::Value(v) => local.iter().find(|(k, _)| *k == v.0).map(|(_, a)| *a),
+                    _ => None,
+                };
+                let a = match rv {
+                    RValue::AddrOfLocal { alloca, .. } => Some(*alloca),
+                    RValue::PtrAdd { base, .. } => from(base),
+                    RValue::Use(o) => from(o),
+                    RValue::Cast { a, .. } => from(a),
+                    _ => None,
+                };
+                if let Some(a) = a
+                    && !local.iter().any(|(k, _)| *k == dst.0)
+                {
+                    local.push((dst.0, a));
+                }
+            }
+        }
+    }
+    // Which allocas' addresses escape: handed to a call, stored as a value, or returned.
+    let mut escaped: Vec<chiero_cir::AllocaId> = Vec::new();
+    let note = |o: &Operand, escaped: &mut Vec<chiero_cir::AllocaId>| {
+        if let Operand::Value(v) = o
+            && let Some((_, a)) = local.iter().find(|(k, _)| *k == v.0)
+            && !escaped.contains(a)
+        {
+            escaped.push(*a);
+        }
+    };
+    for b in &f.blocks {
+        for i in &b.insts {
+            match &i.kind {
+                InstKind::Call { args, .. } => {
+                    for a in args {
+                        note(a, &mut escaped);
+                    }
+                }
+                // The *value* stored, not the address stored through: writing a local's address
+                // somewhere is how it gets out.
+                InstKind::Store { val, .. } => note(val, &mut escaped),
+                InstKind::CopyMem { src, .. } => note(src, &mut escaped),
+                _ => {}
+            }
+        }
+        if let chiero_cir::Terminator::Return(Some(o)) = &b.term {
+            note(o, &mut escaped);
+        }
+    }
+    local
+        .into_iter()
+        .filter(|(_, a)| !escaped.contains(a))
+        .map(|(v, _)| v)
+        .collect()
 }
 
 /// What a path has seen since each address was loaded.
@@ -333,6 +432,44 @@ impl chiero_exec::CheckerState for LoadState {
     }
 }
 
+impl RedundantLoad {
+    /// Whether this store's address is a local of the running function that never escapes it.
+    ///
+    /// The set is computed per function and cached, because a checker runs on every
+    /// instruction of every path and the answer is a property of the CIR.
+    fn confined(
+        &mut self,
+        ctx: &mut CheckerCtx,
+        st: &chiero_exec::State,
+        addr: &chiero_cir::Operand,
+    ) -> bool {
+        let chiero_cir::Operand::Value(v) = addr else {
+            return false;
+        };
+        // **The function this instruction is in**, from the path's own trace. The engine steps
+        // into a defined callee, so "the entry" and "the module's first function" are both
+        // wrong answers — and the second was the one written first, which made the whole check
+        // consult the wrong function's locals.
+        let Some((f, _)) = st.trace().last().copied() else {
+            return false;
+        };
+        if !self.confined_by_func.iter().any(|(id, _)| *id == f) {
+            let set = ctx
+                .module()
+                .funcs
+                .iter()
+                .find(|x| x.id == f)
+                .map(confined_locals)
+                .unwrap_or_default();
+            self.confined_by_func.push((f, set));
+        }
+        self.confined_by_func
+            .iter()
+            .find(|(id, _)| *id == f)
+            .is_some_and(|(_, s)| s.contains(&v.0))
+    }
+}
+
 impl Checker for RedundantLoad {
     fn name(&self) -> &'static str {
         "redundant-load"
@@ -344,7 +481,7 @@ impl Checker for RedundantLoad {
 
     fn on_event(&mut self, ev: &Event, ctx: &mut CheckerCtx) -> Vec<Action> {
         match ev {
-            Event::AfterInst { inst, .. } => match &inst.kind {
+            Event::AfterInst { st, inst } => match &inst.kind {
                 chiero_cir::InstKind::Assign {
                     rv: chiero_cir::RValue::Load { addr, .. },
                     ..
@@ -397,12 +534,16 @@ impl Checker for RedundantLoad {
                         }
                     }
                 }
-                // **Any store is a barrier for every tracked address.** Deciding *which*
-                // addresses a store could reach is aliasing, which 021 owns.
-                chiero_cir::InstKind::Store { .. }
-                | chiero_cir::InstKind::StoreBits { .. }
-                | chiero_cir::InstKind::CopyMem { .. }
-                | chiero_cir::InstKind::SetMem { .. } => {
+                // **A store is a barrier unless it is into a local nothing can reach.**
+                // Deciding *which* addresses a store could alias is 021's question; asking
+                // whether the address ever left the function is not, and it is what the shape
+                // real C lowers to needs.
+                chiero_cir::InstKind::Store { addr, .. }
+                | chiero_cir::InstKind::StoreBits { addr, .. }
+                | chiero_cir::InstKind::CopyMem { dst: addr, .. }
+                | chiero_cir::InstKind::SetMem { dst: addr, .. }
+                    if !self.confined(ctx, st, addr) =>
+                {
                     for (_, since) in &mut ctx.state_mut::<LoadState>().seen {
                         *since = Since::Written;
                     }
