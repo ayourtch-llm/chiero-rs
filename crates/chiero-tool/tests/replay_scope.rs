@@ -100,12 +100,14 @@ fn a_side_effect_divergence_is_not_downgraded_by_a_return_value_harness() {
         "the two versions call p in different orders: {v}"
     );
     assert_eq!(
-        with.fidelity,
-        plain.fidelity,
+        with.fidelity, plain.fidelity,
         "a harness that cannot see this divergence must not change the verdict about it: {v}"
     );
     assert!(
-        !with.assumptions.iter().any(|(k, _)| k == "harness_disagreed"),
+        !with
+            .assumptions
+            .iter()
+            .any(|(k, _)| k == "harness_disagreed"),
         "the compiler was never asked about effect order: {:?}",
         with.assumptions
     );
@@ -134,16 +136,13 @@ fn a_return_value_divergence_the_compiler_denies_is_still_downgraded() {
     // agree. That is exactly the situation contract 11 is for.
     let same = "int f (int x) { return x * 2; }\n";
     let s = sources("agrees", same, same, "f");
-    let double = "func @f(%0: i32) -> i32 {\nentry:\n  .line 1\n  %1 = mul i32 %0, 2i32\n  ret %1\n}";
-    let triple = "func @f(%0: i32) -> i32 {\nentry:\n  .line 1\n  %1 = mul i32 %0, 3i32\n  ret %1\n}";
+    let double =
+        "func @f(%0: i32) -> i32 {\nentry:\n  .line 1\n  %1 = mul i32 %0, 2i32\n  ret %1\n}";
+    let triple =
+        "func @f(%0: i32) -> i32 {\nentry:\n  .line 1\n  %1 = mul i32 %0, 3i32\n  ret %1\n}";
 
-    let env = prove_equivalent_with_replay(
-        &m(double),
-        &m(triple),
-        &cfg,
-        Some(&s),
-        ReplayPolicy::Run,
-    );
+    let env =
+        prove_equivalent_with_replay(&m(double), &m(triple), &cfg, Some(&s), ReplayPolicy::Run);
     assert_eq!(
         env.fidelity,
         Fidelity::Approximated,
@@ -151,7 +150,9 @@ fn a_return_value_divergence_the_compiler_denies_is_still_downgraded() {
         env.to_json()
     );
     assert!(
-        env.assumptions.iter().any(|(k, _)| k == "harness_disagreed"),
+        env.assumptions
+            .iter()
+            .any(|(k, _)| k == "harness_disagreed"),
         "{:?}",
         env.assumptions
     );
@@ -190,7 +191,8 @@ entry:
 }";
     let c = "int p (int);\nint f (int x) { return p (x) + 1; }\n";
     let s = sources("externret", c, c, "f");
-    let env = prove_equivalent_with_replay(&m(before), &m(after), &cfg, Some(&s), ReplayPolicy::Run);
+    let env =
+        prove_equivalent_with_replay(&m(before), &m(after), &cfg, Some(&s), ReplayPolicy::Run);
     let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
     if v["result"]["verdict"] != "differs" {
         return; // no divergence to emit a harness for

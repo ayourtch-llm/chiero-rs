@@ -33,7 +33,7 @@
 //! it changes linkage across the whole TU and would make the harness a different program from
 //! the one analysed.
 
-use chiero_exec::Witness;
+use chiero_exec::{InputOrigin, Witness};
 use std::path::{Path, PathBuf};
 
 /// An emitted harness: the program, and what it is trying to show.
@@ -160,20 +160,80 @@ fn absolute(p: &Path) -> PathBuf {
     })
 }
 
+/// Why no harness was emitted.
+///
+/// **A refusal is about the *witness*, not about the harness.** Before this existed, a witness
+/// the emitter could not render produced a program that would not compile, reported as
+/// `DidNotBuild` — which reads as "the harness is broken" when the truth is "this is not
+/// something a harness of this shape can check". The two need different words because they
+/// send a reader to different places.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Refusal {
+    pub why: String,
+}
+
+/// What this harness shape can actually measure, checked before anything is emitted.
+///
+/// **The narrowness is the honest part.** A harness that compares two return values at one
+/// input can adjudicate exactly that; asked about anything else it will report the two versions
+/// agreeing, and 041 contract 11 would turn that into a downgrade of a true finding. So the
+/// conditions are checked here, once, rather than discovered as a compiler error later.
+fn renderable(witness: &Witness) -> Result<Vec<String>, Refusal> {
+    let mut args: Vec<(usize, String)> = Vec::new();
+    for b in &witness.bindings {
+        match &b.origin {
+            InputOrigin::Param { index, .. } => {
+                // 040 §3's construction rules want memory objects materialized and extern
+                // stubs generated; until they are, a witness with anything but parameters is
+                // not an argument list.
+                if b.width > 64 {
+                    return Err(Refusal {
+                        why: format!(
+                            "a {}-bit input has no C literal this emitter can write — above 64                              bits gcc truncates a decimal constant silently",
+                            b.width
+                        ),
+                    });
+                }
+                args.push((*index, literal(b.width, b.value)));
+            }
+            other => {
+                return Err(Refusal {
+                    why: format!(
+                        "the witness binds {}, which is not a parameter — 040 §3 wants                          unmodeled extern calls stubbed to return the engine's values and                          memory objects materialized, and neither is built",
+                        other.label()
+                    ),
+                });
+            }
+        }
+    }
+    // The indices must be 0..n and each present once, or "positional" means nothing.
+    args.sort_by_key(|(i, _)| *i);
+    if args.iter().enumerate().any(|(n, (i, _))| n != *i) {
+        return Err(Refusal {
+            why: "the witness's parameter indices are not 0..n, so they cannot be passed                   positionally"
+                .to_string(),
+        });
+    }
+    Ok(args.into_iter().map(|(_, a)| a).collect())
+}
+
 /// Emit a harness that runs both versions of `entry` at `witness` — 041 §1.3.
 ///
 /// The two sources are included into one translation unit with the entry renamed, which is
 /// 040 §3.1's mechanism and the only one that reaches a `static` target. The rename is a
 /// `#define` around each include rather than a compiler flag, so it applies to exactly one
 /// name in exactly one file.
-pub fn emit_equivalence(before: &Path, after: &Path, entry: &str, witness: &Witness) -> Replay {
+///
+/// Refuses rather than emitting something that cannot answer — see [`renderable`].
+pub fn emit_equivalence(
+    before: &Path,
+    after: &Path,
+    entry: &str,
+    witness: &Witness,
+) -> Result<Replay, Refusal> {
+    let args = renderable(witness)?;
     let before = &absolute(before);
     let after = &absolute(after);
-    let args: Vec<String> = witness
-        .bindings
-        .iter()
-        .map(|b| literal(b.width, b.value))
-        .collect();
     let call = args.join(", ");
     let described: Vec<String> = witness
         .bindings
@@ -215,10 +275,13 @@ pub fn emit_equivalence(before: &Path, after: &Path, entry: &str, witness: &Witn
         "int main (void)\n{{\n  \
          long long b = (long long) chiero_before_{entry} ({call});\n  \
          long long a = (long long) chiero_after_{entry} ({call});\n  \
-         printf (\"before=%lld after=%lld\\n\", b, a);\n  \
+         FILE *chiero_out = fopen (CHIERO_RESULT, \"w\");\n  \
+         if (!chiero_out) return 2;\n  \
+         fprintf (chiero_out, \"before=%lld after=%lld\\n\", b, a);\n  \
+         fclose (chiero_out);\n  \
          return b == a;\n}}\n"
     ));
-    Replay { source, claim }
+    Ok(Replay { source, claim })
 }
 
 /// Compile and run a harness, and report which of the four things happened.
@@ -258,8 +321,16 @@ pub fn run(r: &Replay, cc: &Path, dir: &Path) -> Outcome {
         };
     }
 
+    // **The result goes to a file, not to stdout.** The program under test is `#include`d into
+    // the harness and can write to stdout itself — a constructor, a `printf` in the entry — and
+    // an entry printing `before=… after=…` would have been read as the verdict. The reviewer
+    // demonstrated exactly that. A path the harness is compiled with is a channel the included
+    // code has no name for.
+    let result = dir.join(format!("chiero_result_{tag}.txt"));
     match std::process::Command::new(cc)
-        .args(["-std=gnu11", "-w", "-O0", "-o"])
+        .args(["-std=gnu11", "-w", "-O0"])
+        .arg(format!("-DCHIERO_RESULT=\"{}\"", result.display()))
+        .arg("-o")
         .arg(&bin)
         .arg(&src)
         .output()
@@ -277,25 +348,27 @@ pub fn run(r: &Replay, cc: &Path, dir: &Path) -> Outcome {
         Ok(_) => {}
     }
 
-    let out = match std::process::Command::new(&bin).output() {
-        Ok(o) => o,
+    let _ = std::fs::remove_file(&result);
+    // **A wall-clock limit, because a `Termination` witness is an input chosen to hang.**
+    // `prove_equivalent` reports a divergence in *how a path ends*, and the distinguishing
+    // input for one is precisely the input that does not terminate. Running that under
+    // `Command::output()` blocks forever, so `--allow-replay-exec` on a true non-termination
+    // finding hung the tool at the witness picked to show the hang. Found by review.
+    if let Err(e) = bounded(&bin, std::time::Duration::from_secs(10)) {
+        return Outcome::DidNotRun { detail: e };
+    }
+
+    let text = match std::fs::read_to_string(&result) {
+        Ok(t) => t,
         Err(e) => {
             return Outcome::DidNotRun {
-                detail: format!("the harness would not start: {e}"),
+                detail: format!("the harness wrote no result: {e}"),
             };
         }
     };
-    // **The two numbers, not the exit code.** The status says agree-or-not; a reader weighing a
-    // downgrade against the analysis needs the values that were actually produced — and a
-    // harness killed by a signal has a status that means neither.
-    let text = String::from_utf8_lossy(&out.stdout);
     let Some((b, a)) = parse_line(&text) else {
         return Outcome::DidNotRun {
-            detail: format!(
-                "the harness produced no comparable output (status {:?}): {}",
-                out.status.code(),
-                text.trim()
-            ),
+            detail: format!("the harness's result is unreadable: {}", text.trim()),
         };
     };
     if b == a {
@@ -308,6 +381,36 @@ pub fn run(r: &Replay, cc: &Path, dir: &Path) -> Outcome {
             before: b,
             after: a,
         }
+    }
+}
+
+/// Run a binary with a wall-clock limit, killing it if it overruns.
+///
+/// Polling rather than a thread with a channel: this is the whole of the requirement, and a
+/// helper that spawns a thread per run would be more machinery than the thing it guards.
+fn bounded(bin: &Path, limit: std::time::Duration) -> Result<(), String> {
+    let mut child = std::process::Command::new(bin)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("the harness would not start: {e}"))?;
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) => {}
+            Err(e) => return Err(format!("waiting for the harness: {e}")),
+        }
+        if start.elapsed() >= limit {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "the harness did not finish within {}s and was killed — the witness may be an \
+                 input on which the program does not terminate",
+                limit.as_secs()
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
     }
 }
 

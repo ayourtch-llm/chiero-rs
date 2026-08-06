@@ -175,10 +175,7 @@ fn measure(variants: &[Variant]) -> usize {
     // Read something back, so the index cannot be optimised away and so a representation that
     // saved memory by losing answers fails here rather than passing quietly.
     assert_eq!(idx.lines_of("src/lib/generated_0.c").len(), 200);
-    assert!(
-        idx.tests_for_line("src/lib/generated_0.c", 1)
-            .is_some()
-    );
+    assert!(idx.tests_for_line("src/lib/generated_0.c", 1).is_some());
     for v in variants {
         assert!(
             idx.tests_for_line_in("src/lib/generated_0.c", 1, v)

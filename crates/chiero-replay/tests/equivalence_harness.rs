@@ -17,7 +17,7 @@
 use chiero_exec::{Binding, InputOrigin, Witness};
 use chiero_replay::{Outcome, Replay, emit_equivalence, run};
 use chiero_span::Span;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// **One directory per test.** These tests run in parallel threads of one process, so a
 /// directory keyed only on the process id is shared — and the fixtures, which have the same
@@ -34,6 +34,14 @@ fn write(tag: &str, name: &str, src: &str) -> PathBuf {
     let p = scratch(tag).join(name);
     std::fs::write(&p, src).expect("write");
     p
+}
+
+/// Emit, or fail the test with the refusal — most tests are about what a harness does once
+/// emitted, and a refusal there is a different bug.
+#[track_caller]
+fn must_emit(before: &Path, after: &Path, entry: &str, w: &Witness) -> Replay {
+    emit_equivalence(before, after, entry, w)
+        .unwrap_or_else(|r| panic!("the emitter refused a plain scalar witness: {}", r.why))
 }
 
 fn witness(values: &[(u32, u128)]) -> Witness {
@@ -75,7 +83,7 @@ fn abs_pair(tag: &str) -> (PathBuf, PathBuf) {
 fn the_harness_is_a_self_contained_program_naming_both_versions() {
     const TAG: &str = "the_harness_is_a_self_contained_program_naming_both_versions";
     let (b, a) = abs_pair(TAG);
-    let r: Replay = emit_equivalence(&b, &a, "f", &witness(&[(32, i32::MIN as u32 as u128)]));
+    let r: Replay = must_emit(&b, &a, "f", &witness(&[(32, i32::MIN as u32 as u128)]));
 
     for want in ["#include", "int main", "abs_before.c", "abs_after.c"] {
         assert!(
@@ -114,7 +122,7 @@ fn a_real_divergence_is_demonstrated() {
         return; // no C compiler here; `run` says so rather than passing
     };
     let (b, a) = abs_pair(TAG);
-    let r = emit_equivalence(&b, &a, "f", &witness(&[(32, i32::MIN as u32 as u128)]));
+    let r = must_emit(&b, &a, "f", &witness(&[(32, i32::MIN as u32 as u128)]));
     match run(&r, &cc, &scratch(TAG)) {
         Outcome::Demonstrated { before, after } => {
             assert_eq!(before, i64::from(i32::MIN));
@@ -137,7 +145,7 @@ fn a_witness_that_does_not_distinguish_is_reported_as_such() {
     };
     let (b, a) = abs_pair(TAG);
     // 7 is not INT_MIN; both versions return 7.
-    let r = emit_equivalence(&b, &a, "f", &witness(&[(32, 7)]));
+    let r = must_emit(&b, &a, "f", &witness(&[(32, 7)]));
     match run(&r, &cc, &scratch(TAG)) {
         Outcome::NotDemonstrated { before, after } => assert_eq!(before, after),
         other => panic!("both versions return 7 here: {other:?}"),
@@ -155,7 +163,7 @@ fn a_harness_that_does_not_compile_is_not_a_disagreement() {
     };
     let b = write(TAG, "bad_before.c", "int f (int x) { return x; }\n");
     let a = write(TAG, "bad_after.c", "this is not C\n");
-    let r = emit_equivalence(&b, &a, "f", &witness(&[(32, 1)]));
+    let r = must_emit(&b, &a, "f", &witness(&[(32, 1)]));
     match run(&r, &cc, &scratch(TAG)) {
         Outcome::DidNotBuild { .. } => {}
         other => panic!("the second file is not C: {other:?}"),
@@ -180,7 +188,7 @@ fn a_static_function_is_reachable() {
         "st_after.c",
         "static int f (int x) { return x + 2; }\n",
     );
-    let r = emit_equivalence(&b, &a, "f", &witness(&[(32, 1)]));
+    let r = must_emit(&b, &a, "f", &witness(&[(32, 1)]));
     match run(&r, &cc, &scratch(TAG)) {
         Outcome::Demonstrated { before, after } => {
             assert_eq!((before, after), (2, 3));
@@ -201,7 +209,7 @@ fn a_translation_unit_with_its_own_main_still_builds() {
     };
     let b = write(TAG, "main_before.c", &src(1));
     let a = write(TAG, "main_after.c", &src(2));
-    let r = emit_equivalence(&b, &a, "f", &witness(&[(32, 0)]));
+    let r = must_emit(&b, &a, "f", &witness(&[(32, 0)]));
     match run(&r, &cc, &scratch(TAG)) {
         Outcome::Demonstrated { before, after } => assert_eq!((before, after), (1, 2)),
         other => panic!("the TU's own main must be renamed out of the way: {other:?}"),
@@ -224,7 +232,7 @@ fn a_translation_unit_with_its_own_main_still_builds() {
 fn includes_do_not_depend_on_where_the_harness_is_built() {
     const TAG: &str = "includes_do_not_depend_on_where_the_harness_is_built";
     let (b, a) = abs_pair(TAG);
-    let r = emit_equivalence(&b, &a, "f", &witness(&[(32, 1)]));
+    let r = must_emit(&b, &a, "f", &witness(&[(32, 1)]));
     for line in r.source.lines().filter(|l| l.starts_with("#include \"")) {
         let path = line.trim_start_matches("#include \"").trim_end_matches('"');
         assert!(

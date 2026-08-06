@@ -1276,7 +1276,10 @@ pub fn prove_equivalent_with_replay(
     policy: ReplayPolicy,
 ) -> Envelope {
     let verdict = chiero_opt::prove_equivalent(before, after, cfg);
-    let chiero_opt::Equivalence::Differs { input, .. } = &verdict else {
+    let chiero_opt::Equivalence::Differs {
+        input, observation, ..
+    } = &verdict
+    else {
         // A harness demonstrates a *divergence*; there is nothing for one to do with an
         // agreement or a refusal.
         return envelope_for(verdict);
@@ -1285,7 +1288,41 @@ pub fn prove_equivalent_with_replay(
         return envelope_for(verdict);
     };
 
-    let replay = chiero_replay::emit_equivalence(&src.before, &src.after, &src.entry, input);
+    // **Only a divergence this harness can measure may be adjudicated by it.**
+    //
+    // The harness compares two return values at one input. `prove_equivalent` also reports
+    // `SideEffect`, `Termination` and `Memory` divergences, and for those the harness always
+    // reports the two versions agreeing — which 041 contract 11 then turned into a downgrade
+    // of a *true* finding, with an assumption saying chiero and the compiler disagree about
+    // something the compiler was never asked. The contract exists to catch chiero being wrong;
+    // applied outside what the harness measures, it punished chiero for being right.
+    //
+    // Found by review. The check is here rather than in the emitter because "what this verdict
+    // is about" is this layer's knowledge.
+    let refuse = |why: String| -> Envelope {
+        let mut env = envelope_for(verdict.clone());
+        env.result["replay"] = serde_json::json!({
+            "source": serde_json::Value::Null,
+            "outcome": "refused",
+            "why": why,
+        });
+        env.with_blind_spot(&format!(
+            "no harness was emitted, so nothing has checked chiero's semantics here: {why}"
+        ))
+    };
+    if !matches!(observation, chiero_opt::Divergence::ReturnValue { .. }) {
+        return refuse(format!(
+            "this is a {} divergence and the harness compares return values (041 §1.3)",
+            divergence_kind(observation)
+        ));
+    }
+
+    let replay = match chiero_replay::emit_equivalence(&src.before, &src.after, &src.entry, input) {
+        Ok(r) => r,
+        // A refusal is about the *witness*. Emitting anyway produced a program that would not
+        // compile, reported as `did_not_build`, which reads as "the harness is broken".
+        Err(refusal) => return refuse(refusal.why),
+    };
     let outcome = match policy {
         ReplayPolicy::EmitOnly => None,
         ReplayPolicy::Run => {
@@ -1420,6 +1457,16 @@ pub fn layout_envelope(
         )
     } else {
         env
+    }
+}
+
+/// The word for a divergence's kind, for a message a reader has to act on.
+fn divergence_kind(d: &chiero_opt::Divergence) -> &'static str {
+    match d {
+        chiero_opt::Divergence::ReturnValue { .. } => "return-value",
+        chiero_opt::Divergence::Memory { .. } => "caller-visible memory",
+        chiero_opt::Divergence::SideEffect { .. } => "side-effect",
+        chiero_opt::Divergence::Termination { .. } => "termination",
     }
 }
 
