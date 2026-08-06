@@ -777,10 +777,21 @@ operation existing, by using it on ordinary C. Nothing in the test suite was goi
    names the budget: "no state took that edge" and "no state *can*" are the same observation
    and opposite claims, and here the difference is whether somebody deletes live code.
 
-   *Left:* contract 14 (redundant load across a call, `Discharged` when the callee is proven
-   not to write the address and `Open` across an unmodeled extern) and the rest of §2's
-   detector list — dead store, loop-invariant computation, redundant bounds check,
-   call-site specialization. And nothing calls `detect` yet.
+   **Contract 14 landed 2026-08-06** — the redundant-load detector, and the contract that makes
+   the obligation machinery mean something: the *observation* is identical across a callee
+   chiero can see through and across one it cannot, and only the strength of the claim differs
+   (all `Discharged` vs one `Open` and `advisory`).
+
+   > ⚠️ **It fires almost never on unoptimized lowered C, and the reason is worth knowing.**
+   > `int a = *p;` lowers to an alloca, a load and a *store into the stack slot*, and every
+   > store is a barrier — so stack traffic between two source-level loads suppresses the
+   > proposal. Checked: a function loading `*p` four times around two calls yields nothing.
+   > **The fix is an escape check**, not a better aliasing rule: a store through an
+   > `AddrOfLocal` whose alloca's address never leaves the function cannot touch what a pointer
+   > parameter points at. Small, real, and not written.
+
+   *Left:* that escape check, and the rest of §2's detector list — dead store,
+   loop-invariant computation, redundant bounds check, call-site specialization.
 
 1b. ~~**041 §3 locality**~~ — **built 2026-08-06.** `chiero_opt::locality`: line straddling
    (contract 18's boundary both ways), padding waste with the byte delta, hot/cold placement.

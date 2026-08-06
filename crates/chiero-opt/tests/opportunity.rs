@@ -270,7 +270,10 @@ fn the_same_load_across_an_unmodeled_extern_is_advisory() {
             .any(|o| matches!(o, Obligation::Open { .. })),
         "chiero has no body for `opaque`, so it cannot say the address was not written: {p:?}"
     );
-    assert!(p.advisory, "an open obligation means advisory (041 §2): {p:?}");
+    assert!(
+        p.advisory,
+        "an open obligation means advisory (041 §2): {p:?}"
+    );
     assert!(
         p.rationale.to_lowercase().contains("could not prove")
             || p.obligations.iter().any(|o| match o {

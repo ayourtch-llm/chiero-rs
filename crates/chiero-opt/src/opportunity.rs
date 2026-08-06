@@ -57,6 +57,51 @@ pub enum OppKind {
     ///
     /// `taken` is the side that can happen; the other is the dead one.
     DeadBranch { taken: bool },
+    /// The same address loaded twice with nothing between that could have written it.
+    ///
+    /// `addr` is the value holding the address, as the CIR names it — the two loads are of
+    /// *that* value, which is a syntactic identity rather than an aliasing claim. A detector
+    /// that reasoned about which addresses might be equal would be doing 021's job in the wrong
+    /// crate; this one reports only the case where the program itself used one name twice.
+    RedundantLoad { addr: u32 },
+}
+
+impl OppKind {
+    /// What discharging this kind's obligation rests on.
+    ///
+    /// **Two different questions.** A dead branch is discharged by the search being exhaustive;
+    /// a redundant load is discharged by the intervening call being one chiero can see through.
+    /// A detector that could only inherit the run's fidelity would have to lie about one of
+    /// them.
+    fn discharged_by(&self) -> &'static str {
+        match self {
+            OppKind::DeadBranch { .. } => {
+                "the search was exhaustive, so no path reaches the other side"
+            }
+            OppKind::RedundantLoad { .. } => {
+                "nothing between the two loads could have written the address"
+            }
+        }
+    }
+
+    fn rationale(&self, advisory: bool) -> String {
+        let tail = if advisory {
+            " — but see the obligation"
+        } else {
+            ""
+        };
+        match self {
+            OppKind::DeadBranch { taken } => format!(
+                "the {} side of this branch cannot be taken: the path condition already \
+                 decides it{tail}",
+                if *taken { "false" } else { "true" }
+            ),
+            OppKind::RedundantLoad { addr } => format!(
+                "`%{addr}` is loaded twice with nothing between that could have written it, \
+                 so the second load could reuse the first{tail}"
+            ),
+        }
+    }
 }
 
 /// One proposal — 041 §2's shape, sharing [`Benefit`] and [`Obligation`] with the locality
@@ -99,6 +144,9 @@ pub fn detect(m: &Module, cfg: &OppCfg) -> Vec<Proposal> {
         .with_budget(cfg.budget)
         .with_checker(Box::new(DeadBranch {
             found: Arc::clone(&found),
+        }))
+        .with_checker(Box::new(RedundantLoad {
+            found: Arc::clone(&found),
         }));
     engine = match cfg.backend.clone() {
         Some(b) => engine.with_backend(b),
@@ -120,42 +168,38 @@ pub fn detect(m: &Module, cfg: &OppCfg) -> Vec<Proposal> {
     let mut out: Vec<Proposal> = seen
         .into_iter()
         .map(|s| {
-            let obligations = if exhaustive {
-                vec![Obligation::Discharged {
-                    what: "the search was exhaustive, so no path reaches the other side"
-                        .to_string(),
-                }]
-            } else {
-                vec![Obligation::Open {
+            // **Two sources of doubt, and either one is enough.** The run may not have been
+            // exhaustive, and *this* observation may not have been clearable — a redundant load
+            // across a call chiero has no body for is unproven however complete the search was.
+            let mut obligations = Vec::new();
+            match &s.own_doubt {
+                Some(why) => obligations.push(Obligation::Open { why: why.clone() }),
+                None => obligations.push(Obligation::Discharged {
+                    what: s.kind.discharged_by().to_string(),
+                }),
+            }
+            if !exhaustive && matches!(s.kind, OppKind::DeadBranch { .. }) {
+                obligations.push(Obligation::Open {
                     why: format!(
                         "the search did not finish ({}), so the other side was not shown \
                          unreachable — only unvisited",
                         truncated
                             .first()
                             .cloned()
-                            .unwrap_or_else(|| { format!("fidelity {:?}", run.fidelity()) })
+                            .unwrap_or_else(|| format!("fidelity {:?}", run.fidelity()))
                     ),
-                }]
-            };
+                });
+            }
             let advisory = obligations
                 .iter()
                 .any(|o| matches!(o, Obligation::Open { .. }));
             Proposal {
-                kind: OppKind::DeadBranch { taken: s.taken },
-                rationale: format!(
-                    "the {} side of this branch cannot be taken: the path condition already \
-                     decides it{}",
-                    if s.taken { "false" } else { "true" },
-                    if advisory {
-                        " — but see the obligation, the search did not finish"
-                    } else {
-                        ""
-                    }
-                ),
+                rationale: s.kind.rationale(advisory),
+                kind: s.kind,
                 obligations,
                 evidence: s.constraints,
-                // No cycle model (§3's rule, which applies to §2 as much): a dead branch is a
-                // real observation whose value in cycles chiero cannot state.
+                // No cycle model (§3's rule, which applies to §2 as much): these are real
+                // observations whose value in cycles chiero cannot state.
                 benefit: Benefit::Unquantified,
                 advisory,
             }
@@ -168,10 +212,17 @@ pub fn detect(m: &Module, cfg: &OppCfg) -> Vec<Proposal> {
     out
 }
 
-/// One fork the engine found decided, before the run's fidelity is known.
+/// One thing a detector noticed, before the run's fidelity is known.
 struct Seen {
-    taken: bool,
+    kind: OppKind,
     constraints: Vec<String>,
+    /// Set when *this* observation could not be cleared, whatever the run's fidelity says.
+    ///
+    /// A dead branch is discharged by the search being exhaustive; a redundant load is
+    /// discharged by the intervening call being one chiero can see through. Two different
+    /// questions, so a detector that could only inherit the run's answer would have to lie
+    /// about one of them.
+    own_doubt: Option<String>,
 }
 
 /// **041 §2's "branch whose condition is implied by the path condition".**
@@ -208,8 +259,11 @@ impl Checker for DeadBranch {
                 .lock()
                 .expect("no other thread holds this")
                 .push(Seen {
-                    taken: *t,
+                    kind: OppKind::DeadBranch { taken: *t },
                     constraints,
+                    // A dead branch's own doubt is the run's: it is decided by whether the
+                    // search finished, which `detect` knows and this does not.
+                    own_doubt: None,
                 });
         }
         Vec::new()
@@ -217,5 +271,187 @@ impl Checker for DeadBranch {
 
     fn initial_state(&self) -> Box<dyn CheckerState> {
         Box::new(chiero_exec::NoCheckerState)
+    }
+}
+
+/// **041 §2's "redundant load (same address, no intervening write or barrier)".**
+///
+/// Tracks, per path, the address values loaded and what has happened since. A second load of a
+/// value the program itself already loaded — the *same* `ValueId`, not an address chiero
+/// reasoned might be equal — is redundant unless something between could have written it.
+///
+/// **Aliasing is 021's job, not this one.** A detector that decided which addresses might be
+/// equal would be a second answer to a question the memory model owns, and the two would
+/// eventually disagree. Reporting only what the program spelled with one name is narrower and
+/// is a claim this crate can actually stand behind.
+///
+/// # What that costs, measured rather than guessed
+///
+/// **On unoptimized lowered C this fires almost never**, and it is worth being plain about why.
+/// `int a = *p;` lowers to an `alloca`, a load and a *store into the stack slot*, and every
+/// store is a barrier here — so the stack traffic between two source-level loads suppresses the
+/// proposal. Checked against the obvious fixture: a function loading `*p` four times around two
+/// calls produces nothing.
+///
+/// The fix is not a better aliasing rule but an **escape check**: a store through an
+/// `AddrOfLocal` whose alloca's address never leaves the function cannot touch what a pointer
+/// parameter points at. That is a small analysis and a real one, and it is not written. Until
+/// it is, this detector answers about CIR whose loads the program itself repeated — which is
+/// what 041 contract 14 is about, and less than §2's sentence promises.
+struct RedundantLoad {
+    found: Arc<Mutex<Vec<Seen>>>,
+}
+
+/// What a path has seen since each address was loaded.
+#[derive(Clone, Debug, Default)]
+struct LoadState {
+    /// Address value → (the line it was first loaded on, what has happened since).
+    seen: Vec<(u32, Since)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Since {
+    /// Nothing that could have written it.
+    Nothing,
+    /// A call chiero could see through and which contains no store.
+    ClearedCall(String),
+    /// A call chiero could not clear — no body, or a body that writes.
+    Doubt(String),
+    /// A store, which ends the matter: the second load is necessary.
+    Written,
+}
+
+impl chiero_exec::CheckerState for LoadState {
+    fn on_fork(&self) -> Box<dyn chiero_exec::CheckerState> {
+        Box::new(self.clone())
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+impl Checker for RedundantLoad {
+    fn name(&self) -> &'static str {
+        "redundant-load"
+    }
+
+    fn initial_state(&self) -> Box<dyn CheckerState> {
+        Box::new(LoadState::default())
+    }
+
+    fn on_event(&mut self, ev: &Event, ctx: &mut CheckerCtx) -> Vec<Action> {
+        match ev {
+            Event::AfterInst { inst, .. } => match &inst.kind {
+                chiero_cir::InstKind::Assign {
+                    rv: chiero_cir::RValue::Load { addr, .. },
+                    ..
+                } => {
+                    let chiero_cir::Operand::Value(a) = addr else {
+                        return Vec::new();
+                    };
+                    let key = a.0;
+                    let st = ctx.state_mut::<LoadState>();
+                    match st
+                        .seen
+                        .iter()
+                        .find(|(k, _)| *k == key)
+                        .map(|(_, s)| s.clone())
+                    {
+                        None => st.seen.push((key, Since::Nothing)),
+                        Some(Since::Written) => {
+                            // The store between them is what makes this load necessary. Start
+                            // again from here rather than reporting.
+                            if let Some(e) = st.seen.iter_mut().find(|(k, _)| *k == key) {
+                                e.1 = Since::Nothing;
+                            }
+                        }
+                        Some(since) => {
+                            let (constraints, own_doubt) = match &since {
+                                Since::ClearedCall(f) => {
+                                    (vec![format!("`{f}` between them contains no store")], None)
+                                }
+                                Since::Doubt(f) => (
+                                    vec![format!("`{f}` is called between them")],
+                                    Some(format!(
+                                        "chiero could not prove `{f}` does not write this \
+                                         address, so the second load may be necessary"
+                                    )),
+                                ),
+                                _ => (vec!["nothing happens between them".to_string()], None),
+                            };
+                            self.found
+                                .lock()
+                                .expect("no other thread holds this")
+                                .push(Seen {
+                                    kind: OppKind::RedundantLoad { addr: key },
+                                    constraints,
+                                    own_doubt,
+                                });
+                            // Report once per path per address.
+                            if let Some(e) = st.seen.iter_mut().find(|(k, _)| *k == key) {
+                                e.1 = Since::Written;
+                            }
+                        }
+                    }
+                }
+                // **Any store is a barrier for every tracked address.** Deciding *which*
+                // addresses a store could reach is aliasing, which 021 owns.
+                chiero_cir::InstKind::Store { .. }
+                | chiero_cir::InstKind::StoreBits { .. }
+                | chiero_cir::InstKind::CopyMem { .. }
+                | chiero_cir::InstKind::SetMem { .. } => {
+                    for (_, since) in &mut ctx.state_mut::<LoadState>().seen {
+                        *since = Since::Written;
+                    }
+                }
+                _ => {}
+            },
+            Event::Call { callee, .. } => {
+                let cleared = match callee {
+                    chiero_cir::Callee::Direct(id) => {
+                        let m = ctx.module();
+                        m.funcs.iter().find(|f| f.id == *id).map(|f| {
+                            let name = f.name.to_string();
+                            // **A function with a body and no store cannot have written it.**
+                            // Syntactic and conservative: a callee that stores anywhere, or
+                            // calls anything, is not cleared. Narrower than an escape analysis
+                            // and defensible without one.
+                            let quiet = f.body == chiero_cir::Body::Defined
+                                && f.blocks.iter().all(|b| {
+                                    b.insts.iter().all(|i| {
+                                        !matches!(
+                                            i.kind,
+                                            chiero_cir::InstKind::Store { .. }
+                                                | chiero_cir::InstKind::StoreBits { .. }
+                                                | chiero_cir::InstKind::CopyMem { .. }
+                                                | chiero_cir::InstKind::SetMem { .. }
+                                                | chiero_cir::InstKind::Call { .. }
+                                                | chiero_cir::InstKind::Opaque { .. }
+                                        )
+                                    })
+                                });
+                            (quiet, name)
+                        })
+                    }
+                    chiero_cir::Callee::Indirect(_) => None,
+                };
+                let since = match cleared {
+                    Some((true, name)) => Since::ClearedCall(name),
+                    Some((false, name)) => Since::Doubt(name),
+                    None => Since::Doubt("an indirect call".to_string()),
+                };
+                for (_, s) in &mut ctx.state_mut::<LoadState>().seen {
+                    // A store already ends the matter; a call cannot make it less certain.
+                    if *s != Since::Written {
+                        *s = since.clone();
+                    }
+                }
+            }
+            _ => {}
+        }
+        Vec::new()
     }
 }

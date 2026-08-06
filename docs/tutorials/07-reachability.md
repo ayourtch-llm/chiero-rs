@@ -39,7 +39,7 @@ proposals:
         what: the search was exhaustive, so no path reaches the other side
 count: 1
 proven — this holds for all inputs (Exact)
-  blind spot: only the dead-branch detector of 041 §2 ran; a redundant load, a dead store or a loop-invariant computation is not reported
+  blind spot: only 041 §2's dead-branch and redundant-load detectors ran; a dead store, a loop-invariant computation or a redundant bounds check is not reported
   assumed: proposals_only (chiero never patches code (041 §1))
 ```
 
