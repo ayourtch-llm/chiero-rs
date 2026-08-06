@@ -454,7 +454,7 @@ have entrenched conventions real lowering then had to match.)
 | **030 coverage** | ✅ 19/19 contracts | full VPP, gcc: **1895/1895 `.gcno`, 322/322 objects, 0 of 156991 lines differ**. clang: **1872/1872** |
 | **031 change impact** | ✅ 20/20 contracts | incl. the headline — a header macro edit impacts every expansion site while coverage sees nothing |
 | **032 test selection** | 🟡 18/20 | mutation gate: **recall 100%, coverage-only 14.3%, reduction 65%** |
-| **041 `prove_equivalent`** | 🟡 contracts 1–6, 9–13, 13b, 17, 18, 21, 22, 24 | z3 proves `x*2 == x<<1` over all 2^32; finds `INT_MIN` as the one input two `abs()`s disagree on — and **gcc confirms it**, via `chiero-replay` |
+| **041 `prove_equivalent`** + §2/§3 | 🟡 contracts 1–6, 9–18, 21, 22, 24 | z3 proves `x*2 == x<<1` over all 2^32; finds `INT_MIN` as the one input two `abs()`s disagree on — and **gcc confirms it**, via `chiero-replay` |
 | **050 tool interface** | 🟡 9 operations + a CLI (contracts 1–3, 4b, 5–8, 11, 12 partly, 14) | envelope + `select_tests`, `expansion_sites`, `explain_macro_expansion`, `prove_equivalent`(+replay), `impact`, `find_bugs`, `check_reachable`, `layout`; all reachable as `chiero <op>` |
 | 040 checkers, 042 recipes, 060 vpp | partial | `chiero-check`, `chiero-recipe`, `chiero-vpp` exist |
 
@@ -797,8 +797,14 @@ operation existing, by using it on ordinary C. Nothing in the test suite was goi
    > I recorded the limitation as needing "redundant-load analysis one level down". That was
    > the wrong diagnosis: **the level below already had the answer and was not being asked.**
 
-   *Left:* the rest of §2's detector list — dead store,
-   loop-invariant computation, redundant bounds check, call-site specialization.
+   **Dead store landed too** (2026-08-06) — `*p = a; *p = b;` proposes the first write dead,
+   discharged, and a call between makes it advisory. Keyed on the engine's `Pointer` from the
+   start, because the load detector had already paid for that lesson twice. **Two tables, not
+   one:** a load is redundant when nothing could have *written* between and a store is dead when
+   nothing could have *read* between, which are opposite questions.
+
+   *Left:* loop-invariant computation, redundant bounds check, call-site specialization,
+   unreachable code, unnecessary zeroing.
 
 1b. ~~**041 §3 locality**~~ — **built 2026-08-06.** `chiero_opt::locality`: line straddling
    (contract 18's boundary both ways), padding waste with the byte delta, hot/cold placement.
