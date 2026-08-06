@@ -273,3 +273,85 @@ entry:
         env.assumptions
     );
 }
+
+/// **The one `Exact` finding chiero produced on VPP was wrong, and said `proven: true`.**
+///
+/// Measured over 40 VPP entry points: 231 findings, exactly one of them `Exact` —
+/// `_vec_update_len` in `vppinfra/vec.c`:
+///
+/// ```text
+/// out-of-bounds: 4-byte access at offset -8 of the 4096-byte object reached through
+/// an unconstrained pointer
+/// proven — this holds for all inputs (Exact)
+/// ```
+///
+/// That access is `_vec_find(v)->len = n_elts`, and `_vec_find(v)` is `((vec_header_t *)(v) - 1)`.
+/// **Every VPP vector is an interior pointer by design**; the header lives behind the data. The
+/// finding is a false positive, and it is the worst kind this project can emit: `Exact` means
+/// `proven: true`, which is chiero's strongest claim.
+///
+/// The cause is two inventions of chiero's, neither of them a fact about the program:
+///
+/// - the object an entry pointer parameter points at is `ENTRY_PARAM_BYTES` (4096) big, and
+///   `ENTRY_PARAM_BYTES`'s own doc comment says "the caller is outside the analysis, so there
+///   is no right answer — this is a *bound chiero chose*";
+/// - the pointer is `Pointer { base: obj, off: 0 }`, so it is assumed to point at that
+///   object's **base**, when an unconstrained pointer is exactly one that may point anywhere
+///   inside a larger one.
+///
+/// The message even contains the contradiction: a pointer cannot be both "unconstrained" and
+/// known to sit at offset 0 of a 4096-byte object.
+///
+/// **The rule, not the site**: a bounds fault decided by a lazily-materialized object's extent
+/// is decided by a number chiero picked, so it can never be `Exact`, and the degradation has to
+/// name its cause the way 023 §7 rule 3 requires of every other one.
+#[test]
+fn a_bounds_fault_against_an_invented_object_is_never_proven() {
+    // `_vec_find(v)->len = n_elts` exactly: a **store** through an interior pointer.
+    //
+    // A load here would prove nothing — its result is invented, so the path degrades for an
+    // unrelated reason and the test passes without the rule existing. That is what the first
+    // version of this fixture did.
+    let interior = "\
+func @f(%0: ptr, %1: i32) -> void {
+entry:
+  .line 1
+  %2 = ptradd %0, -8i64
+  store i32 %1 -> %2 align 4
+  ret
+}";
+    let mut c = cfg("f");
+    c.entry_ptr_nonnull = true; // isolate the bounds question from the null one
+    let env = find_bugs(&m(interior), &c);
+    let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
+
+    let findings = v["result"]["findings"]
+        .as_array()
+        .expect("a findings array")
+        .clone();
+    let oob: Vec<_> = findings
+        .iter()
+        .filter(|f| {
+            f["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("out-of-bounds") || m.contains("outside"))
+        })
+        .collect();
+    assert!(!oob.is_empty(), "the access is still worth reporting: {v}");
+    for f in &oob {
+        assert_ne!(
+            f["fidelity"], "Exact",
+            "the object's extent and the pointer's base are chiero's, not the program's, \
+             so this cannot be proven: {f}"
+        );
+    }
+    assert_eq!(
+        v["proven"], false,
+        "and the run that produced it cannot claim proof either: {v}"
+    );
+    assert!(
+        env.assumptions.iter().any(|(_, d)| d.contains("4096")),
+        "023 §7 rule 3: the degradation names its cause, including the number chiero chose: {:?}",
+        env.assumptions
+    );
+}
