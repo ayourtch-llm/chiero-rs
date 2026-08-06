@@ -244,7 +244,9 @@ fn the_response_carries_a_harness_that_compiles() {
     let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
     let replay = &v["result"]["replay"];
     assert!(
-        replay["source"].as_str().is_some_and(|s| s.contains("int main")),
+        replay["source"]
+            .as_str()
+            .is_some_and(|s| s.contains("int main")),
         "the response must carry the program: {v}"
     );
     // **050 contract 11**: with execution off, text and *no* verdict.

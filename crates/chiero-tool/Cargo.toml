@@ -13,6 +13,7 @@ chiero-exec.workspace = true
 chiero-solver.workspace = true
 chiero-check.workspace = true
 chiero-opt.workspace = true
+chiero-replay.workspace = true
 chiero-recipe.workspace = true
 chiero-select.workspace = true
 chiero-gcov.workspace = true
@@ -23,6 +24,7 @@ indexmap.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+chiero-replay.workspace = true
 chiero-pp.workspace = true
 serde_json.workspace = true
 

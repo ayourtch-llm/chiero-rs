@@ -183,3 +183,39 @@ fn a_translation_unit_with_its_own_main_still_builds() {
         other => panic!("the TU's own main must be renamed out of the way: {other:?}"),
     }
 }
+
+/// **The harness is built somewhere else, so its includes must be absolute.**
+///
+/// It is compiled in a scratch directory (050 contract 12 keeps it out of the analysed tree),
+/// and `#include "before.c"` resolves relative to the *harness*. A caller who ran
+/// `chiero prove-equivalent before.c after.c` from the directory holding them got
+/// `fatal error: before.c: No such file or directory` — a `did_not_build` that says nothing
+/// about the code and everything about the emitter.
+#[test]
+fn includes_do_not_depend_on_where_the_harness_is_built() {
+    let Some(cc) = chiero_replay::compiler() else {
+        return;
+    };
+    let dir = scratch();
+    std::fs::write(dir.join("rel_before.c"), "int f (int x) { return x; }\n").unwrap();
+    std::fs::write(dir.join("rel_after.c"), "int f (int x) { return x + 1; }\n").unwrap();
+
+    // The path as a caller would give it — relative to where *they* are, not to the build.
+    // `emit_equivalence` resolves it against the current directory at emit time, which is what
+    // a caller typing `chiero prove-equivalent before.c after.c` means.
+    let elsewhere = dir.join("build");
+    let prev = std::env::current_dir().expect("cwd");
+    std::env::set_current_dir(&dir).expect("cd");
+    let r = emit_equivalence(
+        &PathBuf::from("rel_before.c"),
+        &PathBuf::from("rel_after.c"),
+        "f",
+        &witness(&[(32, 1)]),
+    );
+    std::env::set_current_dir(prev).expect("cd back");
+
+    match run(&r, &cc, &elsewhere) {
+        Outcome::Demonstrated { before, after } => assert_eq!((before, after), (1, 2)),
+        other => panic!("a relative path a caller gave must still build: {other:?}"),
+    }
+}

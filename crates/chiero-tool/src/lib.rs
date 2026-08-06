@@ -626,7 +626,13 @@ pub fn prove_equivalent(
     after: &chiero_cir::Module,
     cfg: &chiero_opt::EquivCfg,
 ) -> Envelope {
-    match chiero_opt::prove_equivalent(before, after, cfg) {
+    envelope_for(chiero_opt::prove_equivalent(before, after, cfg))
+}
+
+/// One verdict rendered one way, so [`prove_equivalent`] and
+/// [`prove_equivalent_with_replay`] cannot come to describe the same answer differently.
+fn envelope_for(v: chiero_opt::Equivalence) -> Envelope {
+    match v {
         chiero_opt::Equivalence::Equivalent {
             fidelity,
             footprint,
@@ -1215,4 +1221,139 @@ fn witness_for_path(
             })
         })
         .collect()
+}
+
+/// Where the two versions live on disk, so a harness can include them — 040 §3.1.
+///
+/// **Paths, not text.** The harness `#include`s the sources rather than embedding them, which
+/// is what lets it be compiled with the translation unit's own flags (040 §3's last
+/// construction rule) and what keeps a `static inline` in a header instantiable.
+#[derive(Clone, Debug)]
+pub struct ReplaySources {
+    pub before: std::path::PathBuf,
+    pub after: std::path::PathBuf,
+    pub entry: String,
+    /// Where to build. Nothing is written anywhere else — 050 contract 12.
+    pub scratch: std::path::PathBuf,
+}
+
+/// Whether a harness may be executed — 050 contract 11's `--allow-replay-exec`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ReplayPolicy {
+    /// Emit the program and run nothing. The default, because running a harness compiles and
+    /// executes code, and a caller has to ask for that.
+    EmitOnly,
+    Run,
+}
+
+/// [`prove_equivalent`] with 041 §1.3's harness attached — **050 contract 8, in full**.
+///
+/// The plain [`prove_equivalent`] answers from chiero's own semantics and says so. This one
+/// adds the only check in the system that does not: a C program a real compiler builds and
+/// runs.
+///
+/// # What each outcome does to the verdict
+///
+/// 041 contract 11 is the reason this is not just an extra field:
+///
+/// > "a divergence the harness fails to demonstrate is downgraded and flagged, never silently
+/// > trusted."
+///
+/// - **demonstrated** — the standing "no harness was compiled" blind spot is removed, because
+///   it is no longer true. This is the only case where it goes.
+/// - **not_demonstrated** — chiero and the compiler disagree. The fidelity drops to
+///   `Approximated` and the envelope says which two numbers the program actually produced. The
+///   verdict stays `differs` because *something* is wrong and a reader needs to see both
+///   claims; what changes is that it is no longer proven.
+/// - **did_not_build / did_not_run** — nothing was learned, so nothing changes except a blind
+///   spot naming what stopped it. A build failure is a fact about the harness; treating it as
+///   a downgrade would punish the analysis for the emitter's limits.
+pub fn prove_equivalent_with_replay(
+    before: &chiero_cir::Module,
+    after: &chiero_cir::Module,
+    cfg: &chiero_opt::EquivCfg,
+    sources: Option<&ReplaySources>,
+    policy: ReplayPolicy,
+) -> Envelope {
+    let verdict = chiero_opt::prove_equivalent(before, after, cfg);
+    let chiero_opt::Equivalence::Differs { input, .. } = &verdict else {
+        // A harness demonstrates a *divergence*; there is nothing for one to do with an
+        // agreement or a refusal.
+        return envelope_for(verdict);
+    };
+    let Some(src) = sources else {
+        return envelope_for(verdict);
+    };
+
+    let replay = chiero_replay::emit_equivalence(&src.before, &src.after, &src.entry, input);
+    let outcome = match policy {
+        ReplayPolicy::EmitOnly => None,
+        ReplayPolicy::Run => {
+            chiero_replay::compiler().map(|cc| chiero_replay::run(&replay, &cc, &src.scratch))
+        }
+    };
+
+    let mut env = envelope_for(verdict);
+    env.result["replay"] = serde_json::json!({
+        "source": replay.source,
+        "claim": replay.claim,
+        "outcome": outcome.as_ref().map(|o| o.label()),
+        "before": match &outcome {
+            Some(chiero_replay::Outcome::Demonstrated { before, .. })
+            | Some(chiero_replay::Outcome::NotDemonstrated { before, .. }) => {
+                serde_json::Value::String(before.to_string())
+            }
+            _ => serde_json::Value::Null,
+        },
+        "after": match &outcome {
+            Some(chiero_replay::Outcome::Demonstrated { after, .. })
+            | Some(chiero_replay::Outcome::NotDemonstrated { after, .. }) => {
+                serde_json::Value::String(after.to_string())
+            }
+            _ => serde_json::Value::Null,
+        },
+        "detail": match &outcome {
+            Some(chiero_replay::Outcome::DidNotBuild { detail })
+            | Some(chiero_replay::Outcome::DidNotRun { detail }) => {
+                serde_json::Value::String(detail.clone())
+            }
+            _ => serde_json::Value::Null,
+        },
+    });
+
+    // **The standing blind spot is removed only by a demonstration**, and replaced by a
+    // sharper one in every other case.
+    env.blind_spots.retain(|b| !b.contains("replay harness"));
+    match &outcome {
+        Some(chiero_replay::Outcome::Demonstrated { .. }) => env,
+        None => env.with_blind_spot(
+            "a replay harness was emitted and has not been run; the divergence is still \
+             chiero's semantics (050 contract 11 gates execution)",
+        ),
+        Some(chiero_replay::Outcome::NotDemonstrated { before, after }) => {
+            // 041 contract 11's downgrade, and the reason it is not silent.
+            let mut e = Envelope::new(env.result.clone(), Fidelity::Approximated);
+            e.assumptions = env.assumptions.clone();
+            e.blind_spots = env.blind_spots.clone();
+            e.with_assumption(
+                "harness_disagreed",
+                &format!(
+                    "the compiled harness produced {before} from both versions ({after} from \
+                     the second), so chiero's semantics and this compiler do not agree here"
+                ),
+            )
+            .with_blind_spot(
+                "the replay harness did not reproduce the divergence — this finding is \
+                 downgraded, not confirmed (041 contract 11)",
+            )
+        }
+        Some(chiero_replay::Outcome::DidNotBuild { detail }) => env.with_blind_spot(&format!(
+            "the replay harness did not build, so nothing has checked chiero's semantics \
+             here: {detail}"
+        )),
+        Some(chiero_replay::Outcome::DidNotRun { detail }) => env.with_blind_spot(&format!(
+            "the replay harness could not be run, so nothing has checked chiero's semantics \
+             here: {detail}"
+        )),
+    }
 }

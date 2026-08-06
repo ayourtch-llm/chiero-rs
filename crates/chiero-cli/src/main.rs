@@ -50,6 +50,10 @@ OPERATIONS:
 
 OPTIONS:
     --json          Print the envelope as JSON. Default is a human rendering.
+    --replay        Emit a C harness demonstrating a `differs` verdict.
+    --allow-replay-exec
+                    Compile and run that harness. Off by default: this builds
+                    and executes code, so a caller has to ask.  (050 §6)
     -I <dir>        Add an include path. Repeatable.
     -D <k[=v]>      Define a macro. Repeatable.
     -h, --help      This text.
@@ -130,6 +134,8 @@ struct Options {
     includes: Vec<PathBuf>,
     defines: Vec<(String, String)>,
     json: bool,
+    replay: bool,
+    allow_replay_exec: bool,
 }
 
 fn define(d: &str) -> (String, String) {
@@ -153,6 +159,11 @@ impl Options {
             let a = args[i].clone();
             match a.as_str() {
                 "--json" => o.json = true,
+                "--replay" => o.replay = true,
+                "--allow-replay-exec" => {
+                    o.replay = true;
+                    o.allow_replay_exec = true;
+                }
                 "--entry" => {
                     o.entry = Some(need(i, args, "--entry")?);
                     i += 1;
@@ -244,8 +255,30 @@ fn prove_equivalent(o: &Options) -> Result<chiero_tool::Envelope, Fault> {
         .ok_or_else(|| Fault::Usage("prove-equivalent needs --entry <fn>".into()))?;
     let before = lower(&f[0], &read(&f[0])?, o.frontend()).map_err(Fault::Failed)?;
     let after = lower(&f[1], &read(&f[1])?, o.frontend()).map_err(Fault::Failed)?;
-    let cfg = chiero_opt::EquivCfg::new(entry);
-    Ok(chiero_tool::prove_equivalent(&before, &after, &cfg))
+    let cfg = chiero_opt::EquivCfg::new(entry.clone());
+    if !o.replay {
+        return Ok(chiero_tool::prove_equivalent(&before, &after, &cfg));
+    }
+    // **A scratch directory beside the output, never beside the input.** 050 contract 12: a
+    // replay may not write outside it, and the analysed tree is not it.
+    let scratch = std::env::temp_dir().join(format!("chiero-replay-{}", std::process::id()));
+    let sources = chiero_tool::ReplaySources {
+        before: f[0].clone(),
+        after: f[1].clone(),
+        entry,
+        scratch,
+    };
+    Ok(chiero_tool::prove_equivalent_with_replay(
+        &before,
+        &after,
+        &cfg,
+        Some(&sources),
+        if o.allow_replay_exec {
+            chiero_tool::ReplayPolicy::Run
+        } else {
+            chiero_tool::ReplayPolicy::EmitOnly
+        },
+    ))
 }
 
 /// **One unit name for both sides.** `chiero-diff` keys entities by file, so parsing

@@ -138,6 +138,28 @@ fn literal(width: u32, value: u128) -> String {
     }
 }
 
+/// The path an `#include` can use from anywhere.
+///
+/// **The harness is built in a scratch directory** — 050 contract 12 keeps it out of the
+/// analysed tree — and `#include "before.c"` resolves relative to the *harness*, not to
+/// wherever the caller was standing. A relative path therefore produced
+/// `fatal error: before.c: No such file or directory`: a `did_not_build` that says nothing
+/// about the code and everything about the emitter. Found by running the CLI end to end.
+///
+/// Falls back to the path as given when it cannot be resolved, because a harness naming the
+/// wrong file is easier to diagnose than one naming nothing.
+fn absolute(p: &Path) -> PathBuf {
+    std::fs::canonicalize(p).unwrap_or_else(|_| {
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map(|d| d.join(p))
+                .unwrap_or_else(|_| p.to_path_buf())
+        }
+    })
+}
+
 /// Emit a harness that runs both versions of `entry` at `witness` — 041 §1.3.
 ///
 /// The two sources are included into one translation unit with the entry renamed, which is
@@ -145,6 +167,8 @@ fn literal(width: u32, value: u128) -> String {
 /// `#define` around each include rather than a compiler flag, so it applies to exactly one
 /// name in exactly one file.
 pub fn emit_equivalence(before: &Path, after: &Path, entry: &str, witness: &Witness) -> Replay {
+    let before = &absolute(before);
+    let after = &absolute(after);
     let args: Vec<String> = witness
         .bindings
         .iter()

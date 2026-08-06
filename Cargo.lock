@@ -275,6 +275,7 @@ dependencies = [
  "chiero-opt",
  "chiero-pp",
  "chiero-recipe",
+ "chiero-replay",
  "chiero-select",
  "chiero-solver",
  "chiero-span",
