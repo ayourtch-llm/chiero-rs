@@ -3685,6 +3685,39 @@ impl<'m> Engine<'m> {
                         args: Vec::new(),
                     });
                 }
+                // **A sub-byte type occupies a whole byte, and the value written into it is
+                // the value zero-extended** — C11 6.3.1.2, which says a conversion to `_Bool`
+                // yields 0 or 1, and `sizeof (_Bool)` is 1.
+                //
+                // CIR types a `_Bool` as `Int(1)` and `size_of_cty` rounds it up to a byte, so
+                // the term is 1 bit wide and the write is 8. `Memory::write_term`'s byte path
+                // never noticed, because it does not decompose the term; its **array** path
+                // does, and `extract(t, 7, 0)` of a one-bit value aborted the process. That is
+                // `mp->admin_up_down = ... ? 1 : 0` in every VPP API handler, needing only a
+                // `strncpy` into the same struct first to promote the object.
+                //
+                // Widening here rather than in `chiero-mem`: the width the value *should* have
+                // is a fact about the C type, which is what this layer holds.
+                let t = match u64::from(a.width(t)).cmp(&(size * 8)) {
+                    std::cmp::Ordering::Less => a.zext(t, (size * 8) as u32),
+                    std::cmp::Ordering::Equal => t,
+                    // **Wider is not narrowed.** A value bigger than the object it is stored
+                    // into is not a C conversion this layer can name — it means the type and
+                    // the term disagree, and truncating would answer at full confidence about
+                    // which bits the program meant to keep.
+                    std::cmp::Ordering::Greater => {
+                        self.lowering_gap(
+                            s,
+                            i.span,
+                            &format!(
+                                "a store of a {}-bit value into {size} byte(s) — the value and \
+                                 the type disagree, so this store",
+                                a.width(t)
+                            ),
+                        );
+                        return;
+                    }
+                };
                 let r = s.mem.write_term(a, p, t, size, Endian::Little, i.span);
                 self.report_faults(a, s, &r.faults, i.span);
             }
@@ -4988,6 +5021,31 @@ impl<'m> Engine<'m> {
                 ) else {
                     return self.lowering_gap(s, span, "a non-scalar comparison operand");
                 };
+                // **Two operands of different widths are a comparison chiero cannot make, and
+                // the path says so rather than the process ending.**
+                //
+                // `TermArena::eq` asserts equal widths, so this used to abort the whole run —
+                // every finding on every other path with it. 015's `zero_at` records the rule
+                // being broken: a source-triggerable panic is the worst outcome there is.
+                //
+                // It is reachable from an *indirect call*, whose result width is the width the
+                // candidate that ran returns, while the comparison's declared type is what the
+                // call site believed it was calling. The arity filter in `indirect` removes the
+                // wildest of those; nothing in CIR can remove the rest, because a call carries
+                // no result type. **Not silently widened** — which of the two widths is the
+                // program's is exactly what is unknown here, and picking one would answer a
+                // question chiero cannot answer, at `Exact`.
+                let (wx, wy) = (a.width(xv), a.width(yv));
+                if wx != wy {
+                    return self.lowering_gap(
+                        s,
+                        span,
+                        &format!(
+                            "a {op:?} of operands {wx} and {wy} bits wide — the value's width \
+                             and the comparison's disagree, so this comparison"
+                        ),
+                    );
+                }
                 match cmp(a, *op, xv, yv) {
                     Some(t) => Value::Scalar(t),
                     None => return self.lowering_gap(s, span, &format!("{op:?}")),
@@ -7966,11 +8024,40 @@ impl<'m> Engine<'m> {
             );
             return;
         }
+        // **"Whose signature could be called here" is now a filter and not only a comment.**
+        //
+        // It took every defined function in the module, so a two-argument site forked into a
+        // function of no parameters. C11 6.5.2.2p9 makes a call through an incompatible type
+        // undefined, so such a path is not one the program has — and every finding on it is
+        // about a program nobody wrote. On VPP it also *crashed*: `perfmon_init`'s
+        // `(s->init_fn) (vm, s)` entered a candidate returning `unsigned char`, and comparing
+        // that result against a null pointer aborted the process.
+        //
+        // **Arity is the part CIR can check, and it is not the whole signature.**
+        // `InstKind::Call` carries no result type — the verifier types a call's `dst` as
+        // `Void` — and neither the operand nor the site records the pointer's declared
+        // function type, so "returns something this site can use" is not expressible here.
+        // A candidate of the right arity and the wrong return width is still reachable, which
+        // is why `cmp` no longer trusts its operands to agree.
+        //
+        // A **variadic** callee matches any arity at or above its named parameters, because
+        // that is what calling one means.
+        let wants_value = dst.is_some();
         let all: Vec<FuncId> = self
             .module
             .funcs
             .iter()
             .filter(|f| f.body == Body::Defined && f.id != s.func())
+            .filter(|f| {
+                if f.variadic {
+                    args.len() >= f.params.len()
+                } else {
+                    args.len() == f.params.len()
+                }
+            })
+            // A site that uses the result cannot be calling a `void` function, and a site
+            // that discards one may call anything — C lets a value be ignored.
+            .filter(|f| !(wants_value && f.ret == CTy::Void))
             .map(|f| f.id)
             .collect();
         let cap = self.budget.max_indirect as usize;

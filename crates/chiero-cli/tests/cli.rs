@@ -928,3 +928,62 @@ fn an_indirect_call_does_not_enter_a_candidate_of_another_shape() {
     let v = json(&r);
     assert!(!v["result"].is_null(), "and produced an envelope: {v}");
 }
+
+/// **Storing a `_Bool` aborted the process, once the object had been promoted.**
+///
+/// The second panic from the 92-plugin sweep, `plugins/vmxnet3/vmxnet3_api.c`:
+///
+/// ```text
+/// thread 'main' panicked at chiero-solver/src/lib.rs:710: extract out of range
+/// ```
+///
+/// `mp->admin_up_down = (swif->flags & VNET_SW_INTERFACE_FLAG_ADMIN_UP) ? 1 : 0;` — an API
+/// struct's `bool` field, three lines after a `strncpy` into the same struct. CIR types a
+/// `_Bool` as `Int(1)` and `size_of_cty` rounds that to one byte, so the store asked memory to
+/// write 8 bits of a term that has 1, and the array-backed write path extracted bits 7..0 of a
+/// one-bit value.
+///
+/// **The byte-backed path never noticed**, because it does not decompose the term — which is
+/// why this needed both halves to show up: a `_Bool` store *and* something that promoted the
+/// object first. Every `bool` field in every VPP API handler is behind that pair.
+///
+/// C11 6.3.1.2 says what the byte holds — a conversion to `_Bool` yields 0 or 1 — so widening
+/// the value to the store's size is the language's own rule, not a guess chiero makes.
+#[test]
+fn storing_a_bool_into_a_promoted_object_is_a_write_and_not_a_crash() {
+    let p = write(
+        "bool_store.c",
+        "#include <string.h>\n\
+         struct s { char name[8]; _Bool up; };\n\
+         int f (struct s *p, char *src, int v)\n\
+         {\n\
+         \x20 strncpy (p->name, src, 7);   /* promotes the object */\n\
+         \x20 p->up = (v & 4) ? 1 : 0;\n\
+         \x20 return p->up ? 3 : 4;\n\
+         }\n",
+    );
+    let r = run(&[
+        "find-bugs",
+        p.to_str().expect("utf-8 path"),
+        "--entry",
+        "f",
+        "--json",
+    ]);
+    assert_eq!(
+        r.code, 0,
+        "chiero aborted on a `bool` field store:\n{}\n{}",
+        r.err, r.out
+    );
+    let v = json(&r);
+    assert!(!v["result"].is_null(), "and produced an envelope: {v}");
+    // **The store happened.** A refusal that dropped the write would leave `p->up`
+    // uninitialized and manufacture the read-of-uninitialized finding on the line after it —
+    // 021 §3.1's confidently-wrong answer, arriving as a false positive.
+    for f in v["result"]["findings"].as_array().expect("array") {
+        let m = f["message"].as_str().unwrap_or_default();
+        assert!(
+            !m.contains("uninitialized"),
+            "the line above wrote this byte: {m}"
+        );
+    }
+}
