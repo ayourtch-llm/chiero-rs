@@ -3283,6 +3283,54 @@ impl Lowerer<'_> {
                 {
                     return self.fp_classify(b, args, span);
                 }
+                // **`__builtin_expect` is its first argument**, and nothing else.
+                //
+                // GCC: "returns the value of exp" — the second argument is a hint to the branch
+                // predictor with no effect on semantics, and `__builtin_expect_with_probability`
+                // adds a third of the same kind. So this is the program's own expression, not a
+                // model of one, and it lowers to the expression.
+                //
+                // **Treating it as an opaque call is wrong in the dangerous direction.** VPP
+                // writes every guard as `PREDICT_FALSE (x)`, which is exactly this builtin, so
+                // an opaque result made `if (PREDICT_FALSE (v == 0))` a branch that was no
+                // longer *about* `v` — the null path survived into the body and dereferenced.
+                // Found on the ACL plugin as four `null-dereference: access at offset -8 of
+                // NULL` inside `vec_validate`, whose NULL case is guarded that way; the reports
+                // even said "the function tests it against null at source offset 41". A false
+                // path is not a conservative approximation, and this idiom is everywhere.
+                if let chiero_ast::ExprKind::Ident(n) = self.ast.expr(*callee).kind
+                    && matches!(
+                        self.names.text(n),
+                        Some("__builtin_expect" | "__builtin_expect_with_probability")
+                    )
+                    && let Some(&exp) = args.first()
+                {
+                    let a = self.expr(exp);
+                    // `__builtin_expect` is declared `long (long, long)`, so the call site
+                    // expects a `long` and the argument is usually an `int` comparison.
+                    // Returning the operand raw skipped the conversion sema's chain would have
+                    // applied, and the verifier caught it: "Ne operand is Int(32), declared
+                    // Int(64)". The truth value is the same either way; the *width* is what
+                    // CIR is strict about.
+                    let from = match self.type_of(exp).map(|t| self.cty(t)) {
+                        Some(t) => t,
+                        None => CTy::Int(self.width_of(exp)),
+                    };
+                    let to = self.type_of(e).map_or(CTy::Int(64), |t| self.cty(t));
+                    if from == to {
+                        return a;
+                    }
+                    let dst = self.new_value();
+                    let kind = cast_kind(&from, &to, self.is_signed(exp), true);
+                    self.emit(
+                        InstKind::Assign {
+                            dst,
+                            rv: RValue::Cast { kind, a, from, to },
+                        },
+                        span,
+                    );
+                    return Operand::Value(dst);
+                }
                 // **`alloca()` is an allocation, not a call** (015 contract 14, 020 §3).
                 // It differs from a VLA in exactly one way — `Lifetime::Function`, since
                 // the storage lives until the function returns rather than until the block

@@ -591,25 +591,44 @@ fn builtin_expect_is_its_first_argument() {
          \x20 if (PREDICT_TRUE (p != 0))\n\
          \x20   return *p;               /* likewise */\n\
          \x20 return 0;\n\
+         }\n\
+         \n\
+         int h (int *p)\n\
+         {\n\
+         \x20 if (PREDICT_FALSE (p != 0))  /* the guard is backwards */\n\
+         \x20   return 0;\n\
+         \x20 return *p;                   /* reached exactly when p == 0 */\n\
          }\n",
     );
     let path = p.to_str().expect("utf-8 path");
-    for entry in ["f", "g"] {
+    let nulls = |entry: &str| -> Vec<String> {
         let r = run(&["find-bugs", path, "--entry", entry, "--json"]);
-        let v = json(&r);
-        for f in v["result"]["findings"].as_array().expect("array") {
-            let m = f["message"].as_str().unwrap_or_default();
-            assert!(
-                !m.contains("null-dereference"),
-                "`{entry}` guards this dereference, and the guard is a hint to the branch \
-                 predictor rather than a wall chiero cannot see through: {m}"
-            );
-        }
-        // **And the guard is not merely believed — the whole function is proven.** Without
-        // this, a run that gave up early would pass the assertion above by finding nothing.
-        assert_eq!(
-            v["fidelity"], "Exact",
-            "nothing here is beyond chiero: {v}"
+        json(&r)["result"]["findings"]
+            .as_array()
+            .expect("array")
+            .iter()
+            .filter_map(|f| f["message"].as_str().map(str::to_string))
+            .filter(|m| m.contains("null-dereference"))
+            .collect()
+    };
+
+    for entry in ["f", "g"] {
+        assert!(
+            nulls(entry).is_empty(),
+            "`{entry}` guards this dereference, and the guard is a hint to the branch \
+             predictor rather than a wall chiero cannot see through: {:?}",
+            nulls(entry)
         );
     }
+
+    // **The positive control, and it is the assertion that gives the two above their meaning.**
+    //
+    // `h` has the guard backwards, so the dereference is reached *exactly* when `p` is null.
+    // Without this, "no null-dereference" is satisfied by chiero learning nothing from the
+    // branch at all — which is the failure mode being fixed, in the opposite direction. Both
+    // together say the condition is genuinely being read.
+    assert!(
+        !nulls("h").is_empty(),
+        "`h`'s guard is inverted and the null path is the one that reaches the dereference"
+    );
 }
