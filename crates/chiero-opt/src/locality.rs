@@ -330,12 +330,12 @@ fn padding(r: &Record, cfg: &LocalityCfg, escapes: Option<&str>) -> Option<Propo
     let mut off = 0u64;
     for s in &sizes {
         let a = alignment_for(*s, r.align);
-        if a > 0 && off % a != 0 {
+        if a > 0 && !off.is_multiple_of(a) {
             off += a - (off % a);
         }
         off += s;
     }
-    if r.align > 0 && off % r.align != 0 {
+    if r.align > 0 && !off.is_multiple_of(r.align) {
         off += r.align - (off % r.align);
     }
     let recoverable = r.size.saturating_sub(off);
