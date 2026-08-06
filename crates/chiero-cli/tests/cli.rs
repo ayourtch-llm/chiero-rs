@@ -1044,3 +1044,36 @@ fn a_callback_list_does_not_report_an_intrinsics_parameter_as_uninitialized() {
         );
     }
 }
+
+/// **A frontend error names the line, and the file the error is really in.**
+///
+/// Sweeping 92 VPP plugins, eleven entries came back `failed` with sentences like
+/// `expected a type specifier` and `` `clib_crc32c_with_init` was not declared `` — attributed
+/// to the `.c` file on the command line, with no position at all. Every one of them needed a
+/// separate reduction run to find out *where*, and for a construct chiero cannot parse the
+/// answer is usually in a header the file included, not in the file itself.
+///
+/// The span was there all along: `Diagnostic` carries one and the `SourceMap` maps it to a
+/// file and a line. The command threw it away.
+#[test]
+fn a_frontend_error_says_where_it_is() {
+    let p = write(
+        "syntax_error.c",
+        "int ok (void) { return 1; }\n\
+         \n\
+         int bad (void) { return @@@; }\n",
+    );
+    let r = run(&[
+        "find-bugs",
+        p.to_str().expect("utf-8 path"),
+        "--entry",
+        "ok",
+        "--json",
+    ]);
+    assert_ne!(r.code, 0, "this does not parse:\n{}", r.out);
+    assert!(
+        r.err.contains(":3:"),
+        "the error names the line it is on: {}",
+        r.err
+    );
+}

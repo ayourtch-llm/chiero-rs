@@ -136,6 +136,33 @@ fn predefines(cc: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// **Where a frontend diagnostic is**, as `path:line:col`, and where it came from when a macro
+/// put it there.
+///
+/// The span was always on the `Diagnostic`; the command printed only the message and the file
+/// it was asked about. Over a 92-plugin sweep that made eleven failures — `expected a type
+/// specifier`, `` `clib_crc32c_with_init` was not declared `` — into eleven separate reductions
+/// to find the line, and for a construct chiero cannot parse the line is usually in a *header*
+/// the file included rather than in the file named on the command line.
+///
+/// **Both locations when they differ**, which is 010 §4's whole distinction: `spelling_loc` is
+/// where the text is, `expansion_loc` is where the program wrote it. For a macro that expands
+/// to something chiero cannot handle, a reader needs the second to know what they typed and the
+/// first to know what it became.
+fn at(map: &chiero_span::SourceMap, sp: chiero_span::Span, d: &str) -> String {
+    let show =
+        |l: chiero_span::Loc| format!("{}:{}:{}", map.file(l.file).path().display(), l.line, l.col);
+    match (map.spelling_loc(sp), map.expansion_loc(sp)) {
+        (Some(sl), Some(el)) if sl.pos != el.pos => {
+            format!("{}: {d}\n  expanded from {}", show(sl), show(el))
+        }
+        (Some(l), _) | (None, Some(l)) => format!("{}: {d}", show(l)),
+        // A span with no file is a span into nothing; naming the file asked about is still
+        // better than naming nowhere.
+        (None, None) => d.to_string(),
+    }
+}
+
 /// Preprocess, and refuse on the first diagnostic.
 pub(crate) fn preprocess(
     path: &Path,
@@ -144,7 +171,7 @@ pub(crate) fn preprocess(
 ) -> Result<chiero_pp::PreprocessedTu, String> {
     let tu = chiero_pp::preprocess_with_loader(path, src, f.pp(), &mut Disk);
     match tu.diagnostics.first() {
-        Some(d) => Err(format!("{}: {}", path.display(), d.message)),
+        Some(d) => Err(at(&tu.source_map, d.span, &d.message)),
         None => Ok(tu),
     }
 }
@@ -168,7 +195,7 @@ pub(crate) fn lower(path: &Path, src: &str, f: Frontend) -> Result<chiero_cir::M
     let dialect = chiero_ast::Dialect::gnu();
     let parsed = chiero_parse::parse_tu_with(&tu, &mut oracle, dialect);
     if let Some(d) = parsed.diagnostics.first() {
-        return Err(format!("{}: {}", path.display(), d.message));
+        return Err(at(&tu.source_map, d.span, &d.message));
     }
     let names = Names(parsed);
     let analysis = chiero_sema::analyze_with(
@@ -178,16 +205,16 @@ pub(crate) fn lower(path: &Path, src: &str, f: Frontend) -> Result<chiero_cir::M
         dialect,
     );
     if let Some(d) = analysis.diagnostics.first() {
-        return Err(format!("{}: {}", path.display(), d.message));
+        return Err(at(&tu.source_map, d.span, &d.message));
     }
     let lowered = chiero_lower::lower_tu_with_map(&names.0.ast, &analysis, &names, &tu.source_map);
     // **A lowering diagnostic drops a function from the module**, so continuing here would
     // hand an operation a translation unit with a hole in it and no way to know.
     if let Some(d) = lowered.diagnostics.first() {
-        return Err(format!(
-            "{}: chiero cannot lower this: {}",
-            path.display(),
-            d.message
+        return Err(at(
+            &tu.source_map,
+            d.span,
+            &format!("chiero cannot lower this: {}", d.message),
         ));
     }
     Ok(lowered.module)
@@ -212,7 +239,7 @@ pub(crate) fn records(path: &Path, src: &str, f: Frontend) -> Result<Vec<Record>
     let dialect = chiero_ast::Dialect::gnu();
     let parsed = chiero_parse::parse_tu_with(&tu, &mut oracle, dialect);
     if let Some(d) = parsed.diagnostics.first() {
-        return Err(format!("{}: {}", path.display(), d.message));
+        return Err(at(&tu.source_map, d.span, &d.message));
     }
     let names = Names(parsed);
     let analysis = chiero_sema::analyze_with(
