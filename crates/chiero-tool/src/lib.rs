@@ -243,7 +243,7 @@ pub fn expansion_sites(
 }
 
 /// How much an answer is worth (050 §2, 023 §7).
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Fidelity {
     /// Proven for all inputs. **The only fidelity that may set `proven`.**
     Exact,
@@ -316,6 +316,24 @@ impl Envelope {
     /// reason about 50.
     pub fn truncated(mut self, shown: usize, total: usize) -> Envelope {
         self.truncation = Some((shown, total));
+        self
+    }
+
+    /// The same answer, worth less — with `proven` re-derived and everything else kept.
+    ///
+    /// **A method rather than a rebuild at the call site.** 041 contract 11's downgrade used to
+    /// construct a fresh `Envelope` and copy `result`, `assumptions` and `blind_spots` by hand,
+    /// which silently dropped `truncation` and would drop the next field somebody adds. The
+    /// invariant this type exists for — `proven` follows from `fidelity` and cannot be set — is
+    /// exactly what a hand copy is liable to break.
+    ///
+    /// **Never restores.** A downgrade that could raise a fidelity would be a way to launder
+    /// one, so this takes the worse of the two.
+    pub fn downgraded_to(mut self, f: Fidelity) -> Envelope {
+        if f > self.fidelity {
+            self.fidelity = f;
+        }
+        self.proven = self.fidelity == Fidelity::Exact;
         self
     }
 
@@ -1235,6 +1253,13 @@ pub struct ReplaySources {
     pub entry: String,
     /// Where to build. Nothing is written anywhere else — 050 contract 12.
     pub scratch: std::path::PathBuf,
+    /// The translation unit's own compiler flags — 040 §3's last construction rule.
+    ///
+    /// > "A harness compiled with different flags can reproduce a different program."
+    ///
+    /// Empty is a real answer and a weak one: without the `-I` and `-D` the file is really
+    /// built with, any source that includes anything is a `DidNotBuild`.
+    pub flags: Vec<String>,
 }
 
 /// Whether a harness may be executed — 050 contract 11's `--allow-replay-exec`.
@@ -1335,7 +1360,7 @@ pub fn prove_equivalent_with_replay(
     let outcome = match policy {
         ReplayPolicy::EmitOnly => chiero_replay::Outcome::NotRun,
         ReplayPolicy::Run => match chiero_replay::compiler() {
-            Some(cc) => chiero_replay::run(&replay, &cc, &src.scratch),
+            Some(cc) => chiero_replay::run_with(&replay, &cc, &src.scratch, &src.flags),
             None => chiero_replay::Outcome::NoCompiler,
         },
     };
@@ -1383,20 +1408,18 @@ pub fn prove_equivalent_with_replay(
         ),
         chiero_replay::Outcome::NotDemonstrated { before, after } => {
             // 041 contract 11's downgrade, and the reason it is not silent.
-            let mut e = Envelope::new(env.result.clone(), Fidelity::Approximated);
-            e.assumptions = env.assumptions.clone();
-            e.blind_spots = env.blind_spots.clone();
-            e.with_assumption(
-                "harness_disagreed",
-                &format!(
-                    "the compiled harness produced {before} from the first version and {after} \
+            env.downgraded_to(Fidelity::Approximated)
+                .with_assumption(
+                    "harness_disagreed",
+                    &format!(
+                        "the compiled harness produced {before} from the first version and {after} \
                      from the second, so chiero's semantics and this compiler do not agree here"
-                ),
-            )
-            .with_blind_spot(
-                "the replay harness did not reproduce the divergence — this finding is \
-                 downgraded, not confirmed (041 contract 11)",
-            )
+                    ),
+                )
+                .with_blind_spot(
+                    "the replay harness did not reproduce the divergence — this finding is \
+                     downgraded, not confirmed (041 contract 11)",
+                )
         }
         chiero_replay::Outcome::DidNotBuild { detail } => env.with_blind_spot(&format!(
             "the replay harness did not build, so nothing has checked chiero's semantics \

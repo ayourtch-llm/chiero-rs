@@ -310,5 +310,6 @@ fn write_pair() -> chiero_tool::ReplaySources {
         after,
         entry: "f".into(),
         scratch: d,
+        flags: Vec::new(),
     }
 }

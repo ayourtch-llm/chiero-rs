@@ -301,6 +301,19 @@ pub fn emit_equivalence(
 /// from a program that built and ran returns one of the other three, because the value of this
 /// crate is precisely that it can say chiero was wrong.
 pub fn run(r: &Replay, cc: &Path, dir: &Path) -> Outcome {
+    run_with(r, cc, dir, &[])
+}
+
+/// [`run`] with the translation unit's own flags — 040 §3's last construction rule.
+///
+/// > "The harness compiles using the `compile_commands.json` flags for that TU so layout, `-D`
+/// > flags and `march` variant match. A harness compiled with different flags can reproduce a
+/// > different program."
+///
+/// Without them any source needing an `-I` or a `-D` is a `DidNotBuild`, which says nothing
+/// about the code. The flags are the caller's, because the caller is the one that knows how the
+/// file is really built.
+pub fn run_with(r: &Replay, cc: &Path, dir: &Path, flags: &[String]) -> Outcome {
     if std::fs::create_dir_all(dir).is_err() {
         return Outcome::DidNotRun {
             detail: format!("cannot create {}", dir.display()),
@@ -340,6 +353,7 @@ pub fn run(r: &Replay, cc: &Path, dir: &Path) -> Outcome {
     let result = dir.join(format!("chiero_result_{tag}.txt"));
     match std::process::Command::new(cc)
         .args(["-std=gnu11", "-w", "-O0"])
+        .args(flags)
         .arg(format!("-DCHIERO_RESULT=\"{}\"", result.display()))
         .arg("-o")
         .arg(&bin)

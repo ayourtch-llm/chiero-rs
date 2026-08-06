@@ -282,6 +282,14 @@ fn prove_equivalent(o: &Options) -> Result<chiero_tool::Envelope, Fault> {
         after: f[1].clone(),
         entry,
         scratch,
+        // The same `-I` and `-D` the analysis used, so the harness compiles the program the
+        // analysis analysed (040 §3).
+        flags: o
+            .includes
+            .iter()
+            .map(|p| format!("-I{}", p.display()))
+            .chain(o.defines.iter().map(|(k, v)| format!("-D{k}={v}")))
+            .collect(),
     };
     Ok(chiero_tool::prove_equivalent_with_replay(
         &before,

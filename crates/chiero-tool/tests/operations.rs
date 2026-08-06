@@ -257,6 +257,7 @@ fn prove_equivalent_replay_samples() -> Vec<Envelope> {
         after: after.clone(),
         entry: "f".into(),
         scratch: d.clone(),
+        flags: Vec::new(),
     };
     let cfg = chiero_opt::EquivCfg::new("f");
     let mut out = vec![

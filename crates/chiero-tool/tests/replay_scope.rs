@@ -42,6 +42,7 @@ fn sources(tag: &str, before: &str, after: &str, entry: &str) -> ReplaySources {
         after: a,
         entry: entry.into(),
         scratch: d,
+        flags: Vec::new(),
     }
 }
 
