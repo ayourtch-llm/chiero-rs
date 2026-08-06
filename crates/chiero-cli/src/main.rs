@@ -65,6 +65,9 @@ OPTIONS:
                     Compile and run that harness. Off by default: this builds
                     and executes code, so a caller has to ask.  (050 §6)
     -I <dir>        Add an include path. Repeatable.
+    --no-system-headers
+                    Do not ask the C compiler where its own headers are. On by
+                    default, because real C includes <stdio.h>.
     -D <k[=v]>      Define a macro. Repeatable.
     -h, --help      This text.
 
@@ -147,6 +150,7 @@ struct Options {
     includes: Vec<PathBuf>,
     defines: Vec<(String, String)>,
     json: bool,
+    no_system_headers: bool,
     replay: bool,
     allow_replay_exec: bool,
 }
@@ -172,6 +176,7 @@ impl Options {
             let a = args[i].clone();
             match a.as_str() {
                 "--json" => o.json = true,
+                "--no-system-headers" => o.no_system_headers = true,
                 "--replay" => o.replay = true,
                 "--allow-replay-exec" => {
                     o.replay = true;
@@ -251,6 +256,7 @@ impl Options {
         Frontend {
             includes: self.includes.clone(),
             defines: self.defines.clone(),
+            system_headers: !self.no_system_headers,
         }
     }
 }

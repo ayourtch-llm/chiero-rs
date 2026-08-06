@@ -21,21 +21,117 @@ impl chiero_pp::FileLoader for Disk {
     }
 }
 
-/// The `-I` and `-D` a caller supplied.
+/// The `-I` and `-D` a caller supplied, plus whether to ask the system compiler where its own
+/// headers are.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Frontend {
     pub(crate) includes: Vec<PathBuf>,
     pub(crate) defines: Vec<(String, String)>,
+    /// Ask `cc` for its include paths and predefined macros — on by default.
+    ///
+    /// **Real C starts with `#include <stdio.h>`.** Without this every operation answers
+    /// "cannot include stdarg.h" on anything from an actual codebase, which is a fact about the
+    /// invocation rather than about the code.
+    ///
+    /// Discovery at *run* time, like the solver's (022 §4) and the replay compiler's: chiero
+    /// links no toolchain (010 §1), and a machine without one gets an empty answer rather than
+    /// a build-time dependency.
+    pub(crate) system_headers: bool,
 }
 
 impl Frontend {
     pub(crate) fn pp(&self) -> chiero_pp::Config {
+        let (system, predefined) = if self.system_headers {
+            system_environment()
+        } else {
+            (Vec::new(), Vec::new())
+        };
         chiero_pp::Config {
+            // The preprocessor's pedantry has to match the parser's, or the two disagree about
+            // the same file.
+            pedantic: false,
             include_paths: self.includes.clone(),
-            defines: self.defines.clone(),
+            system_paths: system,
+            // **The caller's `-D` last, so it wins.** A tree that redefines something the
+            // compiler predefines means it; taking the predefine instead would analyse a
+            // different program.
+            defines: predefined
+                .into_iter()
+                .chain(self.defines.iter().cloned())
+                .collect(),
             ..chiero_pp::Config::default()
         }
     }
+}
+
+/// Where the system compiler keeps its headers, and what it predefines.
+///
+/// **Both, or neither is much use.** glibc's `bits/floatn.h` branches on a dozen
+/// `__HAVE_FLOAT*` macros, so a preprocessor with the paths and not the predefines compiles
+/// code the compiler never sees — the full-tree sweep's first run reported 101 findings that
+/// were entirely that.
+///
+/// Probed once: the answer is a property of the machine.
+fn system_environment() -> (Vec<PathBuf>, Vec<(String, String)>) {
+    static PROBED: std::sync::OnceLock<(Vec<PathBuf>, Vec<(String, String)>)> =
+        std::sync::OnceLock::new();
+    PROBED
+        .get_or_init(|| {
+            let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+            (include_paths(&cc), predefines(&cc))
+        })
+        .clone()
+}
+
+fn include_paths(cc: &str) -> Vec<PathBuf> {
+    let Ok(out) = std::process::Command::new(cc)
+        .args(["-E", "-v", "-std=gnu11", "-x", "c", "/dev/null"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    let text = String::from_utf8_lossy(&out.stderr);
+    let mut paths = Vec::new();
+    let mut inside = false;
+    for line in text.lines() {
+        if line.starts_with("#include <...>") {
+            inside = true;
+        } else if line.starts_with("End of search list") {
+            break;
+        } else if inside {
+            paths.push(PathBuf::from(line.trim()));
+        }
+    }
+    paths
+}
+
+fn predefines(cc: &str) -> Vec<(String, String)> {
+    let Ok(out) = std::process::Command::new(cc)
+        .args(["-dM", "-E", "-std=gnu11", "-x", "c", "/dev/null"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut it = line.splitn(3, ' ');
+            if it.next() != Some("#define") {
+                return None;
+            }
+            let name = it.next()?;
+            // Function-like macros, and the ones the preprocessor must own itself.
+            if name.contains('(')
+                || matches!(
+                    name,
+                    "__FILE__" | "__LINE__" | "__DATE__" | "__TIME__" | "__COUNTER__"
+                )
+            {
+                return None;
+            }
+            Some((name.to_owned(), it.next().unwrap_or("1").to_owned()))
+        })
+        .collect()
 }
 
 /// Preprocess, and refuse on the first diagnostic.
@@ -63,15 +159,21 @@ impl chiero_sema::SymbolText for Names {
 pub(crate) fn lower(path: &Path, src: &str, f: Frontend) -> Result<chiero_cir::Module, String> {
     let tu = preprocess(path, src, f)?;
     let mut oracle = chiero_parse::ScopedTypedefs::new();
-    let parsed = chiero_parse::parse_tu(&tu, &mut oracle);
+    // **GNU C, not strict ISO.** The tree under analysis is built by gcc or clang with their
+    // defaults, and a pedantic frontend rejects `__int128` in VPP's own `vppinfra/format.c` —
+    // an ISO complaint about code that compiles, which tells a reader nothing about their
+    // program. `Dialect::gnu` is what the full-tree sweep uses for the same reason.
+    let dialect = chiero_ast::Dialect::gnu();
+    let parsed = chiero_parse::parse_tu_with(&tu, &mut oracle, dialect);
     if let Some(d) = parsed.diagnostics.first() {
         return Err(format!("{}: {}", path.display(), d.message));
     }
     let names = Names(parsed);
-    let analysis = chiero_sema::analyze(
+    let analysis = chiero_sema::analyze_with(
         &names.0.ast,
         &chiero_sema::TargetConfig::x86_64_linux(),
         &names,
+        dialect,
     );
     if let Some(d) = analysis.diagnostics.first() {
         return Err(format!("{}: {}", path.display(), d.message));
@@ -101,15 +203,21 @@ pub(crate) fn lower(path: &Path, src: &str, f: Frontend) -> Result<chiero_cir::M
 pub(crate) fn records(path: &Path, src: &str, f: Frontend) -> Result<Vec<Record>, String> {
     let tu = preprocess(path, src, f)?;
     let mut oracle = chiero_parse::ScopedTypedefs::new();
-    let parsed = chiero_parse::parse_tu(&tu, &mut oracle);
+    // **GNU C, not strict ISO.** The tree under analysis is built by gcc or clang with their
+    // defaults, and a pedantic frontend rejects `__int128` in VPP's own `vppinfra/format.c` —
+    // an ISO complaint about code that compiles, which tells a reader nothing about their
+    // program. `Dialect::gnu` is what the full-tree sweep uses for the same reason.
+    let dialect = chiero_ast::Dialect::gnu();
+    let parsed = chiero_parse::parse_tu_with(&tu, &mut oracle, dialect);
     if let Some(d) = parsed.diagnostics.first() {
         return Err(format!("{}: {}", path.display(), d.message));
     }
     let names = Names(parsed);
-    let analysis = chiero_sema::analyze(
+    let analysis = chiero_sema::analyze_with(
         &names.0.ast,
         &chiero_sema::TargetConfig::x86_64_linux(),
         &names,
+        dialect,
     );
     let mut out = Vec::new();
     for (i, l) in analysis.records().iter().enumerate() {
