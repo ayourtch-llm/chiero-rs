@@ -330,10 +330,7 @@ fn system_headers_can_be_turned_off_and_supplied_by_hand() {
 /// assumption is what separates a narrowed search from a quieter one.
 #[test]
 fn entry_pointers_can_be_declared_non_null_from_the_command_line() {
-    let p = write(
-        "entry_nonnull.c",
-        "int f(int *p) { return *p; }\n",
-    );
+    let p = write("entry_nonnull.c", "int f(int *p) { return *p; }\n");
     let path = p.to_str().expect("utf-8 path");
 
     let loose = run(&["find-bugs", path, "--entry", "f", "--json"]);

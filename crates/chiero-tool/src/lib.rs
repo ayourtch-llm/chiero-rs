@@ -929,6 +929,16 @@ pub struct BugCfg {
     /// chiero's semantics with nothing saying so.
     pub source: Option<ReplaySources>,
     pub replay: ReplayPolicy,
+    /// Report bounds faults against an object whose size **chiero invented**.
+    ///
+    /// Off by default. 021 §6 gives an entry pointer parameter an object of
+    /// `ENTRY_PARAM_BYTES` and points it at offset 0 of it; neither end is a fact about the
+    /// program, so crossing one says nothing about it. Measured on VPP: 147 of 157 findings
+    /// were this, burying the 10 that were about the functions. The count is always reported
+    /// even when the findings are not — see [`find_bugs`].
+    ///
+    /// Turn it on for an entry whose callers really do pass a whole object of a known size.
+    pub report_invented_bounds: bool,
     /// Assume the entry's pointer parameters are not null.
     ///
     /// **An assumption that removes a real path**, so it is off by default and appears in the
@@ -948,6 +958,7 @@ impl BugCfg {
             source: None,
             replay: ReplayPolicy::EmitOnly,
             entry_ptr_nonnull: false,
+            report_invented_bounds: false,
         }
     }
 }
@@ -1015,8 +1026,29 @@ pub fn find_bugs(module: &chiero_cir::Module, cfg: &BugCfg) -> Envelope {
     //
     // **Never silently.** "1 finding" and "1 finding on 9 paths" are different facts, and the
     // second is what tells a reader the loop is involved — so `paths` is on every entry.
+    //
+    // **And a report about a bound chiero invented is not shown, but is counted.**
+    //
+    // `Finding::invented_bound` marks a bounds fault against an `ObjKind::Lazy` object — the
+    // one behind an entry pointer parameter, or behind a pointer read out of one. Its extent is
+    // `ENTRY_PARAM_BYTES` and the parameter sits at offset 0 of it, so chiero knows neither the
+    // caller's object size nor where in it the pointer points, and a fault against either end
+    // is a statement about a number chiero picked.
+    //
+    // Measured over 40 VPP entry points: 113 `pointer-outside-object` and 34 `out-of-bounds`
+    // of 157 findings — 94% — every one of them unactionable, and between them they buried the
+    // 9 uninitialized reads and 1 division by zero that were about the functions.
+    //
+    // The count goes in the envelope whether or not it is zero-suppressed away: "nothing found"
+    // and "147 not shown" are different facts, and collapsing them is this project's one
+    // prohibited move.
+    let mut suppressed = 0usize;
     let mut grouped: Vec<(chiero_exec::Finding, usize)> = Vec::new();
     for f in run.reports() {
+        if f.invented_bound && !cfg.report_invented_bounds {
+            suppressed += 1;
+            continue;
+        }
         match grouped
             .iter_mut()
             .find(|(g, _)| g.message == f.message && g.span == f.span)
@@ -1120,10 +1152,22 @@ pub fn find_bugs(module: &chiero_cir::Module, cfg: &BugCfg) -> Envelope {
              absent defect",
         );
     }
-    let env = env.with_blind_spot(&format!(
+    let mut env = env.with_blind_spot(&format!(
         "only the {} checkers of 040 ran; a defect no checker looks for is not reported",
         chiero_check::default_checkers().len()
     ));
+    // **Never a silent suppression.** The sentence names the number and the way back, so a
+    // reader who does know the caller's objects can see what was held back in one step.
+    if suppressed > 0 {
+        env = env.with_blind_spot(&format!(
+            "{suppressed} access{} crossed a bound chiero invented — the {} bytes it gives an \
+             object behind an entry pointer, which it also assumes the pointer points at the \
+             base of. Neither is a fact about your program, so they are not reported; \
+             `report_invented_bounds` (`--report-invented-bounds`) shows them",
+            if suppressed == 1 { "" } else { "es" },
+            chiero_exec::ENTRY_PARAM_BYTES,
+        ));
+    }
     match cfg.source {
         None => env.with_blind_spot(
             "no source was given, so no finding carries a replay harness and nothing has \

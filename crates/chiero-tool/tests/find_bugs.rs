@@ -322,6 +322,11 @@ entry:
 }";
     let mut c = cfg("f");
     c.entry_ptr_nonnull = true; // isolate the bounds question from the null one
+    // These are not shown by default any more — see the test below. This one is about what
+    // the finding may *claim* when it is shown, which is a separate question and stays one:
+    // suppressing a report is a decision about a reader's attention, and it must not be the
+    // thing that stops a wrong `proven: true` from being possible.
+    c.report_invented_bounds = true;
     let env = find_bugs(&m(interior), &c);
     let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
 
@@ -426,14 +431,14 @@ entry:
     // out-of-bounds write on a local array would trade a false-positive storm for a silence.
     let real = "\
 func @g() -> void {
+  alloca %buf : i32 x 16 align 4 scope 0 lifetime scope \"buf\"
 entry:
   .line 1
   %0 = addrlocal %buf
   %1 = ptradd %0, 64i64
   store i32 7i32 -> %1 align 4
   ret
-}
-local %buf: [16 x i32]";
+}";
     let mut c = cfg("g");
     c.entry_ptr_nonnull = true;
     let env = find_bugs(&m(real), &c);

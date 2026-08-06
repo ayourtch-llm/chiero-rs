@@ -284,6 +284,21 @@ pub struct Finding {
     /// Carried as data because the message carries it as prose, and a consumer offering "jump to
     /// the free" should not have to parse a sentence to do it.
     pub related: Option<chiero_mem::SecondEvent>,
+    /// **Whether the bound this report crossed is one chiero invented.**
+    ///
+    /// True for a bounds fault against an `ObjKind::Lazy` object — the object behind an entry
+    /// pointer parameter, or behind a pointer read out of one (021 §6). Its extent is
+    /// `ENTRY_PARAM_BYTES`, and the parameter is placed at offset 0 of it; neither is a fact
+    /// about the program, so crossing either end says nothing about it. An access at offset -8
+    /// is a bug if the caller passed the base of an object and correct if it passed an interior
+    /// pointer — and every VPP vector is the second case, `_vec_find(v)` being
+    /// `((vec_header_t *) (v) - 1)`.
+    ///
+    /// **Reported as a fact rather than filtered here.** The engine's job is what is true; which
+    /// findings a consumer is shown is 050's, where the grouping rules a reader sees already
+    /// live. `chiero_tool::find_bugs` suppresses these by default *and says how many* —
+    /// silently dropping them would be the same failure as silently reporting them.
+    pub invented_bound: bool,
     /// The fidelity of the path this was found on — not the run's. A definite fault on an
     /// `Exact` path stays actionable in a run some *other* path degraded.
     pub fidelity: Fidelity,
@@ -545,6 +560,13 @@ pub struct State {
     /// shares it. Deduplicating on the *text* instead would collapse two genuinely
     /// separate reports that happen to read the same, which is the common case in a loop.
     findings: Vec<StateFinding>,
+    /// The ids of findings whose **bound chiero invented** (see [`Finding::invented_bound`]).
+    ///
+    /// A side list rather than a field on `StateFinding`, because it is a property of one kind
+    /// of fault and every other construction site would have to name it `false` — a field that
+    /// is `false` at eleven sites and `true` at one is a field waiting to be got wrong at the
+    /// twelfth.
+    invented_bound_findings: Vec<u64>,
     /// 020 §4.1's UB events, in the order this path met them.
     ub: Vec<UbEvent>,
     /// 020 §4.2's observable effects, in program order.
@@ -670,6 +692,7 @@ impl State {
             edge_counts: IndexMap::new(),
             steps: 0,
             findings: Vec::new(),
+            invented_bound_findings: Vec::new(),
             inputs: Vec::new(),
             witness_requires: Vec::new(),
             ub: Vec::new(),
@@ -1086,6 +1109,7 @@ impl RunResult {
                 message: f.message.clone(),
                 span: f.span,
                 related: f.related,
+                invented_bound: st.invented_bound_findings.contains(&f.id),
                 // **This finding's own witness when it has one.** A report that recorded
                 // a condition was solved separately, because the state's single witness
                 // cannot satisfy two findings that need different inputs. Falling back to
@@ -2116,6 +2140,7 @@ impl<'m> Engine<'m> {
                 edge_counts: IndexMap::new(),
                 steps: 0,
                 findings: Vec::new(),
+                invented_bound_findings: Vec::new(),
                 inputs: Vec::new(),
                 witness_requires: Vec::new(),
                 ub: Vec::new(),
@@ -2279,6 +2304,7 @@ impl<'m> Engine<'m> {
             edge_counts: IndexMap::new(),
             steps: 0,
             findings: Vec::new(),
+            invented_bound_findings: Vec::new(),
             inputs: entry_inputs,
             witness_requires: Vec::new(),
             ub: Vec::new(),
@@ -6882,15 +6908,7 @@ impl<'m> Engine<'m> {
         // larger can then dismiss it in one step.
         let invented: Vec<(chiero_mem::ObjectId, u64)> = faults
             .iter()
-            .filter_map(|f| match f {
-                chiero_mem::MemFault::OutOfBounds { obj, obj_size, .. }
-                | chiero_mem::MemFault::OutOfBoundsMaybe { obj, obj_size, .. }
-                | chiero_mem::MemFault::PointerOutsideObject { obj, obj_size, .. } => {
-                    Some((*obj, *obj_size))
-                }
-                _ => None,
-            })
-            .filter(|(obj, _)| s.mem.kind_of(*obj) == Some(ObjKind::Lazy))
+            .filter_map(|f| invented_bound(&s.mem, f))
             .collect();
         for (obj, obj_size) in invented {
             s.degrade(
@@ -6965,6 +6983,9 @@ impl<'m> Engine<'m> {
             // Last, so the location ends the sentence rather than interrupting a clause that
             // still has something to say.
             let message = self.stamp(f.at(), message);
+            if invented_bound(&s.mem, f).is_some() {
+                s.invented_bound_findings.push(self.finding_seq);
+            }
             s.findings.push(StateFinding {
                 id: self.finding_seq,
                 key: Some(key),
@@ -8075,6 +8096,27 @@ fn size_of_cty(t: &CTy) -> u64 {
 /// express — floats and vectors are 023 §7's approximated territory, and returning a
 /// plausible width for them would silently reinterpret a `double` as an integer.
 /// Whether an access's faults mean the value it returned must not be used. See
+/// **A bounds fault whose bound chiero invented**, and the size it invented.
+///
+/// One function because two callers need the same answer — the degradation and the mark on the
+/// finding — and a predicate spelled twice is a predicate that comes to mean two things.
+///
+/// 021 §6 gives an entry pointer parameter a fresh object of `entry_param_bytes` and points the
+/// parameter at *offset 0* of it, and does the same for every object materialized behind one.
+/// Neither end of that object is a fact about the program.
+fn invented_bound(
+    mem: &chiero_mem::Memory,
+    f: &chiero_mem::MemFault,
+) -> Option<(chiero_mem::ObjectId, u64)> {
+    let sized = match f {
+        chiero_mem::MemFault::OutOfBounds { obj, obj_size, .. }
+        | chiero_mem::MemFault::OutOfBoundsMaybe { obj, obj_size, .. }
+        | chiero_mem::MemFault::PointerOutsideObject { obj, obj_size, .. } => (*obj, *obj_size),
+        _ => return None,
+    };
+    (mem.kind_of(sized.0) == Some(ObjKind::Lazy)).then_some(sized)
+}
+
 /// `MemFault::yields_unknown_value`: a definite bug is a fact about the program, but an
 /// invented value poisons everything computed from it.
 fn unusable(faults: &[chiero_mem::MemFault]) -> bool {

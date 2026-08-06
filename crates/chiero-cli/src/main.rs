@@ -68,6 +68,12 @@ OPTIONS:
     --no-system-headers
                     Do not ask the C compiler where its own headers are. On by
                     default, because real C includes <stdio.h>.
+    --report-invented-bounds
+                    Show bounds findings against the object chiero invents behind
+                    an entry pointer. Off by default: chiero knows neither the
+                    caller's object size nor where in it the pointer points, so
+                    those say nothing about your program. The count is always
+                    reported, shown or not.
     --entry-ptr-nonnull
                     Assume the pointer parameters of --entry are not null. For a
                     helper whose callers check, the null path is one the program
@@ -159,6 +165,7 @@ struct Options {
     replay: bool,
     allow_replay_exec: bool,
     entry_ptr_nonnull: bool,
+    report_invented_bounds: bool,
 }
 
 fn define(d: &str) -> (String, String) {
@@ -184,6 +191,7 @@ impl Options {
                 "--json" => o.json = true,
                 "--no-system-headers" => o.no_system_headers = true,
                 "--entry-ptr-nonnull" => o.entry_ptr_nonnull = true,
+                "--report-invented-bounds" => o.report_invented_bounds = true,
                 "--replay" => o.replay = true,
                 "--allow-replay-exec" => {
                     o.replay = true;
@@ -353,6 +361,7 @@ fn find_bugs(o: &Options) -> Result<chiero_tool::Envelope, Fault> {
     let m = lower(&f[0], &read(&f[0])?, o.frontend()).map_err(Fault::Failed)?;
     let mut cfg = chiero_tool::BugCfg::new(entry.clone());
     cfg.entry_ptr_nonnull = o.entry_ptr_nonnull;
+    cfg.report_invented_bounds = o.report_invented_bounds;
     if o.replay {
         cfg.source = Some(chiero_tool::ReplaySources {
             before: f[0].clone(),
