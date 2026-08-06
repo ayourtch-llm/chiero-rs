@@ -2178,3 +2178,43 @@ fn a_bitfield_of_a_symbolic_byte_reads_as_a_term_not_a_fault() {
         );
     }
 }
+
+/// **Marking bytes initialized carries no value, so the payload bound must not apply to it.**
+///
+/// `memoize_fresh` flips `No` bits to `Yes`; it moves no data at all. It nevertheless ran
+/// through `check_bits`, whose first rule is a bound on a *value*:
+///
+/// > The payload bound comes first: `v >> 128` is `v >> 0` when overflow checks are off, so an
+/// > over-wide field silently wrote bit 0 of the value into bit 128 of the object.
+///
+/// True of an integer read or write, and meaningless here. The effect was that **any
+/// materialization wider than 16 bytes did nothing, silently** — `check_bits(..).is_err()`
+/// returns without a fault, because a caller that cannot carry the payload has already been
+/// told by the read itself.
+///
+/// Found from the ACL plugin: 021 §6 gives an entry pointer's object symbolic-but-initialized
+/// bytes, and a 20-byte struct copied out of one read back uninitialized past offset 16, while
+/// the same copy from a fully-written local was clean.
+#[test]
+fn memoizing_more_than_a_payload_wide_range_still_works() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Lazy, 64, 8, sp(1));
+    m.mark_lazy(o);
+
+    // **Nothing is read from the source first**, which is the whole difficulty: an 8-byte read
+    // materializes 64 bits, comfortably under the bound, so any probe that touches the object
+    // before the copy hides the defect. The first version of this test did exactly that and
+    // passed against the broken code.
+    let d = m.alloc(ObjKind::Stack, 64, 8, sp(4));
+    let c = m.copy_via(&mut a, ptr(d, 0), ptr(o, 0), 20, Overlap::Forbidden, sp(5));
+    assert!(c.faults.is_empty(), "the copy itself: {:?}", c.faults);
+    let tail = m.read_term(&mut a, ptr(d, 16), 4, Endian::Little, sp(6));
+    assert!(
+        !tail.faults
+            .iter()
+            .any(|f| matches!(f, MemFault::Uninitialized { .. })),
+        "and the destination's tail came across initialized: {:?}",
+        tail.faults
+    );
+}
