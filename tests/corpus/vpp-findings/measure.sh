@@ -13,6 +13,7 @@
 #   VPP      a VPP checkout               (default: /home/ubuntu/vpp)
 #   VPPBUILD its cmake build directory    (default: $VPP/build-root/build-vpp-native)
 #   TIMEOUT  seconds per entry point      (default: 60)
+#   LIST     the entry list to run        (default: entries.tsv beside this script)
 #
 # Output is one TSV line per entry: file<TAB>fn<TAB>status<TAB>findings<TAB>exact.
 # Summarise with:
@@ -24,11 +25,21 @@ CHIERO=${CHIERO:-$HERE/../../../target/release/chiero}
 VPP=${VPP:-/home/ubuntu/vpp}
 VPPBUILD=${VPPBUILD:-$VPP/build-root/build-vpp-native}
 TIMEOUT=${TIMEOUT:-60}
+# Overridable so a wider sweep does not need a second copy of this script — the checked-in
+# number is `entries.tsv`, and anything else is an exploration that says which list it ran.
+LIST=${LIST:-$HERE/entries.tsv}
 
 # VPP's own flags, from `INCLUDES`/`DEFINES` in $VPPBUILD/vpp/build.ninja. Taken from the
 # build rather than guessed: a header reached under different `-D`s is a different header,
 # and the whole claim is about the code VPP actually compiles.
+# The per-target roots too: `build.ninja` carries 1969 `INCLUDES` lines and they differ, so
+# taking the first one silently excludes every `*_api.c` in the tree. VPP's API compiler
+# generates `<bier/bier.api_enum.h>` into `CMakeFiles/vnet/bier/`, and a file that will not
+# preprocess is a file the measurement did not cover — not a file with no defects.
 INC="-I$VPP/src -I$VPPBUILD/vpp/CMakeFiles"
+for d in vnet vlibmemory vpp crypto_engines plugins; do
+  [ -d "$VPPBUILD/vpp/CMakeFiles/$d" ] && INC="$INC -I$VPPBUILD/vpp/CMakeFiles/$d"
+done
 DEF="-DHAVE_FCNTL64 -DHAVE_LIBUNWIND=1 -D_FORTIFY_SOURCE=2"
 
 [ -x "$CHIERO" ] || { echo "no chiero binary at $CHIERO — cargo build --release" >&2; exit 2; }
@@ -46,4 +57,4 @@ while IFS=$'\t' read -r f fn; do
   if [ $rc -eq 124 ]; then printf '%s\t%s\ttimeout\t0\t0\n' "$f" "$fn"; continue; fi
   if [ ! -s "$J" ]; then printf '%s\t%s\tfailed\t0\t0\n' "$f" "$fn"; continue; fi
   python3 "$HERE/count.py" "$f" "$fn" "$J"
-done < "$HERE/entries.tsv"
+done < "$LIST"

@@ -571,3 +571,66 @@ entry:
         "a bitfield of unknown contents has an unknown value, not a defect: {v}"
     );
 }
+
+/// **`symbolic-byte` is a sentence about chiero, and it was being reported as a defect.**
+///
+/// Widening the VPP sweep to 220 entry points across `vnet/` turned this up on the first file
+/// that had been excluded by a missing include path — `vnet/bier/bier_api.c`, twenty-one
+/// identical copies of it:
+///
+/// ```text
+/// symbolic-byte: byte 0 of c holds a symbolic value, which a concrete access cannot
+///                answer for
+/// ```
+///
+/// "A concrete access cannot answer for" is a fact about `Memory::read`, which returns bytes and
+/// so cannot return a symbol. `MemFault::SymbolicByte`'s own doc says as much — *"the byte API
+/// cannot answer … the caller wants `read_term`"*. There is no program in which this is a
+/// defect, and no reader who can act on it.
+///
+/// The fifth of the same confusion in one wave, which §9 predicted after the fourth: **chiero
+/// not knowing a value is not the program failing to write one.** What is different here is
+/// that it is not even a value chiero does not know — it is one held in a form the *calling
+/// API* cannot carry, which the engine degrades for and then reports anyway.
+///
+/// So it degrades and does not report. The degradation is what a reader needs: the answer is
+/// weaker, and `Fidelity` plus a named assumption is exactly how this project says that.
+#[test]
+fn a_byte_the_concrete_api_cannot_carry_is_not_a_defect() {
+    // A string model walking a buffer with a symbolic byte in it — VPP's `format`/`unformat`
+    // path, and the shape all twenty-one findings had.
+    let scan = "\
+func @strlen(%0: ptr) -> i64
+
+func @f() -> i64 {
+  alloca %buf : i8 x 8 align 1 scope 0 lifetime scope \"buf\"
+entry:
+  .line 1
+  %0 = addrlocal %buf
+  %1 = fresh i8
+  store i8 %1 -> %0 align 1
+  %2 = call @strlen(%0) : i64
+  ret %2
+}";
+    let env = find_bugs(&m(scan), &cfg("f"));
+    let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
+    let symbolic: Vec<_> = v["result"]["findings"]
+        .as_array()
+        .expect("a findings array")
+        .iter()
+        .filter(|f| {
+            f["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("symbolic-byte"))
+        })
+        .collect();
+    assert!(
+        symbolic.is_empty(),
+        "there is no program in which this is a defect: {v}"
+    );
+    assert_ne!(
+        env.fidelity,
+        Fidelity::Exact,
+        "but the answer really is weaker for it, and that is what fidelity is for: {v}"
+    );
+}

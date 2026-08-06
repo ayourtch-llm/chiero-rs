@@ -380,3 +380,67 @@ fn entry_pointers_can_be_declared_non_null_from_the_command_line() {
         help.out
     );
 }
+
+/// **Two findings that are about chiero, in a report about the user's code.**
+///
+/// Widening the VPP sweep to 220 entry points across `vnet/` turned up twenty-one copies of the
+/// first, on `vnet/bier/bier_api.c`:
+///
+/// ```text
+/// symbolic-byte: byte 0 of c holds a symbolic value, which a concrete access cannot answer for
+/// strcpy: source scan gave CapReached { scanned: 0 }
+/// ```
+///
+/// Neither is a statement about a program. The first is a fact about `Memory::read`, which
+/// returns bytes and therefore cannot return a symbol — `MemFault::SymbolicByte`'s own doc says
+/// "the byte API cannot answer … the caller wants `read_term`". The second is a `{:?}` of an
+/// internal Rust enum, `StrScan`, leaked into a defect message.
+///
+/// The fifth instance of one confusion in this wave, after the entry object, the `extern`
+/// global and the bitfield: **chiero not knowing a value is not the program failing to write
+/// one.** The rule already exists — the format model filters exactly this fault with the
+/// comment *"reporting that as a program bug is the confusion 023 §7 exists to prevent. Found
+/// by review."* It was applied at one site, and this is what one site buys.
+///
+/// What replaces them is not silence: the run is `Unknown` and says why. That is the whole
+/// difference between a limit and a defect.
+#[test]
+fn chieros_own_limits_are_not_reported_as_defects_in_your_code() {
+    let p = write(
+        "self_report.c",
+        "char *strcpy (char *, const char *);\n\
+         int f (unsigned i, char x, char *dst)\n\
+         {\n\
+         \x20 static char c[256];\n\
+         \x20 c[i & 255] = x;      /* a symbolic index: the object promotes to array theory */\n\
+         \x20 strcpy (dst, c);     /* and a concrete byte read cannot serve it */\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    let r = run(&[
+        "find-bugs",
+        p.to_str().expect("utf-8 path"),
+        "--entry",
+        "f",
+        "--entry-ptr-nonnull",
+        "--json",
+    ]);
+    let v = json(&r);
+    let findings = v["result"]["findings"].as_array().expect("array").clone();
+    for f in &findings {
+        let m = f["message"].as_str().unwrap_or_default();
+        assert!(
+            !m.contains("symbolic-byte"),
+            "a value chiero cannot carry in a `Vec<u8>` is not a defect in this program: {m}"
+        );
+        assert!(
+            !m.contains("CapReached") && !m.contains('{'),
+            "and a Rust `{{:?}}` of an internal enum is not a sentence anyone can act on: {m}"
+        );
+    }
+    // **Not silence.** The answer really is weaker, and that is what fidelity is for.
+    assert_ne!(
+        v["fidelity"], "Exact",
+        "the run could not read those bytes and must say so: {v}"
+    );
+}
