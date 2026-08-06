@@ -251,3 +251,57 @@ fn includes_do_not_depend_on_where_the_harness_is_built() {
         other => panic!("the harness must build away from its sources: {other:?}"),
     }
 }
+
+/// **Two versions of a real file share everything but the change.**
+///
+/// The harness put both into one translation unit, so every `static` helper the two versions
+/// have in common was defined twice and the build failed. That is not a corner case: two
+/// versions of a file *are* the same file with one edit, and a file with more than one function
+/// in it is the normal shape. 041 contract 10 wants a harness "for every case in the corpus",
+/// and the corpus was toys because anything realistic did not compile.
+///
+/// Each version is its own translation unit now, with a non-static wrapper appended inside it —
+/// so a `static` helper stays file-local and a `static` *entry* is still reachable, which is
+/// 040 §3.1's requirement and the reason the single-TU trick was chosen in the first place.
+#[test]
+fn two_versions_sharing_a_static_helper_still_build() {
+    const TAG: &str = "shared_static";
+    let Some(cc) = chiero_replay::compiler() else {
+        return;
+    };
+    let src = |k: i32| {
+        format!(
+            "static int helper (int x) {{ return x + 1; }}\n\
+             static int other (int x) {{ return x * 2; }}\n\
+             int f (int x) {{ return helper (x) + {k}; }}\n"
+        )
+    };
+    let b = write(TAG, "sh_before.c", &src(0));
+    let a = write(TAG, "sh_after.c", &src(10));
+    let r = must_emit(&b, &a, "f", &witness(&[(32, 1)]));
+    match run(&r, &cc, &scratch(TAG)) {
+        Outcome::Demonstrated { before, after } => assert_eq!((before, after), (2, 12)),
+        other => panic!("two versions of one file share their helpers: {other:?}"),
+    }
+}
+
+/// **And a `static` entry is still reachable** — the property the single-TU trick existed for,
+/// which the fix must not lose. 040 §3.1: "chiero's analysis targets in VPP are overwhelmingly
+/// `static` helpers, `static inline` functions in headers, and `march`-suffixed variants."
+#[test]
+fn a_static_entry_is_still_reachable_after_the_split() {
+    const TAG: &str = "static_entry_split";
+    let Some(cc) = chiero_replay::compiler() else {
+        return;
+    };
+    let src = |k: i32| {
+        format!("static int shared (int x) {{ return x; }}\nstatic int f (int x) {{ return shared (x) + {k}; }}\n")
+    };
+    let b = write(TAG, "se_before.c", &src(1));
+    let a = write(TAG, "se_after.c", &src(2));
+    let r = must_emit(&b, &a, "f", &witness(&[(32, 0)]));
+    match run(&r, &cc, &scratch(TAG)) {
+        Outcome::Demonstrated { before, after } => assert_eq!((before, after), (1, 2)),
+        other => panic!("040 §3.1: static is the common case: {other:?}"),
+    }
+}
