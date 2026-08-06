@@ -457,6 +457,7 @@ have entrenched conventions real lowering then had to match.)
 | **041 `prove_equivalent`** + §2/§3 | 🟡 contracts 1–6, 9–18, 21, 22, 24 | z3 proves `x*2 == x<<1` over all 2^32; finds `INT_MIN` as the one input two `abs()`s disagree on — and **gcc confirms it**, via `chiero-replay` |
 | **050 tool interface** | 🟡 9 operations + a CLI (contracts 1–3, 4b, 5–8, 11, 12 partly, 14) | envelope + `select_tests`, `expansion_sites`, `explain_macro_expansion`, `prove_equivalent`(+replay), `impact`, `find_bugs`, `check_reachable`, `layout`; all reachable as `chiero <op>` |
 | 040 checkers, 042 recipes, 060 vpp | partial | `chiero-check`, `chiero-recipe`, `chiero-vpp` exist |
+| **`find-bugs` on real VPP** | 🟡 measured 2026-08-06 | 40 entry points: **231 findings, 0 `Exact`, 3 timeouts**; `--entry-ptr-nonnull` → 157. **None actionable yet** — see §7.6 |
 
 **The two 032 contracts left, and why neither is "just work":**
 
@@ -854,6 +855,51 @@ operation existing, by using it on ordinary C. Nothing in the test suite was goi
    `Prover::prove_equivalent(&chiero_diff::Entity)` has to turn an entity into two runnable
    modules, which needs the frontend from a crate that must not depend on it.
 
+### 7.6 `find-bugs` measured on VPP, 2026-08-06 — and the false proof it exposed
+
+The first time the defect checkers were pointed at real VPP code rather than at fixtures.
+40 entry points from `vppinfra/{bitmap,mem_dlmalloc,hash,vec,time}.c` and
+`vlib/{node_cli,counter}.c`, release binary, VPP's own flags from `build.ninja`
+(`-I$VPP/src -I$VPPBUILD/vpp/CMakeFiles -DHAVE_FCNTL64 -DHAVE_LIBUNWIND=1 -D_FORTIFY_SOURCE=2`).
+
+| | findings | `Exact` | timed out (60 s) |
+|---|---|---|---|
+| default | 231 | ~~1~~ → 0 | 3 |
+| `--entry-ptr-nonnull` | 157 | 0 | 2 |
+
+**The one `Exact` finding was wrong**, which makes it the most valuable result of the run:
+`Exact` is `proven: true`, chiero's strongest claim. `_vec_update_len` reported an
+`out-of-bounds: 4-byte access at offset -8 of the 4096-byte object`. That access is
+`_vec_find (v)->len = n_elts` and `_vec_find(v)` is `((vec_header_t *) (v) - 1)` — **every VPP
+vector is an interior pointer by design**, which 021 itself has a worked example of ("+vec
+negative-offset worked example", §7 above). The engine had the example and still shipped the
+false positive, because the rule that produced it lived somewhere else.
+
+Two chiero inventions caused it, neither a fact about the program: the object behind an entry
+pointer is `ENTRY_PARAM_BYTES` = 4096 bytes, and the pointer is put at *offset 0* of it. The
+finding's own text contains the contradiction — a pointer cannot be both "unconstrained" and
+known to sit at the base of a 4096-byte object.
+
+Fixed at the rule, in `report_faults`: a bounds fault whose object is `ObjKind::Lazy` degrades
+the state to `Approximated`, naming the size chiero chose. `Lazy` rather than "is a parameter",
+because 021 §6 materializes an object behind every pointer read out of one and its extent is the
+same invention one link further out.
+
+**The remaining 157 are the real problem and they are not fixed.** Every one is `Unknown` and
+nearly every one reads "…of the 4096-byte object reached through an unconstrained pointer" —
+a statement about the *caller contract*, not about the function. This is the pointer-bounds
+analogue of the uninitialized-read false-positive storm 021 §6 anticipated, and it wants the
+same kind of answer 021 §6 gave that one (make the model honest), not another flag. §9's
+START HERE has the proposal.
+
+`--entry-ptr-nonnull` (`BugCfg::entry_ptr_nonnull`, on `find-bugs` and `check-reachable`)
+reaches the engine's existing `with_entry_ptr_nullable`. It removes a third of the findings and
+is recorded as an assumption in the envelope, because it turns off a path the program has.
+
+⚠️ **The measurement scripts are in `$SCRATCH` (`bugmeasure.sh`, `count.py`, `sample40.tsv`) and
+scratch is not durable** — they were lost once already this session and rebuilt from commit
+messages. Moving them under `tests/corpus/` is item 2 of §9's START HERE.
+
 ### 7.5 How to check the workspace is green — `./check.sh`
 
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
@@ -910,7 +956,55 @@ typing the paths ever would.
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 480) — M1 268/268 by contract
+> ### ⏭️ START HERE — **the first measurement of `find-bugs` on real VPP code, and what it says**
+>
+> Run it yourself in ~4 minutes:
+> `$SCRATCH/bugmeasure.sh "" $SCRATCH/sample40.tsv` (and again with `--entry-ptr-nonnull`).
+> 40 entry points from `vppinfra/{bitmap,mem_dlmalloc,hash,vec,time}.c` and
+> `vlib/{node_cli,counter}.c`, release binary, VPP's own `-I`/`-D` from `build.ninja`.
+>
+> | | findings | `Exact` | timed out |
+> |---|---|---|---|
+> | default | 231 | ~~1~~ → **0** | 3 of 40 |
+> | `--entry-ptr-nonnull` | **157** | 0 | 2 of 40 |
+>
+> **Read the `Exact` column first.** Before this wave it was 1, and that one finding was
+> *wrong*: `_vec_update_len` reported `out-of-bounds: 4-byte access at offset -8 …` with
+> `proven — this holds for all inputs`. The access is `_vec_find (v)->len = n_elts`, and
+> `_vec_find(v)` is `((vec_header_t *) (v) - 1)` — **every VPP vector is an interior pointer by
+> design.** chiero's single strongest claim on real code, and it was a false positive.
+>
+> The cause was two inventions of chiero's, neither a fact about the program: the object behind
+> an entry pointer is `ENTRY_PARAM_BYTES` = 4096 bytes, and the pointer is placed at *offset 0*
+> of it. Fixed at the rule (`report_faults`): a bounds fault whose object is `ObjKind::Lazy`
+> degrades to `Approximated` and names the size chiero chose. `Lazy`, not "is a parameter" —
+> 021 §6 materializes an object behind every pointer read out of one too, and its extent is the
+> same invention one link further out.
+>
+> **Now read the other column.** 157 findings, none of them actionable, all `Unknown`, and
+> nearly all of the form "access at offset N of the 4096-byte object reached through an
+> unconstrained pointer". These are statements about the *caller contract*, not about the
+> function — the pointer-bounds analogue of the uninitialized-read storm 021 §6 anticipated and
+> solved by making entry objects symbolic-but-initialized. `--entry-ptr-nonnull` (new this
+> wave, `BugCfg::entry_ptr_nonnull`, on `find-bugs` and `check-reachable`) removes a third of
+> them and is recorded as an assumption in the envelope, because it turns off a path the
+> program really has.
+>
+> **What is owed next, in order:**
+>
+> 1. **The remaining 157 need the same treatment the null case just got.** The honest fix is
+>    not another flag: it is to stop pretending the entry object has a *known* size. A bound
+>    chiero chose should not produce a finding at all unless the access is out of bounds for
+>    *every* size the caller could have passed — i.e. the offset is negative relative to the
+>    parameter, or provably past a size the function itself computed. Consider suppressing
+>    lazy-object bounds findings by default behind a `--report-invented-bounds` flag, and say
+>    in the envelope how many were suppressed (never silently — that is the 032 §6 mistake).
+> 2. `sample40.tsv` and `bugmeasure.sh` are in `$SCRATCH` and **scratch is not durable**. Move
+>    both under `tests/corpus/` (or `xtask`) so the number is reproducible by someone else; it
+>    was already lost once this session and had to be rebuilt from the commit messages.
+> 3. The 4 that time out at 60 s (`va_format` and 3 in `time.c`/`vec.c`) are unexplained.
+>
+> ### ⏭️ (previous) START HERE (wave 480) — M1 268/268 by contract
 >
 > ### 🚀 THE METHOD THAT MADE THIS WAVE FAST — use it before touching anything
 >
