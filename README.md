@@ -36,6 +36,7 @@ is worth two minutes before anything else.
 | what a source change actually reaches | `chiero impact` | ✅ including through macros |
 | which tests are worth running | `chiero select-tests` | ✅ 100% recall on a mutation gate, 65% fewer tests |
 | whether a rewrite is safe | `chiero prove-equivalent` | 🟡 return values, termination, side effects |
+| whether chiero is right about it | `--allow-replay-exec` | 🟡 a C harness a real compiler runs |
 | where the defects are | `chiero find-bugs` | 🟡 two checkers of 040 |
 | where a macro came from | `chiero explain-macro` | ✅ |
 | what a macro expands into, everywhere | `chiero expansion-sites` | ✅ |
@@ -140,6 +141,7 @@ carries a `determinism_key` you can compare across runs.
 | `chiero-gcov` | gcov/llvm-cov artifact decoding |
 | `chiero-diff`, `chiero-select` | change impact and test selection |
 | `chiero-check`, `chiero-opt`, `chiero-recipe` | defect checkers, optimization analysis, conformance rules |
+| `chiero-replay` | the C harness that checks a finding against a real compiler |
 | `chiero-vpp` | everything VPP-specific — and nothing VPP-specific lives anywhere else |
 | `chiero-tool` | the envelope and the operation surface |
 

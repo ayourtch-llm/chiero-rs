@@ -631,7 +631,23 @@ rather than a slip — and it survived a full-VPP cross-validation because that 
 **Worth remembering as a method, not a bug:** the defect surfaced within minutes of the
 operation existing, by using it on ordinary C. Nothing in the test suite was going to find it.
 
-1. **§1.3's replay harness** (contracts 10, 11) — the half of 050 contract 8 that is missing.
+1. ~~**§1.3's replay harness**~~ — **built 2026-08-06.** `chiero-replay` emits a self-contained
+   C program that `#include`s both versions with the entry renamed (040 §3.1's mechanism, the
+   only one that reaches a `static` target), calls each at the witness, and exits 0 only when
+   they disagree. `chiero prove-equivalent ... --allow-replay-exec` reports
+   `outcome: demonstrated` with the two numbers **a real compiler** produced, and the standing
+   "no replay harness was compiled" blind spot is removed because it is no longer true.
+
+   **This is the first claim in the system that does not rest on chiero's own semantics.**
+   `Outcome` has four values and three are ways of having demonstrated nothing;
+   `not_demonstrated` is 041 contract 11's downgrade — chiero and a compiler disagree, fidelity
+   drops to `Approximated`, and the verdict stays `differs` because something *is* wrong and a
+   reader needs both claims. Execution is gated behind `--allow-replay-exec` (050 contract 11).
+
+   *Left:* the harness only takes scalar parameters. 040 §3's construction rules want memory
+   objects as initialized byte arrays with the engine's own pointer layout, extern stubs
+   returning the values the engine chose in call order, and the TU's own
+   `compile_commands.json` flags. And `find_bugs` findings do not emit one yet (040 contract 4).
    *"Your rewrite is wrong" is an opinion; "here is the program" ends the discussion.* Nothing
    in the tree emits a C replay harness yet — 040 §3 wants one too.
 2. **§1.1's remaining claim — caller-visible memory** (with the object bijection, contracts
