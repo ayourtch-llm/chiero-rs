@@ -547,3 +547,69 @@ fn a_pointer_chiero_cannot_resolve_is_not_a_defect() {
         "and the assumption names it: {v}"
     );
 }
+
+/// **`PREDICT_FALSE (p == 0)` is a null check, and chiero was not reading it as one.**
+///
+/// Found on the ACL plugin: four `null-dereference: access at offset -8 of NULL` findings, all
+/// funnelling into `vec_validate`, whose NULL case *is* guarded —
+///
+/// ```c
+/// if (PREDICT_FALSE (v == 0))
+///   { ... return; }
+/// vl = _vec_len (v);            /* v[-8] */
+/// ```
+///
+/// — and `PREDICT_FALSE(x)` is `__builtin_expect((x), 0)`. chiero treated the builtin as an
+/// opaque call, so the branch condition stopped being *about* `v`, the null path survived into
+/// the body, and the dereference fired. The report even says "the function tests it against
+/// null at source offset 41": chiero saw the test and could not use it.
+///
+/// **This is not a modelling question.** GCC defines `__builtin_expect(exp, c)` as returning
+/// the value of `exp` — the hint is for the branch predictor and has no effect on semantics.
+/// Treating it as opaque is not conservative, it is wrong in the dangerous direction: it
+/// invents paths the program does not have, and every one of them is a false finding.
+///
+/// The blast radius is why this matters more than four findings: `PREDICT_FALSE` and
+/// `PREDICT_TRUE` are *the* idiom for guards throughout VPP, so every null check written that
+/// way was defeated.
+#[test]
+fn builtin_expect_is_its_first_argument() {
+    let p = write(
+        "predict.c",
+        "#define PREDICT_FALSE(x) __builtin_expect ((x), 0)\n\
+         #define PREDICT_TRUE(x)  __builtin_expect ((x), 1)\n\
+         \n\
+         int f (int *p)\n\
+         {\n\
+         \x20 if (PREDICT_FALSE (p == 0))\n\
+         \x20   return 0;\n\
+         \x20 return *p;                 /* unreachable when p == 0 */\n\
+         }\n\
+         \n\
+         int g (int *p)\n\
+         {\n\
+         \x20 if (PREDICT_TRUE (p != 0))\n\
+         \x20   return *p;               /* likewise */\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    let path = p.to_str().expect("utf-8 path");
+    for entry in ["f", "g"] {
+        let r = run(&["find-bugs", path, "--entry", entry, "--json"]);
+        let v = json(&r);
+        for f in v["result"]["findings"].as_array().expect("array") {
+            let m = f["message"].as_str().unwrap_or_default();
+            assert!(
+                !m.contains("null-dereference"),
+                "`{entry}` guards this dereference, and the guard is a hint to the branch \
+                 predictor rather than a wall chiero cannot see through: {m}"
+            );
+        }
+        // **And the guard is not merely believed — the whole function is proven.** Without
+        // this, a run that gave up early would pass the assertion above by finding nothing.
+        assert_eq!(
+            v["fidelity"], "Exact",
+            "nothing here is beyond chiero: {v}"
+        );
+    }
+}

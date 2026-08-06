@@ -40,6 +40,9 @@ INC="-I$VPP/src -I$VPPBUILD/vpp/CMakeFiles"
 for d in vnet vlibmemory vpp crypto_engines plugins; do
   [ -d "$VPPBUILD/vpp/CMakeFiles/$d" ] && INC="$INC -I$VPPBUILD/vpp/CMakeFiles/$d"
 done
+# A plugin includes its siblings as <acl/acl.h>, so the *source* plugins root is a search
+# path too — not only the generated one.
+[ -d "$VPP/src/plugins" ] && INC="$INC -I$VPP/src/plugins"
 DEF="-DHAVE_FCNTL64 -DHAVE_LIBUNWIND=1 -D_FORTIFY_SOURCE=2"
 
 [ -x "$CHIERO" ] || { echo "no chiero binary at $CHIERO — cargo build --release" >&2; exit 2; }
@@ -49,8 +52,20 @@ J=$(mktemp)
 trap 'rm -f "$J"' EXIT
 while IFS=$'\t' read -r f fn; do
   case "$f" in ''|'#'*) continue ;; esac
+  # Each plugin's API compiler output lives in a directory of its own, exactly as
+  # `build.ninja` has it: `-I…/CMakeFiles/plugins/acl` for `plugins/acl/*.c`. Adding every
+  # plugin's directory at once would work today and shadow the wrong header the first time two
+  # plugins generate the same name.
+  own=""
+  case "$f" in
+    plugins/*/*)
+      d=${f#plugins/}; d=${d%%/*}
+      [ -d "$VPPBUILD/vpp/CMakeFiles/plugins/$d" ] &&
+        own="-I$VPPBUILD/vpp/CMakeFiles/plugins/$d"
+      ;;
+  esac
   timeout "$TIMEOUT" "$CHIERO" find-bugs "$VPP/src/$f" --entry "$fn" --json \
-      $INC $DEF "$@" >"$J" 2>/dev/null
+      $INC $own $DEF "$@" >"$J" 2>/dev/null
   rc=$?
   # A timeout and a crash are different facts and neither is "no findings" — the whole
   # project's rule, applied to its own measurement harness.
