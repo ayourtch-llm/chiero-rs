@@ -69,6 +69,15 @@ pub enum Outcome {
     /// output was unreadable. Distinct because "the program crashed" and "the versions agreed"
     /// are not the same news.
     DidNotRun { detail: String },
+    /// The caller allowed execution and no C compiler was found.
+    ///
+    /// **Not the same as "the caller did not allow it."** Both used to be an absent outcome, so
+    /// a consumer could not tell a deliberate `--replay` from a machine with no toolchain — and
+    /// the accompanying note cited 050 contract 11's gate, which is the wrong reason for the
+    /// second. Found by review.
+    NoCompiler,
+    /// The caller asked for the program and not for a verdict — 050 contract 11's default.
+    NotRun,
 }
 
 impl Outcome {
@@ -83,6 +92,8 @@ impl Outcome {
             Outcome::NotDemonstrated { .. } => "not_demonstrated",
             Outcome::DidNotBuild { .. } => "did_not_build",
             Outcome::DidNotRun { .. } => "did_not_run",
+            Outcome::NoCompiler => "no_compiler",
+            Outcome::NotRun => "not_run",
         }
     }
 }

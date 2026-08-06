@@ -1316,6 +1316,15 @@ pub fn prove_equivalent_with_replay(
             divergence_kind(observation)
         ));
     }
+    // **And a return type the harness's channel can carry.**
+    //
+    // Both results are read as `long long`. A `double` return is *converted* on the way in, so
+    // 1.25 and 1.75 both arrive as 1 and a true divergence reads as agreement — which, before
+    // the narrowing above, fed contract 11's downgrade. A `__int128` loses its high half the
+    // same way. The type is knowable here, where the module is, and nowhere in the emitter.
+    if let Some(why) = unrepresentable_return(before, &src.entry) {
+        return refuse(why);
+    }
 
     let replay = match chiero_replay::emit_equivalence(&src.before, &src.after, &src.entry, input) {
         Ok(r) => r,
@@ -1324,34 +1333,35 @@ pub fn prove_equivalent_with_replay(
         Err(refusal) => return refuse(refusal.why),
     };
     let outcome = match policy {
-        ReplayPolicy::EmitOnly => None,
-        ReplayPolicy::Run => {
-            chiero_replay::compiler().map(|cc| chiero_replay::run(&replay, &cc, &src.scratch))
-        }
+        ReplayPolicy::EmitOnly => chiero_replay::Outcome::NotRun,
+        ReplayPolicy::Run => match chiero_replay::compiler() {
+            Some(cc) => chiero_replay::run(&replay, &cc, &src.scratch),
+            None => chiero_replay::Outcome::NoCompiler,
+        },
     };
 
     let mut env = envelope_for(verdict);
     env.result["replay"] = serde_json::json!({
         "source": replay.source,
         "claim": replay.claim,
-        "outcome": outcome.as_ref().map(|o| o.label()),
+        "outcome": outcome.label(),
         "before": match &outcome {
-            Some(chiero_replay::Outcome::Demonstrated { before, .. })
-            | Some(chiero_replay::Outcome::NotDemonstrated { before, .. }) => {
+            chiero_replay::Outcome::Demonstrated { before, .. }
+            | chiero_replay::Outcome::NotDemonstrated { before, .. } => {
                 serde_json::Value::String(before.to_string())
             }
             _ => serde_json::Value::Null,
         },
         "after": match &outcome {
-            Some(chiero_replay::Outcome::Demonstrated { after, .. })
-            | Some(chiero_replay::Outcome::NotDemonstrated { after, .. }) => {
+            chiero_replay::Outcome::Demonstrated { after, .. }
+            | chiero_replay::Outcome::NotDemonstrated { after, .. } => {
                 serde_json::Value::String(after.to_string())
             }
             _ => serde_json::Value::Null,
         },
         "detail": match &outcome {
-            Some(chiero_replay::Outcome::DidNotBuild { detail })
-            | Some(chiero_replay::Outcome::DidNotRun { detail }) => {
+            chiero_replay::Outcome::DidNotBuild { detail }
+            | chiero_replay::Outcome::DidNotRun { detail } => {
                 serde_json::Value::String(detail.clone())
             }
             _ => serde_json::Value::Null,
@@ -1362,12 +1372,16 @@ pub fn prove_equivalent_with_replay(
     // sharper one in every other case.
     env.blind_spots.retain(|b| !b.contains("replay harness"));
     match &outcome {
-        Some(chiero_replay::Outcome::Demonstrated { .. }) => env,
-        None => env.with_blind_spot(
+        chiero_replay::Outcome::Demonstrated { .. } => env,
+        chiero_replay::Outcome::NotRun => env.with_blind_spot(
             "a replay harness was emitted and has not been run; the divergence is still \
              chiero's semantics (050 contract 11 gates execution)",
         ),
-        Some(chiero_replay::Outcome::NotDemonstrated { before, after }) => {
+        chiero_replay::Outcome::NoCompiler => env.with_blind_spot(
+            "execution was allowed and no C compiler was found, so the harness was emitted \
+             and nothing checked chiero's semantics here",
+        ),
+        chiero_replay::Outcome::NotDemonstrated { before, after } => {
             // 041 contract 11's downgrade, and the reason it is not silent.
             let mut e = Envelope::new(env.result.clone(), Fidelity::Approximated);
             e.assumptions = env.assumptions.clone();
@@ -1375,8 +1389,8 @@ pub fn prove_equivalent_with_replay(
             e.with_assumption(
                 "harness_disagreed",
                 &format!(
-                    "the compiled harness produced {before} from both versions ({after} from \
-                     the second), so chiero's semantics and this compiler do not agree here"
+                    "the compiled harness produced {before} from the first version and {after} \
+                     from the second, so chiero's semantics and this compiler do not agree here"
                 ),
             )
             .with_blind_spot(
@@ -1384,11 +1398,11 @@ pub fn prove_equivalent_with_replay(
                  downgraded, not confirmed (041 contract 11)",
             )
         }
-        Some(chiero_replay::Outcome::DidNotBuild { detail }) => env.with_blind_spot(&format!(
+        chiero_replay::Outcome::DidNotBuild { detail } => env.with_blind_spot(&format!(
             "the replay harness did not build, so nothing has checked chiero's semantics \
              here: {detail}"
         )),
-        Some(chiero_replay::Outcome::DidNotRun { detail }) => env.with_blind_spot(&format!(
+        chiero_replay::Outcome::DidNotRun { detail } => env.with_blind_spot(&format!(
             "the replay harness could not be run, so nothing has checked chiero's semantics \
              here: {detail}"
         )),
@@ -1467,6 +1481,25 @@ fn divergence_kind(d: &chiero_opt::Divergence) -> &'static str {
         chiero_opt::Divergence::Memory { .. } => "caller-visible memory",
         chiero_opt::Divergence::SideEffect { .. } => "side-effect",
         chiero_opt::Divergence::Termination { .. } => "termination",
+    }
+}
+
+/// Why the harness's `long long` channel cannot carry this function's return, if it cannot.
+fn unrepresentable_return(m: &chiero_cir::Module, entry: &str) -> Option<String> {
+    let f = m.funcs.iter().find(|f| *f.name == *entry)?;
+    match &f.ret {
+        chiero_cir::CTy::Int(bits) if *bits <= 64 => None,
+        chiero_cir::CTy::Int(bits) => Some(format!(
+            "`{entry}` returns {bits} bits and the harness compares two `long long` values, \
+             which would drop everything above 64"
+        )),
+        chiero_cir::CTy::Float(_) => Some(format!(
+            "`{entry}` returns a floating-point value and the harness compares two `long long` \
+             values, which would convert rather than compare it"
+        )),
+        other => Some(format!(
+            "`{entry}` returns {other:?}, which the harness's `long long` channel cannot carry"
+        )),
     }
 }
 

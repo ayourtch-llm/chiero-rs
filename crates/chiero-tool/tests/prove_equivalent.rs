@@ -249,9 +249,13 @@ fn the_response_carries_a_harness_that_compiles() {
             .is_some_and(|s| s.contains("int main")),
         "the response must carry the program: {v}"
     );
-    // **050 contract 11**: with execution off, text and *no* verdict.
-    assert!(
-        replay["outcome"].is_null(),
+    // **050 contract 11**: with execution off, text and no verdict — said, not absent.
+    //
+    // This asserted `outcome` was *null*, which was the weaker contract: a null could not be
+    // told from "execution was allowed and no compiler was found", and the blind spot cited
+    // the execution gate in both cases. `not_run` names the reason.
+    assert_eq!(
+        replay["outcome"], "not_run",
         "nobody ran it, and that is different from it having said nothing: {v}"
     );
     assert!(

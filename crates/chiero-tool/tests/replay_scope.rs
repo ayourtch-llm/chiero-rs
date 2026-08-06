@@ -219,8 +219,10 @@ fn not_run_and_no_compiler_are_distinguishable() {
     let Some(cfg) = cfg() else { return };
     let same = "int f (int x) { return x * 2; }\n";
     let s = sources("nocc", same, same, "f");
-    let double = "func @f(%0: i32) -> i32 {\nentry:\n  .line 1\n  %1 = mul i32 %0, 2i32\n  ret %1\n}";
-    let triple = "func @f(%0: i32) -> i32 {\nentry:\n  .line 1\n  %1 = mul i32 %0, 3i32\n  ret %1\n}";
+    let double =
+        "func @f(%0: i32) -> i32 {\nentry:\n  .line 1\n  %1 = mul i32 %0, 2i32\n  ret %1\n}";
+    let triple =
+        "func @f(%0: i32) -> i32 {\nentry:\n  .line 1\n  %1 = mul i32 %0, 3i32\n  ret %1\n}";
 
     let emitted = prove_equivalent_with_replay(
         &m(double),
@@ -235,7 +237,10 @@ fn not_run_and_no_compiler_are_distinguishable() {
         "a deliberate EmitOnly must say so rather than being a null: {v}"
     );
     assert!(
-        emitted.blind_spots.iter().any(|b| b.contains("contract 11")),
+        emitted
+            .blind_spots
+            .iter()
+            .any(|b| b.contains("contract 11")),
         "and cite the gate, which is the right reason here: {:?}",
         emitted.blind_spots
     );
@@ -250,24 +255,18 @@ fn not_run_and_no_compiler_are_distinguishable() {
 #[test]
 fn a_float_return_is_refused_rather_than_truncated() {
     let Some(cfg) = cfg() else { return };
-    let before = "\
-func @f(%0: i32) -> f64 {
-entry:
-  .line 1
-  %1 = sitofp f64 %0
-  ret %1
-}";
-    let after = "\
-func @f(%0: i32) -> f64 {
-entry:
-  .line 1
-  %1 = sitofp f64 %0
-  %2 = fadd f64 %1, fconst:f64:0x3fe0000000000000
-  ret %2
-}";
+    let ret = |bits: &str| {
+        format!("func @f(%0: i32) -> f64 {{\nentry:\n  .line 1\n  ret fconst:f64:{bits}\n}}")
+    };
+    // 1.0 against 2.0: two doubles that both convert to a different `long long`, so the
+    // truncation would not even be visible as agreement here — but the refusal must come
+    // first, on the type, rather than on whether this particular pair survives it.
+    let before = ret("0x3ff0000000000000");
+    let after = ret("0x4000000000000000");
     let c = "double f (int x) { return x; }\n";
     let s = sources("floatret", c, c, "f");
-    let env = prove_equivalent_with_replay(&m(before), &m(after), &cfg, Some(&s), ReplayPolicy::Run);
+    let env =
+        prove_equivalent_with_replay(&m(&before), &m(&after), &cfg, Some(&s), ReplayPolicy::Run);
     let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
     if v["result"]["verdict"] != "differs" {
         return; // nothing to emit a harness for
