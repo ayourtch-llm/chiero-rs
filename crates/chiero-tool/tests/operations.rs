@@ -260,7 +260,7 @@ fn prove_equivalent_replay_samples() -> Vec<Envelope> {
         flags: Vec::new(),
     };
     let cfg = chiero_opt::EquivCfg::new("f");
-    let mut out = vec![
+    let out = vec![
         // No sources: the same answer prove_equivalent gives.
         chiero_tool::prove_equivalent_with_replay(
             &m(DOUBLE),

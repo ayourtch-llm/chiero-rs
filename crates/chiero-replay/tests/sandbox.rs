@@ -28,6 +28,9 @@ fn dir(tag: &str) -> PathBuf {
 fn raw(source: &str) -> Replay {
     Replay {
         source: source.to_string(),
+        // These fixtures are whole programs; there is no before/after pair to compile beside
+        // them, which is itself worth exercising — a harness with no units must still run.
+        units: Vec::new(),
         claim: "a fixture that attempts something 050 §6 forbids".into(),
     }
 }

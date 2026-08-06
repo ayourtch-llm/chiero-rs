@@ -85,12 +85,13 @@ fn the_harness_is_a_self_contained_program_naming_both_versions() {
     let (b, a) = abs_pair(TAG);
     let r: Replay = must_emit(&b, &a, "f", &witness(&[(32, i32::MIN as u32 as u128)]));
 
+    // The whole program is the harness plus the two version units it links against.
+    let all: String = std::iter::once(r.source.clone())
+        .chain(r.units.iter().map(|(_, t)| t.clone()))
+        .collect::<Vec<_>>()
+        .join("\n");
     for want in ["#include", "int main", "abs_before.c", "abs_after.c"] {
-        assert!(
-            r.source.contains(want),
-            "`{want}` missing from:\n{}",
-            r.source
-        );
+        assert!(all.contains(want), "`{want}` missing from:\n{all}");
     }
     // The witness is in the program, not described beside it — and spelled the way C can
     // actually express it. `-2147483648` is C's negation of a value that does not fit in an
@@ -102,12 +103,12 @@ fn the_harness_is_a_self_contained_program_naming_both_versions() {
         "INT_MIN must be spelled the way C spells it:\n{}",
         r.source
     );
-    // And the two versions must be callable side by side, which means renamed.
+    // And the two versions must be callable side by side, which means renamed — once in the
+    // harness's own unit, which declares the wrappers, and once in each version's, which
+    // defines one.
     assert!(
-        r.source.matches("chiero_before").count() >= 2
-            && r.source.matches("chiero_after").count() >= 2,
-        "both versions must be reachable under distinct names:\n{}",
-        r.source
+        all.matches("chiero_before").count() >= 2 && all.matches("chiero_after").count() >= 2,
+        "both versions must be reachable under distinct names:\n{all}"
     );
 }
 
@@ -295,7 +296,9 @@ fn a_static_entry_is_still_reachable_after_the_split() {
         return;
     };
     let src = |k: i32| {
-        format!("static int shared (int x) {{ return x; }}\nstatic int f (int x) {{ return shared (x) + {k}; }}\n")
+        format!(
+            "static int shared (int x) {{ return x; }}\nstatic int f (int x) {{ return shared (x) + {k}; }}\n"
+        )
     };
     let b = write(TAG, "se_before.c", &src(1));
     let a = write(TAG, "se_after.c", &src(2));

@@ -1377,6 +1377,14 @@ pub fn prove_equivalent_with_replay(
     let mut env = envelope_for(verdict);
     env.result["replay"] = serde_json::json!({
         "source": replay.source,
+        // The two version units the harness links against — 040 §3.1's mechanism, split so a
+        // `static` helper the two versions share does not collide. A consumer handed only the
+        // harness could not rebuild it.
+        "units": replay
+            .units
+            .iter()
+            .map(|(n, t)| serde_json::json!({ "name": n, "source": t }))
+            .collect::<Vec<_>>(),
         "claim": replay.claim,
         "outcome": outcome.label(),
         "before": match &outcome {

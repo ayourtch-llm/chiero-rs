@@ -44,8 +44,17 @@ use std::path::{Path, PathBuf};
 /// this crate is for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Replay {
-    /// The complete C program.
+    /// The harness's own translation unit — what a reader is shown, and what calls the two
+    /// versions through the wrappers in [`Replay::units`].
     pub source: String,
+    /// The two versions, each as its own translation unit: `(filename, text)`.
+    ///
+    /// **Separate units, and that is the whole design.** Including both versions into one TU
+    /// put every `static` helper they share in it twice, so any pair of real files failed to
+    /// build. Separate compilation keeps a `static` file-local — and the wrapper appended to
+    /// each unit is what keeps a `static` *entry* reachable, which is 040 §3.1's requirement
+    /// and the reason one TU was chosen first.
+    pub units: Vec<(String, String)>,
     /// What the harness claims, for the comment at its head and for a reader who is handed the
     /// text without running it.
     pub claim: String,
@@ -350,34 +359,58 @@ pub fn emit_equivalence(
     // **`main` is renamed out of the way around each include** — 040 §3.1's first hazard. A
     // translation unit with its own `main` would collide with the harness's, and 51 VPP files
     // have one.
-    let mut source = String::new();
-    source.push_str(&format!(
+    //
+    // Each version becomes its own unit with a non-static wrapper appended. The wrapper is in
+    // the same TU as the entry, so a `static` entry is reachable; the unit is separate, so a
+    // `static` helper the two versions share does not collide.
+    let params: Vec<String> = (0..args.len()).map(|i| format!("long long p{i}")).collect();
+    let sig = if params.is_empty() {
+        "void".to_string()
+    } else {
+        params.join(", ")
+    };
+    let forward: Vec<String> = (0..args.len()).map(|i| format!("p{i}")).collect();
+    let mut units = Vec::new();
+    for (tag, path) in [("before", before), ("after", after)] {
+        units.push((
+            format!("chiero_{tag}.c"),
+            format!(
+                "/* chiero replay unit: the {tag} version of `{entry}` */\n\
+                 #define {entry} chiero_{tag}_{entry}\n\
+                 #define main chiero_{tag}_main\n\
+                 #include \"{}\"\n\
+                 #undef main\n\
+                 #undef {entry}\n\n\
+                 long long chiero_call_{tag} ({sig})\n{{\n  \
+                 return (long long) chiero_{tag}_{entry} ({});\n}}\n",
+                path.display(),
+                forward.join(", ")
+            ),
+        ));
+    }
+
+    let source = format!(
         "/* chiero replay: {claim}\n   \
          Exits 0 when the two versions disagree, which is what chiero claimed.\n   \
          Exits 1 when they AGREE: chiero and this compiler do not, and the finding is\n   \
-         downgraded rather than trusted (041 contract 11). */\n#include <stdio.h>\n\n"
-    ));
-    for (tag, path) in [("before", before), ("after", after)] {
-        source.push_str(&format!(
-            "#define {entry} chiero_{tag}_{entry}\n\
-             #define main chiero_{tag}_main\n\
-             #include \"{}\"\n\
-             #undef main\n\
-             #undef {entry}\n\n",
-            path.display()
-        ));
-    }
-    source.push_str(&format!(
-        "int main (void)\n{{\n  \
-         long long b = (long long) chiero_before_{entry} ({call});\n  \
-         long long a = (long long) chiero_after_{entry} ({call});\n  \
+         downgraded rather than trusted (041 contract 11). */\n\
+         #include <stdio.h>\n\n\
+         long long chiero_call_before ({sig});\n\
+         long long chiero_call_after ({sig});\n\n\
+         int main (void)\n{{\n  \
+         long long b = chiero_call_before ({call});\n  \
+         long long a = chiero_call_after ({call});\n  \
          FILE *chiero_out = fopen (CHIERO_RESULT, \"w\");\n  \
          if (!chiero_out) return 2;\n  \
          fprintf (chiero_out, \"before=%lld after=%lld\\n\", b, a);\n  \
          fclose (chiero_out);\n  \
          return b == a;\n}}\n"
-    ));
-    Ok(Replay { source, claim })
+    );
+    Ok(Replay {
+        source,
+        units,
+        claim,
+    })
 }
 
 /// Compile and run a harness, and report which of the four things happened.
@@ -424,6 +457,17 @@ pub fn run_with(r: &Replay, cc: &Path, dir: &Path, flags: &[String]) -> Outcome 
     );
     let src = dir.join(format!("chiero_replay_{tag}.c"));
     let bin = dir.join(format!("chiero_replay_{tag}.bin"));
+    // Each version's unit alongside the harness, named per call for the same reason.
+    let mut unit_paths = Vec::new();
+    for (n, (name, text)) in r.units.iter().enumerate() {
+        let p = dir.join(format!("chiero_unit_{tag}_{n}_{name}"));
+        if let Err(e) = std::fs::write(&p, text) {
+            return Outcome::DidNotRun {
+                detail: format!("cannot write {}: {e}", p.display()),
+            };
+        }
+        unit_paths.push(p);
+    }
     if let Err(e) = std::fs::write(&src, &r.source) {
         return Outcome::DidNotRun {
             detail: format!("cannot write the harness: {e}"),
@@ -443,6 +487,7 @@ pub fn run_with(r: &Replay, cc: &Path, dir: &Path, flags: &[String]) -> Outcome 
         .arg("-o")
         .arg(&bin)
         .arg(&src)
+        .args(&unit_paths)
         .output()
     {
         Err(e) => {
