@@ -10160,8 +10160,8 @@ fn exceeding_max_states_keeps_the_findings_it_already_had() {
     );
 }
 
-/// **023 §8.1's wall clock, which is the only budget that can bound a run nobody is willing
-/// to wait for.** A budget of zero is past before the first instruction, so the run stops
+/// **023 contract 24a, and §8.1's wall clock — the only budget that can bound a run nobody is
+/// willing to wait for.** A budget of zero is past before the first instruction, so the run stops
 /// immediately, `Bounded`, naming the bound that stopped it.
 ///
 /// **Why zero rather than a short duration**: every other budget here is a count, and a count
@@ -10214,8 +10214,8 @@ fn the_wall_clock_is_off_unless_a_caller_asks_for_one() {
     assert_eq!(Budget::default().wall_clock, None);
 }
 
-/// **A run that cannot finish still produces an answer** — which is the whole reason this
-/// budget exists. Six VPP entry points were killed by an external `timeout` while measuring
+/// **023 contract 24a: a run that cannot finish still produces an answer** — which is the
+/// whole reason this budget exists. Six VPP entry points were killed by an external `timeout` while measuring
 /// `find-bugs`, and a process that is killed emits nothing at all: no findings, no fidelity, no
 /// envelope naming what was not searched. "Nothing there" and "did not look" became the same
 /// output, which is the one thing this project does not allow itself.

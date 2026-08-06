@@ -74,6 +74,12 @@ OPTIONS:
                     caller's object size nor where in it the pointer points, so
                     those say nothing about your program. The count is always
                     reported, shown or not.
+    --time-budget <secs>
+                    Stop `find-bugs` and `check-reachable` after that many seconds
+                    and print what was found so far. Decimals allowed; 0 means no
+                    limit, as in timeout(1). Default 60. A run that ends here is
+                    marked `nondeterministic_abort`: where it stopped depends on
+                    the machine, so the answer is a measurement.  (023 §8.1)
     --entry-ptr-nonnull
                     Assume the pointer parameters of --entry are not null. For a
                     helper whose callers check, the null path is one the program
@@ -166,6 +172,9 @@ struct Options {
     allow_replay_exec: bool,
     entry_ptr_nonnull: bool,
     report_invented_bounds: bool,
+    /// `None` is "the caller said nothing" and takes [`Options::wall_clock`]'s default; an
+    /// explicit `0` is "no limit", which is a different thing and has to stay tellable apart.
+    time_budget: Option<f64>,
 }
 
 fn define(d: &str) -> (String, String) {
@@ -196,6 +205,10 @@ impl Options {
                 "--allow-replay-exec" => {
                     o.replay = true;
                     o.allow_replay_exec = true;
+                }
+                "--time-budget" => {
+                    o.time_budget = Some(secs(&need(i, args, "--time-budget")?)?);
+                    i += 1;
                 }
                 "--entry" => {
                     o.entry = Some(need(i, args, "--entry")?);
@@ -267,12 +280,37 @@ impl Options {
         Ok(self.positional.iter().map(PathBuf::from).collect())
     }
 
+    /// **60 seconds unless told otherwise, and `0` means none** (`timeout(1)`'s convention).
+    ///
+    /// The library default is `None` — 023 §8.1 requires the determinism contracts to run
+    /// without a clock, and `Budget::default()` is what they use. This is the other surface:
+    /// somebody is waiting at a terminal, and a command that never returns is the worst answer
+    /// available, because it is not one.
+    fn wall_clock(&self) -> Option<std::time::Duration> {
+        match self.time_budget {
+            None => Some(std::time::Duration::from_secs(60)),
+            Some(s) if s <= 0.0 => None,
+            Some(s) => Some(std::time::Duration::from_secs_f64(s)),
+        }
+    }
+
     fn frontend(&self) -> Frontend {
         Frontend {
             includes: self.includes.clone(),
             defines: self.defines.clone(),
             system_headers: !self.no_system_headers,
         }
+    }
+}
+
+/// Seconds, as a decimal — a test that wants to see the clock fire cannot wait a whole second,
+/// and a user who wants ten minutes should not count in milliseconds.
+fn secs(s: &str) -> Result<f64, Fault> {
+    match s.parse::<f64>() {
+        Ok(v) if v.is_finite() && v >= 0.0 => Ok(v),
+        _ => Err(Fault::Usage(format!(
+            "--time-budget wants a non-negative number of seconds, got `{s}`"
+        ))),
     }
 }
 
@@ -362,6 +400,7 @@ fn find_bugs(o: &Options) -> Result<chiero_tool::Envelope, Fault> {
     let mut cfg = chiero_tool::BugCfg::new(entry.clone());
     cfg.entry_ptr_nonnull = o.entry_ptr_nonnull;
     cfg.report_invented_bounds = o.report_invented_bounds;
+    cfg.budget.wall_clock = o.wall_clock();
     if o.replay {
         cfg.source = Some(chiero_tool::ReplaySources {
             before: f[0].clone(),
@@ -398,6 +437,7 @@ fn check_reachable(o: &Options) -> Result<chiero_tool::Envelope, Fault> {
     let m = lower(&f[0], &read(&f[0])?, o.frontend()).map_err(Fault::Failed)?;
     let mut cfg = chiero_tool::BugCfg::new(entry);
     cfg.entry_ptr_nonnull = o.entry_ptr_nonnull;
+    cfg.budget.wall_clock = o.wall_clock();
     Ok(chiero_tool::check_reachable(&m, &cfg, line))
 }
 

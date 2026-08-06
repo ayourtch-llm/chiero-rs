@@ -322,6 +322,23 @@ So the two kinds of budget are separated:
   determinism contracts, and the run is marked `nondeterministic_abort: true`. CI runs the
   determinism gates with `wall_clock: None`.
 
+**Where the default lives** (settled when this was implemented): `Budget::default()` carries
+`None`, and the CLI — the surface where somebody is waiting — sets 60 s and takes
+`--time-budget <secs>`, with `0` meaning none. A library default of 60 s would put a clock
+under every test in the workspace and make contract 6 untestable by construction. And the
+`nondeterministic_abort` flag is set when the clock **fires**, not when one is configured: a
+run that finished inside its clock took the branches a clockless run would have taken and
+produced the same bytes, so flagging it would make every ordinary CLI answer claim to be
+irreproducible and the flag would stop meaning anything.
+
+**Why it exists at all, since the alternative is not "no clock" but "somebody else's clock".**
+Without it a run nobody will wait for is killed from outside, and a killed process prints
+nothing — no findings, no fidelity, no envelope naming what went unsearched. Measuring
+`find-bugs` on VPP, that was 6 of 220 entry points on the `vnet/` sweep and 11 of 207 on the
+ACL plugin: rows that read `timeout` and said nothing about the function, indistinguishable
+from a function with nothing to report. A flagged, bounded answer is a worse result than a
+complete one and an incomparably better one than silence.
+
 Without this split, contract 6 and contract 17 are not merely hard, they are false.
 
 Loop bounds are per **back edge**, identified by dominator analysis over the CFG, not by
@@ -459,6 +476,11 @@ results (contract 17).
 23. A `Value::Ptr` survives being stored to a local, loaded back, and passed to a model:
     `free(p)` after such a round trip identifies the same `ObjectId`, and the pointer
     reaching a `Checker` through `Event::Call { args }` carries the same `ObjectId`.
+24a. **The wall clock cuts a run and says so.** With `wall_clock: Some(d)` a run that
+    would exhaust `max_states` instead ends at `d`, keeps every finding it had already made,
+    is `Bounded`, and records one `BudgetHit` naming `wall_clock` **and how many states were
+    left unexplored**. With `wall_clock: None` — the default — no clock is consulted at all.
+    A run the clock cut can never return `unreachable` from `check_reachable`.
 24. `CallReturn` fires in the caller for all three callee kinds — a defined function, a
     modeled extern, and an **unmodeled** extern whose fresh return value has no return
     instruction — and carries the value the caller will observe.

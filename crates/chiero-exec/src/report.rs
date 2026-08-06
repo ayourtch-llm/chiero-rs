@@ -109,14 +109,21 @@ pub fn render(r: &RunResult) -> String {
     let _ = writeln!(
         out,
         "bounds: max_depth {}, max_loop_iters {}, max_recursion_depth {}, max_states {}, \
-         max_forks {}, max_indirect {}, max_resolutions {}",
+         max_forks {}, max_indirect {}, max_resolutions {}, wall_clock {}",
         b.max_depth,
         b.max_loop_iters,
         b.max_recursion_depth,
         b.max_states,
         b.max_forks,
         b.max_indirect,
-        b.max_resolutions
+        b.max_resolutions,
+        // `none` rather than an omitted field: "this run had no time limit" is a fact about
+        // the bounds, and the whole reason they are printed unhit is that a reader can tell a
+        // generous run from a trivial one.
+        match b.wall_clock {
+            Some(d) => format!("{d:.3?}"),
+            None => "none".to_string(),
+        }
     );
     out
 }

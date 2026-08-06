@@ -251,9 +251,14 @@ visible.
      and an idle machine.
 16. With `wall_clock: None` ([023 §8.1](023-execution-engine.md)), two runs of any
     operation on identical input produce identical `determinism_key` and byte-identical
-    results. With a wall clock set, the response carries `nondeterministic_abort: true`
-    and **must not be cached on `determinism_key`** — the key hashes inputs, so it cannot
-    distinguish two runs that aborted at different points.
+    results. With a wall clock that **fired**, the response carries
+    `nondeterministic_abort: true` and **must not be cached on `determinism_key`**.
+    (Refined when this was built: the flag follows the abort, not the configuration — a run
+    that finished inside its clock is byte-for-byte the run it would have been without one,
+    and the CLI sets a clock by default, so flagging on configuration would mark every
+    ordinary answer irreproducible. `determinism_key` here hashes the *answer* rather than
+    the inputs, so two runs cut at different points already key differently; the flag is what
+    says the answer itself is a measurement.)
 16b. Truncation is per-list, and `assumptions`, `blind_spots` and `budgets.hit` are never
      truncated (asserted on a response with 400 assumptions).
 17. Every error response has a machine `code` and a `retryable` flag.

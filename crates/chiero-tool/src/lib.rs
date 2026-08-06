@@ -282,6 +282,12 @@ pub struct Envelope {
     pub assumptions: Vec<(String, String)>,
     pub blind_spots: Vec<String>,
     truncation: Option<(usize, usize)>,
+    /// **050 contract 16.** The run ended at a wall clock rather than at its own conclusion, so
+    /// this answer is a measurement of a machine on a particular afternoon and re-running it
+    /// may produce a different one. Everything else chiero prints is a computation over its
+    /// input; this is the field that says when that stops being true, and a consumer that
+    /// caches answers must not cache one carrying it.
+    nondeterministic_abort: bool,
 }
 
 impl Envelope {
@@ -294,6 +300,7 @@ impl Envelope {
             assumptions: Vec::new(),
             blind_spots: Vec::new(),
             truncation: None,
+            nondeterministic_abort: false,
         }
     }
 
@@ -307,6 +314,16 @@ impl Envelope {
     /// Record a class of thing this answer cannot see.
     pub fn with_blind_spot(mut self, what: &str) -> Envelope {
         self.blind_spots.push(what.into());
+        self
+    }
+
+    /// Record that the run was cut by 023 §8.1's wall clock.
+    ///
+    /// **One way in, and it only ever sets.** An envelope that could un-flag itself would be a
+    /// way to launder an aborted answer into a reproducible one, which is the same shape as
+    /// `downgraded_to`'s refusal to raise a fidelity.
+    pub fn aborted_on_wall_clock(mut self) -> Envelope {
+        self.nondeterministic_abort = true;
         self
     }
 
@@ -362,6 +379,7 @@ impl Envelope {
                 .map(|(k, d)| serde_json::json!({ "kind": k, "detail": d }))
                 .collect::<Vec<_>>(),
             "blind_spots": self.blind_spots,
+            "nondeterministic_abort": self.nondeterministic_abort,
             "truncation": match self.truncation {
                 Some((shown, total)) => serde_json::json!({
                     "truncated": true, "shown": shown, "total": total,
@@ -399,6 +417,13 @@ impl Envelope {
         }
         if let Some((shown, total)) = self.truncation {
             out.push_str(&format!("\n  showing {shown} of {total}"));
+        }
+        // Last, because it qualifies everything above it: a reader who has just read the
+        // findings needs to know that the same command may print a different set.
+        if self.nondeterministic_abort {
+            out.push_str(
+                "\n  the clock ended this run, not the search — re-running may answer differently",
+            );
         }
         out
     }
@@ -1134,6 +1159,11 @@ pub fn find_bugs(module: &chiero_cir::Module, cfg: &BugCfg) -> Envelope {
 
     let fidelity = exec_fidelity(run.fidelity());
     let mut env = Envelope::new(result, fidelity);
+    // 050 contract 16, and the reason a killed process was worse than a bounded answer: this
+    // run stopped where the machine's speed put it, and says so.
+    if run.wall_clock_hit() {
+        env = env.aborted_on_wall_clock();
+    }
     if cfg.entry_ptr_nonnull {
         env = env.with_assumption(
             "entry_ptr_nonnull",
@@ -1247,6 +1277,15 @@ pub fn check_reachable(module: &chiero_cir::Module, cfg: &BugCfg, line: u32) -> 
         None => engine.with_solver(chiero_exec::SolverTier::LiteOnly),
     };
     let run = engine.run(&mut arena);
+    // Applied at every exit below, because a verdict from a run the clock ended is a
+    // measurement wherever it lands — 050 contract 16.
+    let clock = |e: Envelope| {
+        if run.wall_clock_hit() {
+            e.aborted_on_wall_clock()
+        } else {
+            e
+        }
+    };
 
     // A state whose trace passes through one of those blocks got there.
     let arrived = run.states().iter().find(|s| {
@@ -1264,17 +1303,17 @@ pub fn check_reachable(module: &chiero_cir::Module, cfg: &BugCfg, line: u32) -> 
         // makes `Sat` self-certifying, which is exactly what "here is an input that gets
         // there" needs.
         let witness = witness_for_path(s, &mut arena, cfg.backend.clone());
-        return Envelope::new(
+        return clock(Envelope::new(
             serde_json::json!({
                 "verdict": "reachable",
                 "line": line,
                 "witness": witness,
                 "why": serde_json::Value::Null,
             }),
-            // A path that arrived is a fact about this program, whatever else the run had to
-            // approximate: the state is *there*.
+            // A path that arrived is a fact about this program, whatever else the run had
+            // to approximate: the state is *there*.
             Fidelity::Exact,
-        );
+        ));
     }
 
     // Nothing arrived. Whether that is a proof depends entirely on whether the search was
@@ -1289,6 +1328,15 @@ pub fn check_reachable(module: &chiero_cir::Module, cfg: &BugCfg, line: u32) -> 
     }
     let fidelity = exec_fidelity(run.fidelity());
     if fidelity == Fidelity::Exact && cut.is_empty() {
+        // **A clock cannot end here.** Its abort degrades the state that was running to
+        // `Bounded` and records the bound, so a run it cut has neither `Exact` nor an empty
+        // `cut` — which is what keeps "nothing arrived" from becoming `unreachable` because
+        // the machine was slow. `debug_assert` rather than a branch: if that ever stops being
+        // true, this is the line that must not silently keep working.
+        debug_assert!(
+            !run.wall_clock_hit(),
+            "a cut run cannot prove unreachability"
+        );
         return Envelope::new(
             serde_json::json!({
                 "verdict": "unreachable",
@@ -1299,18 +1347,20 @@ pub fn check_reachable(module: &chiero_cir::Module, cfg: &BugCfg, line: u32) -> 
             Fidelity::Exact,
         );
     }
-    Envelope::new(
-        serde_json::json!({
-            "verdict": "not_shown_reachable",
-            "line": line,
-            "witness": serde_json::Value::Null,
-            "why": cut.join("; "),
-        }),
-        fidelity,
-    )
-    .with_blind_spot(
-        "no path chiero explored reached this line, and the search was not complete — the \
-         line may still be reachable",
+    clock(
+        Envelope::new(
+            serde_json::json!({
+                "verdict": "not_shown_reachable",
+                "line": line,
+                "witness": serde_json::Value::Null,
+                "why": cut.join("; "),
+            }),
+            fidelity,
+        )
+        .with_blind_spot(
+            "no path chiero explored reached this line, and the search was not complete — the \
+             line may still be reachable",
+        ),
     )
 }
 

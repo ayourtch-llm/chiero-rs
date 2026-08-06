@@ -1036,6 +1036,15 @@ pub struct RunResult {
     /// 023 §8: reported whether or not it was hit, so a reader can tell
     /// `Exact`-with-generous-bounds from `Exact`-with-trivial-bounds.
     budget: Budget,
+    /// Whether 023 §8.1's wall clock actually fired.
+    ///
+    /// **Hit, not set.** 050 contract 16 says a wall clock makes a response
+    /// `nondeterministic_abort`, and the literal reading — flag whenever one is configured —
+    /// would mark every ordinary CLI answer as irreproducible, since the CLI sets a clock by
+    /// default. A run that finished inside its clock took every branch a clockless run would
+    /// have taken and produced the identical bytes; the thing a consumer must not cache is an
+    /// answer that stopped somewhere the machine's speed chose, and that is exactly this.
+    wall_clock_hit: bool,
     _seal: Sealed,
 }
 
@@ -1073,6 +1082,13 @@ impl RunResult {
 
     pub fn budget(&self) -> Budget {
         self.budget
+    }
+
+    /// **Did the clock end this run?** — 023 §8.1, and the one bit of a `RunResult` that is a
+    /// measurement rather than a computation. A consumer that caches answers keyed on their
+    /// inputs must not cache one of these.
+    pub fn wall_clock_hit(&self) -> bool {
+        self.wall_clock_hit
     }
 
     /// Everything the models reported, across every state — **once each**. States that
@@ -2099,6 +2115,7 @@ impl<'m> Engine<'m> {
                 completion_order: vec![0],
                 seed: self.seed(),
                 budget: self.budget,
+                wall_clock_hit: false,
                 _seal: Sealed,
                 solver: self.solver_name(),
             };
@@ -2189,6 +2206,7 @@ impl<'m> Engine<'m> {
                 completion_order: vec![0],
                 seed: self.seed(),
                 budget: self.budget,
+                wall_clock_hit: false,
                 _seal: Sealed,
                 solver: self.solver_name(),
             };
@@ -2437,8 +2455,46 @@ impl<'m> Engine<'m> {
         // seed produces does not depend on how many states happened to be live — which
         // would make the order depend on the budget and the module rather than the seed.
         let mut rng = self.seed();
+        // 023 §8.1. `Instant::now()` is only ever called when a caller asked for a clock, so
+        // a run with `wall_clock: None` does not consult one — which is what makes "the
+        // determinism contracts run without a clock" true of the *code* and not only of the
+        // configuration.
+        let started = self.budget.wall_clock.map(|_| std::time::Instant::now());
+        let mut wall_clock_hit = false;
         while let Some(mut s) = pick(&mut work, self.strategy, &mut rng) {
             while s.status == Status::Running {
+                if let (Some(limit), Some(t0)) = (self.budget.wall_clock, started)
+                    && t0.elapsed() >= limit
+                {
+                    // **Everything still on the worklist is abandoned here**, and the
+                    // count of it goes in the message: a reader deciding whether to
+                    // re-run with a longer clock needs the size of what was left, and
+                    // "a budget was hit" is true of every bound and actionable for none.
+                    //
+                    // The abandoned states are *not* pushed into `done`. Each is a fork
+                    // sibling whose parent either finished or is this state, so it holds
+                    // no report its parent did not — nothing is lost — and pushing them
+                    // would fire `Ev::Terminated` on paths that were never walked to an
+                    // end, which is exactly where an end-of-path checker invents a leak.
+                    //
+                    // Draining `work` is also what ends the outer loop: `pick` has
+                    // nothing left to hand out, so no flag is needed to break it.
+                    let why = format!(
+                        "wall_clock ({:.3?}) reached, {} state(s) left unexplored",
+                        limit,
+                        work.len()
+                    );
+                    work.clear();
+                    wall_clock_hit = true;
+                    s.status = Status::Terminated(TermReason::Budget);
+                    s.degrade(
+                        Fidelity::Bounded,
+                        AssumptionKind::BudgetHit,
+                        Span::DUMMY,
+                        &why,
+                    );
+                    break;
+                }
                 let forked = self.step(a, &mut s);
                 // An indirect call creates several siblings at once, which `step` cannot
                 // return.
@@ -2530,6 +2586,7 @@ impl<'m> Engine<'m> {
             completion_order,
             seed: self.seed(),
             budget: self.budget,
+            wall_clock_hit,
             _seal: Sealed,
             solver: self.solver_name(),
         }

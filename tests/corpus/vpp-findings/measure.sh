@@ -64,8 +64,14 @@ while IFS=$'\t' read -r f fn; do
         own="-I$VPPBUILD/vpp/CMakeFiles/plugins/$d"
       ;;
   esac
-  timeout "$TIMEOUT" "$CHIERO" find-bugs "$VPP/src/$f" --entry "$fn" --json \
-      $INC $own $DEF "$@" >"$J" 2>/dev/null
+  # **chiero's own clock first, the harness's as a backstop.** `--time-budget` stops the
+  # search and prints what it had; `timeout` kills the process and prints nothing, which is
+  # what every `timeout` row in the old numbers was — a function about which the measurement
+  # says nothing, indistinguishable from one with nothing to say. The outer limit is larger so
+  # that the two are tellable apart: `cut` means chiero stopped, `timeout` means something the
+  # clock does not cover did not (the frontend, or a single solver query).
+  timeout "$((TIMEOUT + 30))" "$CHIERO" find-bugs "$VPP/src/$f" --entry "$fn" --json \
+      --time-budget "$TIMEOUT" $INC $own $DEF "$@" >"$J" 2>/dev/null
   rc=$?
   # A timeout and a crash are different facts and neither is "no findings" — the whole
   # project's rule, applied to its own measurement harness.
