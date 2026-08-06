@@ -67,12 +67,20 @@ fn the_harness_is_a_self_contained_program_naming_both_versions() {
     let r: Replay = emit_equivalence(&b, &a, "f", &witness(&[(32, i32::MIN as u32 as u128)]));
 
     for want in ["#include", "int main", "abs_before.c", "abs_after.c"] {
-        assert!(r.source.contains(want), "`{want}` missing from:\n{}", r.source);
+        assert!(
+            r.source.contains(want),
+            "`{want}` missing from:\n{}",
+            r.source
+        );
     }
-    // The witness is in the program, not described beside it.
+    // The witness is in the program, not described beside it — and spelled the way C can
+    // actually express it. `-2147483648` is C's negation of a value that does not fit in an
+    // `int`, which is why `<limits.h>` defines `INT_MIN` as `(-2147483647 - 1)`. A harness
+    // writing the obvious thing would fail to reproduce exactly the divergence 041 §1.3 uses
+    // as its worked example.
     assert!(
-        r.source.contains("-2147483648"),
-        "the distinguishing input must appear as a literal:\n{}",
+        r.source.contains("(-2147483647 - 1)"),
+        "INT_MIN must be spelled the way C spells it:\n{}",
         r.source
     );
     // And the two versions must be callable side by side, which means renamed.
@@ -164,7 +172,9 @@ fn a_translation_unit_with_its_own_main_still_builds() {
     let Some(cc) = chiero_replay::compiler() else {
         return;
     };
-    let src = |k: i32| format!("int f (int x) {{ return x + {k}; }}\nint main (void) {{ return f (0); }}\n");
+    let src = |k: i32| {
+        format!("int f (int x) {{ return x + {k}; }}\nint main (void) {{ return f (0); }}\n")
+    };
     let b = write("main_before.c", &src(1));
     let a = write("main_after.c", &src(2));
     let r = emit_equivalence(&b, &a, "f", &witness(&[(32, 0)]));
