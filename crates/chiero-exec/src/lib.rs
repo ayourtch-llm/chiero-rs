@@ -6858,6 +6858,54 @@ impl<'m> Engine<'m> {
                 other => Some(other),
             })
             .collect();
+        // **A bounds fault against a lazily-materialized object is decided by a number
+        // chiero picked.**
+        //
+        // 021 §6 gives an entry pointer parameter — and every object materialized behind one —
+        // a fresh object of `entry_param_bytes`, and points the parameter at *offset 0* of it.
+        // Neither is a fact about the program. `ENTRY_PARAM_BYTES`'s own doc says so: "the
+        // caller is outside the analysis, so there is no right answer — this is a bound chiero
+        // chose". An unconstrained pointer is precisely one that may point anywhere inside a
+        // larger object, so both the far end and the near end of that object are chiero's.
+        //
+        // Until this existed, the fault was reported at the fidelity of the path that reached
+        // it — and on a straight-line path that is `Exact`, which is `proven: true`. Measured on
+        // VPP: of 231 findings over 40 entry points, exactly one was `Exact`, and it was
+        // `_vec_find (v)->len = n_elts` in `_vec_update_len` — an access at offset -8, which is
+        // how *every* VPP vector reaches its header. chiero's single strongest claim on real
+        // code, and it was wrong.
+        //
+        // The access is still reported: an out-of-bounds access through a pointer parameter is
+        // worth a reader's attention even when the bound is chiero's. What it may no longer do
+        // is claim proof. 023 §7 rule 3 wants every degradation to name its cause, so the
+        // number chiero chose is in the message — a reader who knows the caller's object is
+        // larger can then dismiss it in one step.
+        let invented: Vec<(chiero_mem::ObjectId, u64)> = faults
+            .iter()
+            .filter_map(|f| match f {
+                chiero_mem::MemFault::OutOfBounds { obj, obj_size, .. }
+                | chiero_mem::MemFault::OutOfBoundsMaybe { obj, obj_size, .. }
+                | chiero_mem::MemFault::PointerOutsideObject { obj, obj_size, .. } => {
+                    Some((*obj, *obj_size))
+                }
+                _ => None,
+            })
+            .filter(|(obj, _)| s.mem.kind_of(*obj) == Some(ObjKind::Lazy))
+            .collect();
+        for (obj, obj_size) in invented {
+            s.degrade(
+                Fidelity::Approximated,
+                AssumptionKind::OpaqueCode,
+                span,
+                &format!(
+                    "the bound crossed belongs to {}, which chiero sized at {obj_size} bytes \
+                     and pointed the parameter at the base of because the caller is outside \
+                     the analysis; a caller passing an interior pointer, or a larger object, \
+                     has no fault here",
+                    self.object_desc(s, obj)
+                ),
+            );
+        }
         for f in &faults {
             self.finding_seq += 1;
             let key = FindingKey {
