@@ -900,6 +900,35 @@ a value the path allows to be zero. `Unknown`, with inline asm, `__builtin_expec
 write and 1496 unreported invented-bound accesses all named in the envelope. A reader can act on
 that or dismiss it in one pass, which is the whole objective.
 
+#### The ACL plugin — 207 entry points, 16 findings → 10, and one wrong answer underneath
+
+`LIST=<acl.tsv> tests/corpus/vpp-findings/measure.sh --entry-ptr-nonnull`. 196 analysed,
+11 time out at 30 s.
+
+| | findings |
+|---|---|
+| first run | 16 |
+| after `__builtin_expect` | 3 of the first 198 (12 at the tail) |
+| after `copy_via` | **10**, of which **9 are one defect** |
+
+Two engine defects, both with wide blast radius:
+
+1. **`__builtin_expect` was an opaque call.** `PREDICT_FALSE (v == 0)` is *the* guard idiom in
+   VPP, so the branch stopped being about `v`, the null path survived into the body, and
+   `vec_validate`'s guarded `_vec_len (v)` — `v[-8]` — reported a null dereference. GCC defines
+   the builtin as returning its first argument; it now lowers to that argument.
+2. **`Memory::copy` did not discharge 021 §6's laziness** on its source, so every by-value
+   aggregate parameter — 015 lowers `f (struct id s)` to a `CopyMem` from the caller's pointer —
+   read back as uninitialized. `copy_via` is the third API in that family.
+
+⚠️ **Twice while fixing (1) I broke lowering on real VPP and `./check.sh` stayed green.**
+`type_of` walks *down* sema's conversion chain while `self.expr` emits it, so `Int(8)` was
+declared for a promoted `char` (18 of 40 entry points went `ok` → `failed`), and then
+`CTy::Int(width_of(..))` assumed `Int(32)` for an `F64` (95 of 207 went `ok` → `failed`). Both
+were caught by the checked-in measurement and by nothing else. `Lowerer::top_cty` is the fix and
+"guessing `Int` at all" was the actual mistake. **Run `measure.sh` before committing anything
+that touches lowering** — it is four minutes.
+
 #### The wide sweep — 220 entry points across `vnet/`, and three more of the same
 
 Run it with `LIST=<file> tests/corpus/vpp-findings/measure.sh` (the `LIST` variable exists for
@@ -1028,6 +1057,33 @@ typing the paths ever would.
 > **The one remaining finding is the shape a finding should have**: `clib_time_init` divides by
 > a value the path allows to be zero, `Unknown`, with inline asm, `__builtin_expect`, an opaque
 > write and 1496 unreported invented-bound accesses named in the envelope.
+>
+> ### 🚨 OPEN, AND THE MOST SERIOUS THING IN THIS FILE — a struct copy over 16 bytes is truncated
+>
+> ```c
+> typedef struct { unsigned int a, b, c, d, e; } s20;   /* 20 bytes */
+> unsigned f (s20 *in) { s20 t; t = *in; return t.e; }  /* offset 16 */
+> ```
+>
+> → `uninitialized-read: read at offset 16 of t`. **12 and 16 bytes are clean; 20 is not**, and
+> the boundary is exactly `chiero_mem::MAX_ACCESS_BITS` (128 bits). Bisected: it is the *size*,
+> not the field count and not unions — `struct {unsigned long a,b;}` (16 B, 2 fields) is fine
+> and `struct {unsigned int a,b,c,d,e;}` (20 B, 5 fields) is not.
+>
+> **This is not a false-positive problem, it is a wrong-answer problem.** A struct assignment is
+> silently losing its tail, so every later read of those bytes is analysed against a program
+> that did not run. It is worse for 041 than for 040: `prove_equivalent` would call two versions
+> equal, or unequal, on the strength of bytes that were never copied.
+>
+> Lowering is **not** the culprit — it emits one `CopyMem` of the layout's size (015 contract 6)
+> and `lvalue_addr` handles `*p`. The trail runs into `Memory::copy` → `read_raw`, and
+> `check_int_width` caps the byte-addressed integer API at `MAX_ACCESS_BITS` with the note "above
+> 16 bytes the write duplicated the value's low bytes and the read silently narrowed". Start
+> there; a copy should chunk rather than inherit an access-width limit.
+>
+> Found by pointing `find-bugs` at the ACL plugin — 9 of its last 10 findings were this, in
+> `format_ip46_session_bihash_kv`, whose `fa_5tuple_t` union has *compile-time assertions*
+> pinning the very offsets chiero called unwritten.
 >
 > ### ⏭️ What to do next, in order
 >
