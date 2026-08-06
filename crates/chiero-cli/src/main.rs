@@ -338,7 +338,29 @@ fn find_bugs(o: &Options) -> Result<chiero_tool::Envelope, Fault> {
         .clone()
         .ok_or_else(|| Fault::Usage("find-bugs needs --entry <fn>".into()))?;
     let m = lower(&f[0], &read(&f[0])?, o.frontend()).map_err(Fault::Failed)?;
-    Ok(chiero_tool::find_bugs(&m, &chiero_tool::BugCfg::new(entry)))
+    let mut cfg = chiero_tool::BugCfg::new(entry.clone());
+    if o.replay {
+        cfg.source = Some(chiero_tool::ReplaySources {
+            before: f[0].clone(),
+            // A finding is about one program; `after` is unused and set to the same file
+            // rather than left to be a second, silently different, thing.
+            after: f[0].clone(),
+            entry,
+            scratch: std::env::temp_dir().join(format!("chiero-replay-{}", std::process::id())),
+            flags: o
+                .includes
+                .iter()
+                .map(|p| format!("-I{}", p.display()))
+                .chain(o.defines.iter().map(|(k, v)| format!("-D{k}={v}")))
+                .collect(),
+        });
+        cfg.replay = if o.allow_replay_exec {
+            chiero_tool::ReplayPolicy::Run
+        } else {
+            chiero_tool::ReplayPolicy::EmitOnly
+        };
+    }
+    Ok(chiero_tool::find_bugs(&m, &cfg))
 }
 
 fn check_reachable(o: &Options) -> Result<chiero_tool::Envelope, Fault> {

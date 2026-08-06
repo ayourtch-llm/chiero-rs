@@ -482,43 +482,8 @@ pub fn run(r: &Replay, cc: &Path, dir: &Path) -> Outcome {
 /// about the code. The flags are the caller's, because the caller is the one that knows how the
 /// file is really built.
 pub fn run_with(r: &Replay, cc: &Path, dir: &Path, flags: &[String]) -> Outcome {
-    // **The scratch directory must be absolute and quote-free.** Its paths are interpolated
-    // into `sh -c "... exec '{}'"`, so a relative one becomes a bare word searched on a PATH
-    // that does not contain it and a quote ends the string early — both of which surfaced as
-    // "the harness wrote no result", pointing a reader at the harness rather than at the
-    // argument they passed. Refusing by name is the difference.
-    if !dir.is_absolute() {
-        return Outcome::DidNotRun {
-            detail: format!(
-                "the scratch directory must be absolute; `{}` is relative and the launcher \
-                 cannot use it",
-                dir.display()
-            ),
-        };
-    }
-    if dir.to_string_lossy().contains('\'') {
-        return Outcome::DidNotRun {
-            detail: format!(
-                "the scratch directory must not contain a quote; `{}` would end the \
-                 launcher's command early",
-                dir.display()
-            ),
-        };
-    }
-    // **A flag that merges the two programs undoes what separating them achieved.** 040 §3
-    // requires the translation unit's own flags, and `-fcommon` makes tentative definitions
-    // merge across units — so two identical sources sharing `int g;` report as differing.
-    // Passing the TU's flags is right; passing one that defeats the separation is not.
-    for bad in ["-fcommon", "--fcommon"] {
-        if flags.iter().any(|f| f == bad) {
-            return Outcome::DidNotRun {
-                detail: format!(
-                    "`{bad}` merges tentative definitions across the two programs, which \
-                     would let one version's globals reach the other — the separation this \
-                     harness depends on"
-                ),
-            };
-        }
+    if let Some(objection) = launchable(dir, flags) {
+        return Outcome::DidNotRun { detail: objection };
     }
     if std::fs::create_dir_all(dir).is_err() {
         return Outcome::DidNotRun {
@@ -536,13 +501,7 @@ pub fn run_with(r: &Replay, cc: &Path, dir: &Path, flags: &[String]) -> Outcome 
     // Nothing downstream sees these names, so uniqueness costs nothing. The FNV stays in the
     // name so a leftover file can be traced back to its harness; the counter is what makes it
     // safe.
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let tag = format!(
-        "{:032x}_{}_{}",
-        fnv1a(&r.source),
-        std::process::id(),
-        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    );
+    let tag = unique_tag(&r.source);
     // **One build and one run per version.** `Replay::source` is documentation — the comment a
     // reader is shown — and the units are the programs. Nothing links them together, which is
     // what keeps one version's process state out of the other's.
@@ -629,6 +588,60 @@ pub fn run_with(r: &Replay, cc: &Path, dir: &Path, flags: &[String]) -> Outcome 
             after: a,
         }
     }
+}
+
+/// Why this call cannot be launched, if it cannot — one answer for every harness shape.
+///
+/// **The scratch directory must be absolute and quote-free.** Its paths are interpolated into
+/// `sh -c "... exec '{}'"`, so a relative one becomes a bare word searched on a PATH that does
+/// not contain it and a quote ends the string early — both of which surfaced as "the harness
+/// wrote no result", pointing a reader at the harness rather than at the argument they passed.
+///
+/// **And no flag may merge the two programs.** 040 §3 requires the translation unit's own
+/// flags, and `-fcommon` makes tentative definitions merge across units, so two identical
+/// sources sharing `int g;` report as differing. Passing the TU's flags is right; passing one
+/// that defeats the separation is not.
+fn launchable(dir: &Path, flags: &[String]) -> Option<String> {
+    if !dir.is_absolute() {
+        return Some(format!(
+            "the scratch directory must be absolute; `{}` is relative and the launcher cannot \
+             use it",
+            dir.display()
+        ));
+    }
+    if dir.to_string_lossy().contains('\'') {
+        return Some(format!(
+            "the scratch directory must not contain a quote; `{}` would end the launcher's \
+             command early",
+            dir.display()
+        ));
+    }
+    for bad in ["-fcommon", "--fcommon"] {
+        if flags.iter().any(|f| f == bad) {
+            return Some(format!(
+                "`{bad}` merges tentative definitions across the two programs, which would let \
+                 one version's globals reach the other — the separation this harness depends on"
+            ));
+        }
+    }
+    None
+}
+
+/// A filename component unique to this call.
+///
+/// A fixed name meant two harnesses in one directory overwrote each other and the loser
+/// reported `DidNotBuild` about a program that compiles; naming them after the source's hash
+/// left the subtler case of two callers running the *same* harness at once. Nothing downstream
+/// sees these names, so uniqueness costs nothing — the hash stays so a leftover file can be
+/// traced back, and the counter is what makes it safe.
+fn unique_tag(text: &str) -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    format!(
+        "{:032x}_{}_{}",
+        fnv1a(text),
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
 }
 
 /// Kill anything still running with `path` on its command line.
@@ -722,6 +735,20 @@ fn compile(
 /// grandchild is still running. `setsid` puts the run in a group of its own and a negative pid
 /// signals all of it.
 fn bounded(bin: &Path, dir: &Path, limit: std::time::Duration) -> Result<(), String> {
+    bounded_status(bin, dir, limit).map(|_| ())
+}
+
+/// [`bounded`], returning how the process ended.
+///
+/// A *divergence* harness cares only that its program finished; a *finding* harness is about
+/// whether it **faulted**, and the signal is the whole answer. Same launcher, same limits — the
+/// sandbox, the wall clock and the descendant kill were each earned by a review finding a hole,
+/// and a second copy would start again from the first one.
+fn bounded_status(
+    bin: &Path,
+    dir: &Path,
+    limit: std::time::Duration,
+) -> Result<std::process::ExitStatus, String> {
     let sb = sandbox();
     // **The limits applied are the limits reported.** `sandbox()` used to say the network was
     // isolated whenever `unshare` existed, while this applied isolation only when a shell was
@@ -752,7 +779,7 @@ fn bounded(bin: &Path, dir: &Path, limit: std::time::Duration) -> Result<(), Str
     let start = std::time::Instant::now();
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => return Ok(()),
+            Ok(Some(st)) => return Ok(st),
             Ok(None) => {}
             Err(e) => return Err(format!("waiting for the harness: {e}")),
         }
@@ -836,4 +863,144 @@ fn fnv1a(text: &str) -> u128 {
         h = h.wrapping_mul(PRIME);
     }
     h
+}
+
+/// What running a finding's harness established — 040 contract 4, and contract 11's rule in the
+/// shape one program needs it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FindingOutcome {
+    /// The program died on a signal at the witness. **The only outcome that reproduces a
+    /// fault**, and the signal says which one — `SIGFPE` for a division by zero, `SIGSEGV` for
+    /// a null dereference.
+    Faulted {
+        signal: i32,
+    },
+    /// It ran to completion and returned this. **Not a confirmation**: the witness did not
+    /// reach the fault chiero reported, or the fault is one that does not trap.
+    Completed {
+        value: i64,
+    },
+    DidNotBuild {
+        detail: String,
+    },
+    DidNotRun {
+        detail: String,
+    },
+}
+
+impl FindingOutcome {
+    /// Whether this reproduces the finding. Nothing else may be read as confirmation.
+    pub fn confirms(&self) -> bool {
+        matches!(self, FindingOutcome::Faulted { .. })
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            FindingOutcome::Faulted { .. } => "faulted",
+            FindingOutcome::Completed { .. } => "completed",
+            FindingOutcome::DidNotBuild { .. } => "did_not_build",
+            FindingOutcome::DidNotRun { .. } => "did_not_run",
+        }
+    }
+}
+
+/// Emit a harness for one finding — 040 §3.
+///
+/// One program: include the source, call the entry at the witness, report what came back. The
+/// refusals are [`renderable`]'s, unchanged, because they are the same rule — a witness that is
+/// not an argument list cannot be passed positionally whatever it is a witness *for*.
+pub fn emit_finding(
+    source: &Path,
+    entry: &str,
+    witness: &Witness,
+    what: &str,
+) -> Result<Replay, Refusal> {
+    let args = renderable(witness)?;
+    let source_path = absolute(source);
+    let claim = format!("`{entry}` in {} reaches {what}", source_path.display());
+    let unit = format!(
+        "/* chiero replay: {claim}\n   \
+         Runs the function once at the witness. A fault is the finding reproduced; running to\n   \
+         completion is not, and is reported as such rather than as a confirmation. */\n\
+         #include <stdio.h>\n\
+         #include <unistd.h>\n\
+         #define {entry} chiero_target_{entry}\n\
+         #define main chiero_target_main\n\
+         #include \"{}\"\n\
+         #undef main\n\
+         #undef {entry}\n\n\
+         int main (void)\n{{\n  \
+         long long v = (long long) chiero_target_{entry} ({});\n  \
+         FILE *o = fopen (CHIERO_RESULT, \"w\");\n  \
+         if (!o) return 2;\n  \
+         fprintf (o, \"value=%lld\\n\", v);\n  \
+         fclose (o);\n  \
+         /* `_exit`: an atexit handler the analysed code registered must not rewrite this. */\n  \
+         _exit (0);\n}}\n",
+        source_path.display(),
+        args.join(", ")
+    );
+    Ok(Replay {
+        source: format!("/* chiero replay: {claim} */\n"),
+        units: vec![("chiero_target.c".to_string(), unit)],
+        claim,
+    })
+}
+
+/// Build and run a finding's harness under 050 §6's limits.
+pub fn run_finding(r: &Replay, cc: &Path, dir: &Path, flags: &[String]) -> FindingOutcome {
+    if r.units.len() != 1 {
+        return FindingOutcome::DidNotRun {
+            detail: format!(
+                "a finding's harness is one program; this one has {}",
+                r.units.len()
+            ),
+        };
+    }
+    if let Some(objection) = launchable(dir, flags) {
+        return FindingOutcome::DidNotRun { detail: objection };
+    }
+    if std::fs::create_dir_all(dir).is_err() {
+        return FindingOutcome::DidNotRun {
+            detail: format!("cannot create {}", dir.display()),
+        };
+    }
+    let tag = unique_tag(&r.units[0].1);
+    let src = dir.join(format!("chiero_finding_{tag}.c"));
+    let bin = dir.join(format!("chiero_finding_{tag}.bin"));
+    let result = dir.join(format!("chiero_finding_{tag}.txt"));
+    if let Err(e) = std::fs::write(&src, &r.units[0].1) {
+        return FindingOutcome::DidNotRun {
+            detail: format!("cannot write {}: {e}", src.display()),
+        };
+    }
+    let _ = std::fs::remove_file(&result);
+    if let Err(o) = compile(cc, flags, &result, &bin, &src, dir, sandbox().timeout) {
+        return match o {
+            Outcome::DidNotBuild { detail } => FindingOutcome::DidNotBuild { detail },
+            other => FindingOutcome::DidNotRun {
+                detail: format!("{other:?}"),
+            },
+        };
+    }
+    let status = match bounded_status(&bin, dir, sandbox().timeout) {
+        Ok(s) => s,
+        Err(detail) => return FindingOutcome::DidNotRun { detail },
+    };
+    // **A signal is the answer, and the exit code is not.** A program killed by `SIGFPE` has no
+    // exit code at all, and one that returned 136 did not fault. `ExitStatus`'s Unix extension
+    // is the only place that distinction lives.
+    use std::os::unix::process::ExitStatusExt;
+    if let Some(signal) = status.signal() {
+        return FindingOutcome::Faulted { signal };
+    }
+    match std::fs::read_to_string(&result)
+        .ok()
+        .and_then(|t| parse_value(&t))
+    {
+        Some(value) => FindingOutcome::Completed { value },
+        None => FindingOutcome::DidNotRun {
+            detail: "the harness finished without faulting and wrote no value".to_string(),
+        },
+    }
 }

@@ -90,7 +90,10 @@ fn a_static_target_is_reachable() {
     std::fs::write(&src, "static int f (int n) { return 100 / n; }\n").expect("write");
     let r = emit_finding(&src, "f", &witness(&[(32, 0)]), "division by zero").expect("scalar");
     assert!(
-        matches!(run_finding(&r, &cc, &d, &[]), FindingOutcome::Faulted { .. }),
+        matches!(
+            run_finding(&r, &cc, &d, &[]),
+            FindingOutcome::Faulted { .. }
+        ),
         "040 §3.1: static is the common case"
     );
 }
@@ -131,7 +134,10 @@ fn a_finding_harness_that_never_finishes_is_bounded() {
     let r = emit_finding(&src, "f", &witness(&[(32, 1)]), "a loop").expect("scalar");
     let started = std::time::Instant::now();
     let o = run_finding(&r, &cc, &d, &[]);
-    assert!(started.elapsed() < std::time::Duration::from_secs(40), "must be bounded");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(40),
+        "must be bounded"
+    );
     assert!(
         matches!(o, FindingOutcome::DidNotRun { .. }),
         "a harness that never finishes reproduces nothing: {o:?}"

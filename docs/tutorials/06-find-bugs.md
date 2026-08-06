@@ -24,6 +24,7 @@ $ chiero find-bugs average.c --entry average
 findings:
   - message: null-dereference: access at offset 0 of NULL, where %2 is a pointer parameter assumed to be possibly null
     paths: 1
+    replay: (none)
     fidelity: Unknown
     solver: z3
     witness:
@@ -40,6 +41,7 @@ findings:
     unwitnessed: (none)
   - message: division-by-zero: SDiv by a divisor the path allows to be zero
     paths: 2
+    replay: (none)
     fidelity: Exact
     solver: z3
     witness:
@@ -55,6 +57,7 @@ budgets:
 not proven — within this run's bounds (Unknown)
   blind spot: the search did not cover the whole program, so an absent finding is not an absent defect
   blind spot: only the 2 checkers of 040 ran; a defect no checker looks for is not reported
+  blind spot: no source was given, so no finding carries a replay harness and nothing has checked these against a compiler (040 contract 4)
   assumed: BudgetHit (max_loop_iters (8) reached on the back edge BlockId(3) -> BlockId(1) in `average`)
   assumed: NoInformation (a load produced no value, so its result is invented)
 ```
@@ -103,6 +106,7 @@ budgets:
   hit: (empty)
 proven — this holds for all inputs (Exact)
   blind spot: only the 2 checkers of 040 ran; a defect no checker looks for is not reported
+  blind spot: no source was given, so no finding carries a replay harness and nothing has checked these against a compiler (040 contract 4)
 ```
 
 **This is the one place an empty list is an answer.** No loop, so nothing was cut; every path

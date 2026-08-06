@@ -922,6 +922,13 @@ pub struct BugCfg {
     pub entry: String,
     pub budget: chiero_exec::Budget,
     pub backend: Option<chiero_solver::SmtLib>,
+    /// The source the findings are about, so each can carry a harness — 040 contract 4.
+    ///
+    /// `None` means no harness is emitted and the envelope says so. A finding with no harness
+    /// is still a finding; one whose harness went unmentioned would be a claim resting on
+    /// chiero's semantics with nothing saying so.
+    pub source: Option<ReplaySources>,
+    pub replay: ReplayPolicy,
 }
 
 impl BugCfg {
@@ -931,6 +938,8 @@ impl BugCfg {
             entry: entry.into(),
             budget: chiero_exec::Budget::default(),
             backend: chiero_solver::SmtLib::discover(),
+            source: None,
+            replay: ReplayPolicy::EmitOnly,
         }
     }
 }
@@ -1008,23 +1017,58 @@ pub fn find_bugs(module: &chiero_cir::Module, cfg: &BugCfg) -> Envelope {
         }
     }
 
-    let findings: Vec<serde_json::Value> = grouped
-        .iter()
-        .map(|(f, paths)| {
-            serde_json::json!({
-                "message": f.message,
-                "paths": paths,
-                "fidelity": format!("{:?}", f.fidelity),
-                "solver": f.solver,
-                // 023 contract 15: a witness, or the reason there is none. The absence is
-                // allowed; the silence is not.
-                "witness": f.witness.as_ref().map(|w| {
-                    w.bindings.iter().map(binding_json).collect::<Vec<_>>()
-                }),
-                "unwitnessed": f.unwitnessed,
+    let findings: Vec<serde_json::Value> =
+        grouped
+            .iter()
+            .map(|(f, paths)| {
+                // **040 contract 4: every finding emits a harness.** The same refusals apply as for
+                // an equivalence harness, and for the same reason — a witness that is not an
+                // argument list cannot be passed positionally whatever it witnesses.
+                let replay = cfg.source.as_ref().map(|src| {
+                match f.witness.as_ref().map(|w| {
+                    chiero_replay::emit_finding(&src.before, &src.entry, w, &f.message)
+                }) {
+                    Some(Ok(r)) => {
+                        let outcome = match cfg.replay {
+                            ReplayPolicy::EmitOnly => None,
+                            ReplayPolicy::Run => chiero_replay::compiler().map(|cc| {
+                                chiero_replay::run_finding(&r, &cc, &src.scratch, &src.flags)
+                            }),
+                        };
+                        serde_json::json!({
+                            "source": r.units.first().map(|(_, t)| t.clone()),
+                            "claim": r.claim,
+                            "outcome": outcome.as_ref().map_or("not_run", |o| o.label()),
+                            "confirms": outcome.as_ref().is_some_and(|o| o.confirms()),
+                        })
+                    }
+                    Some(Err(refusal)) => serde_json::json!({
+                        "source": serde_json::Value::Null,
+                        "outcome": "refused",
+                        "why": refusal.why,
+                    }),
+                    None => serde_json::json!({
+                        "source": serde_json::Value::Null,
+                        "outcome": "refused",
+                        "why": "this finding has no witness, so there is no input to replay it at",
+                    }),
+                }
+            });
+                serde_json::json!({
+                    "message": f.message,
+                    "paths": paths,
+                    "replay": replay,
+                    "fidelity": format!("{:?}", f.fidelity),
+                    "solver": f.solver,
+                    // 023 contract 15: a witness, or the reason there is none. The absence is
+                    // allowed; the silence is not.
+                    "witness": f.witness.as_ref().map(|w| {
+                        w.bindings.iter().map(binding_json).collect::<Vec<_>>()
+                    }),
+                    "unwitnessed": f.unwitnessed,
+                })
             })
-        })
-        .collect();
+            .collect();
 
     // **Which budgets, from the assumptions the run actually recorded** — not from comparing
     // the configured limits against counters, which would be a second implementation of what
@@ -1060,10 +1104,21 @@ pub fn find_bugs(module: &chiero_cir::Module, cfg: &BugCfg) -> Envelope {
              absent defect",
         );
     }
-    env.with_blind_spot(&format!(
+    let env = env.with_blind_spot(&format!(
         "only the {} checkers of 040 ran; a defect no checker looks for is not reported",
         chiero_check::default_checkers().len()
-    ))
+    ));
+    match cfg.source {
+        None => env.with_blind_spot(
+            "no source was given, so no finding carries a replay harness and nothing has \
+             checked these against a compiler (040 contract 4)",
+        ),
+        Some(_) if cfg.replay == ReplayPolicy::EmitOnly => env.with_blind_spot(
+            "the harnesses were emitted and not run; every finding is still chiero's \
+             semantics (050 contract 11 gates execution)",
+        ),
+        Some(_) => env.with_assumption("replay_sandbox", &chiero_replay::sandbox().describe()),
+    }
 }
 
 /// **Is this line reachable?** — 050 contract 5.
