@@ -870,3 +870,61 @@ fn a_run_that_finishes_inside_its_clock_is_an_ordinary_answer() {
         "it was never hit, so nothing here is a measurement"
     );
 }
+
+/// **A function pointer must not be called as a function with a different signature** — and a
+/// process that aborts is the worst way to say so.
+///
+/// Found by sweeping 477 entry points across 92 VPP plugins: `plugins/perfmon/perfmon.c` and
+/// `plugins/vmxnet3/vmxnet3_api.c` did not fail, they *panicked* —
+///
+/// ```text
+/// assertion `left == right` failed: operand widths must match for Eq
+/// ```
+///
+/// — inside the solver, from `chiero_exec::cmp`. The measurement recorded both as `failed`,
+/// which is the row a file that will not preprocess gets, so two crashes on real code looked
+/// like two files chiero could not read.
+///
+/// **The cause is one sentence in `Engine::indirect` that was not true of the code beneath it.**
+/// It says "candidates are every defined function *whose signature could be called here*", and
+/// the implementation takes every defined function in the module, capped at `max_indirect`. So
+/// `(s->init_fn) (vm, s)` — a pointer to a function returning `clib_error_t *` — forked into a
+/// candidate returning `unsigned char`, the caller compared that one-byte result against a null
+/// pointer, and the term arena refused a 8-bit-to-64-bit `Eq`.
+///
+/// It is not only a crash. A path through a callee the program could never have called is a
+/// path that does not exist, and every finding on it is about a program nobody wrote.
+#[test]
+fn an_indirect_call_does_not_enter_a_candidate_of_another_shape() {
+    let p = write(
+        "indirect_shape.c",
+        "typedef struct err err_t;\n\
+         typedef struct src { err_t *(*init_fn) (void *, struct src *); struct src *next; } src_t;\n\
+         \n\
+         /* A candidate with the same arity and a one-byte result. */\n\
+         static unsigned char other (void *a, src_t *b) { return b ? 1 : 0; }\n\
+         \n\
+         int f (src_t *s, void *vm)\n\
+         {\n\
+         \x20 err_t *err;\n\
+         \x20 if (s->init_fn && ((err = (s->init_fn) (vm, s))))\n\
+         \x20   return 1;\n\
+         \x20 return (int) other (vm, s);\n\
+         }\n",
+    );
+    let r = run(&[
+        "find-bugs",
+        p.to_str().expect("utf-8 path"),
+        "--entry",
+        "f",
+        "--json",
+    ]);
+    // **The process survives.** Everything else here is worth nothing if it does not.
+    assert_eq!(
+        r.code, 0,
+        "chiero aborted on this program:\n{}\n{}",
+        r.err, r.out
+    );
+    let v = json(&r);
+    assert!(!v["result"].is_null(), "and produced an envelope: {v}");
+}
