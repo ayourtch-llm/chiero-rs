@@ -355,3 +355,93 @@ entry:
         env.assumptions
     );
 }
+
+/// **147 of 157 findings on VPP were about a number chiero picked.**
+///
+/// With the null case assumed away, the 40-entry-point VPP measurement leaves 157 findings.
+/// By kind:
+///
+/// | | |
+/// |---|---|
+/// | `pointer-outside-object`, against the invented object | 113 |
+/// | `out-of-bounds`, against the invented object | 34 |
+/// | `uninitialized-read` | 9 |
+/// | `division-by-zero` | 1 |
+///
+/// **94% of the output is one artifact.** The bound crossed is `ENTRY_PARAM_BYTES`, and chiero
+/// has no information about the caller's real object at all: not its size, and not where in it
+/// the pointer points. So such a fault says nothing whatever about the program — an access at
+/// offset -8 is a bug if the caller passed the base of an object and correct if it passed an
+/// interior pointer, and *every VPP vector is the second case*.
+///
+/// The previous wave stopped these claiming proof. That was necessary and is not enough: an
+/// unactionable `Unknown` finding still costs a reader the time to dismiss it, and 147 of them
+/// bury the 10 that are about the function.
+///
+/// **So they are not reported by default — and the count is, which is the whole difference.**
+/// "Nothing found" and "147 suppressed" must never be the same output; 032 §6's mistake was
+/// exactly a number quietly not counted. `--report-invented-bounds` brings them back for
+/// someone who knows the entry's objects really are that size.
+#[test]
+fn bounds_faults_against_an_invented_object_are_suppressed_but_counted() {
+    // `_vec_find (v)->len = n_elts` — an interior-pointer store, VPP's universal idiom.
+    let interior = "\
+func @f(%0: ptr, %1: i32) -> void {
+entry:
+  .line 1
+  %2 = ptradd %0, -8i64
+  store i32 %1 -> %2 align 4
+  ret
+}";
+    let mut c = cfg("f");
+    c.entry_ptr_nonnull = true;
+    let env = find_bugs(&m(interior), &c);
+    let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
+    assert_eq!(
+        v["result"]["findings"].as_array().map(Vec::len),
+        Some(0),
+        "chiero knows nothing about the caller's object, so it has nothing to report: {v}"
+    );
+    assert!(
+        env.blind_spots.iter().any(|b| b.contains("1")
+            && (b.contains("invented") || b.contains("chiero chose") || b.contains("suppress"))),
+        "but silence about a suppression is the failure this project exists to prevent: {:?}",
+        env.blind_spots
+    );
+
+    // And a caller who knows better can see them.
+    let mut loud = cfg("f");
+    loud.entry_ptr_nonnull = true;
+    loud.report_invented_bounds = true;
+    let env = find_bugs(&m(interior), &loud);
+    let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
+    assert_eq!(
+        v["result"]["findings"].as_array().map(Vec::len),
+        Some(1),
+        "--report-invented-bounds shows them: {v}"
+    );
+
+    // **A bounds fault against an object whose size chiero did NOT invent is untouched.**
+    // The rule is about the provenance of the bound, not about bounds — suppressing a real
+    // out-of-bounds write on a local array would trade a false-positive storm for a silence.
+    let real = "\
+func @g() -> void {
+entry:
+  .line 1
+  %0 = addrlocal %buf
+  %1 = ptradd %0, 64i64
+  store i32 7i32 -> %1 align 4
+  ret
+}
+local %buf: [16 x i32]";
+    let mut c = cfg("g");
+    c.entry_ptr_nonnull = true;
+    let env = find_bugs(&m(real), &c);
+    let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
+    assert!(
+        v["result"]["findings"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty()),
+        "a 16-element array is the program's own size, and 64 is past it: {v}"
+    );
+}
