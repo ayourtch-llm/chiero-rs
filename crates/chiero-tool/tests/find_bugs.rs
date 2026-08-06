@@ -450,3 +450,58 @@ entry:
         "a 16-element array is the program's own size, and 64 is past it: {v}"
     );
 }
+
+/// **Reading an `extern` global is not an uninitialized read.**
+///
+/// Found by suppressing the 147 invented-bound findings, which is the argument for having done
+/// it: 5 of the 10 that were left underneath said this, on four VPP entry points —
+///
+/// ```text
+/// clib_mem_alloc: uninitialized-read: read at offset 0 of clib_mem_thread_main touches
+///                 bit 0, which was never written
+/// ```
+///
+/// — where `clib_mem_thread_main` is `extern __thread clib_mem_thread_main_t` (`vppinfra/mem.h`).
+/// An object with static storage duration is initialized before the program starts, by C's own
+/// rules: zero if nothing else, and whatever the defining translation unit says otherwise
+/// (C11 6.7.9p10). Its contents are **unknown to chiero**, which is not the same fact.
+///
+/// This is 021 §6's own distinction, one object kind over. §6 solved it for the object behind
+/// an entry pointer:
+///
+/// > "fully symbolic and fully initialized" … leaving the bytes uninitialized turned every
+/// > function that takes a pointer into an uninitialized-read report — §6 calls that "an
+/// > uninitialized-read false-positive storm".
+///
+/// A `static` global with no initializer already reads as zero, so only the `extern` case is
+/// wrong — and it is the one that matters on real code, since a header full of `extern`s is
+/// what a VPP source file spends its first hundred lines on.
+#[test]
+fn an_extern_global_is_initialized_by_someone_even_if_not_by_us() {
+    let ext = "\
+global @shared : size 4 align 4 extern
+
+func @f() -> i32 {
+entry:
+  .line 1
+  %0 = addrglobal @shared
+  %1 = load i32, %0 align 4
+  ret %1
+}";
+    let env = find_bugs(&m(ext), &cfg("f"));
+    let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
+    let uninit: Vec<_> = v["result"]["findings"]
+        .as_array()
+        .expect("a findings array")
+        .iter()
+        .filter(|f| {
+            f["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("uninitialized"))
+        })
+        .collect();
+    assert!(
+        uninit.is_empty(),
+        "another translation unit initialized it, and C guarantees that happened: {v}"
+    );
+}

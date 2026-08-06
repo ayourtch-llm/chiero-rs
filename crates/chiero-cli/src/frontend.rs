@@ -64,6 +64,9 @@ impl Frontend {
     }
 }
 
+/// The compiler's include paths and its predefined macros — see [`system_environment`].
+type SystemEnvironment = (Vec<PathBuf>, Vec<(String, String)>);
+
 /// Where the system compiler keeps its headers, and what it predefines.
 ///
 /// **Both, or neither is much use.** glibc's `bits/floatn.h` branches on a dozen
@@ -72,9 +75,8 @@ impl Frontend {
 /// were entirely that.
 ///
 /// Probed once: the answer is a property of the machine.
-fn system_environment() -> (Vec<PathBuf>, Vec<(String, String)>) {
-    static PROBED: std::sync::OnceLock<(Vec<PathBuf>, Vec<(String, String)>)> =
-        std::sync::OnceLock::new();
+fn system_environment() -> SystemEnvironment {
+    static PROBED: std::sync::OnceLock<SystemEnvironment> = std::sync::OnceLock::new();
     PROBED
         .get_or_init(|| {
             let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
