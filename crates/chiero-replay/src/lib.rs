@@ -191,15 +191,23 @@ impl Sandbox {
 /// Discovery at run time, like the compiler's and the solver's: whether an unprivileged user
 /// namespace may be created is a property of the kernel's configuration, not of the build.
 pub fn sandbox() -> Sandbox {
-    // **Both limits need a shell**, because both are applied through one. Reporting the network
-    // isolated without one was the defect this now rules out by construction.
-    let have_shell = shell().is_some();
-    Sandbox {
-        network: have_shell && unshare_works(),
-        memory_bytes: have_shell.then_some(2 * 1024 * 1024 * 1024),
-        writes_confined: false,
-        timeout: std::time::Duration::from_secs(10),
-    }
+    // **Probed once.** The doc said "discovered once" and it spawned `unshare -rn -- true` on
+    // every call — several times per replay, and more once the compile got its own clock. The
+    // answer is a property of the kernel's configuration, which does not change under us.
+    static PROBED: std::sync::OnceLock<Sandbox> = std::sync::OnceLock::new();
+    PROBED
+        .get_or_init(|| {
+            // **Both limits need a shell**, because both are applied through one. Reporting
+            // the network isolated without one was the defect this rules out by construction.
+            let have_shell = shell().is_some();
+            Sandbox {
+                network: have_shell && unshare_works(),
+                memory_bytes: have_shell.then_some(2 * 1024 * 1024 * 1024),
+                writes_confined: false,
+                timeout: std::time::Duration::from_secs(10),
+            }
+        })
+        .clone()
 }
 
 /// Whether `unshare -rn` can be used here — an unprivileged user namespace plus a network one.
