@@ -720,6 +720,19 @@ operation existing, by using it on ordinary C. Nothing in the test suite was goi
    `compile_commands.json` flags. And `find_bugs` findings do not emit one yet (040 contract 4).
    *"Your rewrite is wrong" is an opinion; "here is the program" ends the discussion.* Nothing
    in the tree emits a C replay harness yet — 040 §3 wants one too.
+1a. ~~**041 §2 opportunity detection**~~ — **contract 15 built 2026-08-06.**
+   `chiero_opt::opportunity::detect` proposes a branch the path condition already decides,
+   with the implying constraints as SMT-LIB. It reads the engine's own `Event::Fork { feasible }`
+   rather than re-asking the solver — the engine has decided that question and a second answer
+   would eventually disagree. A proposal from a run that did not finish is **advisory** and
+   names the budget: "no state took that edge" and "no state *can*" are the same observation
+   and opposite claims, and here the difference is whether somebody deletes live code.
+
+   *Left:* contract 14 (redundant load across a call, `Discharged` when the callee is proven
+   not to write the address and `Open` across an unmodeled extern) and the rest of §2's
+   detector list — dead store, loop-invariant computation, redundant bounds check,
+   call-site specialization. And nothing calls `detect` yet.
+
 1b. ~~**041 §3 locality**~~ — **built 2026-08-06.** `chiero_opt::locality`: line straddling
    (contract 18's boundary both ways), padding waste with the byte delta, hot/cold placement.
    Contract 21's advisory rule and contract 22's honest labelling are most of the module —
