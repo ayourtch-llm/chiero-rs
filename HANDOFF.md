@@ -708,13 +708,13 @@ does not exist while the doc comments cite contract 12 as though it did.
   `unrepresentable_return` returns `None` (= representable) for an absent entry, so the type
   gate silently no-ops on exactly that case. The reviewer got a fabricated `demonstrated` at
   `proven: true`.
-- **S6 — the compile is unbounded.** 050 §6 covers "compilation *and* replay execution"; the
-  timeout wraps only the produced binary, so a `#include` naming a FIFO hangs the tool.
-- **S7 — the kill leaks grandchildren** (no `setsid`, no process-group kill).
-- **S8 — `-fcommon` re-opens the shared-global route**, through the very flags 040 §3 requires
-  passing through.
-- **S10 — a relative or quoted `scratch` breaks a good harness**, and nothing documents that it
-  must be absolute.
+- ~~S1/S9, S4, S6, S8, S10~~ — **fixed 2026-08-06.** One rule for every value crossing the
+  channel in either direction (`harness_signature_objection` checks the return *and* every
+  parameter, and an absent entry is an objection rather than silence); `cfg.entry` must equal
+  `src.entry`; the compile gets the same wall clock as the run; `-fcommon` is refused by name;
+  a relative or quoted scratch path is refused with a message about the path.
+- **S7 — the kill leaks grandchildren** (no `setsid`, no process-group kill). A resource leak
+  rather than a wrong answer, which is why it is last.
 - Refusal text carries 20–30-space runs into `blind_spots` (raw multi-line strings in
   `format!` with no `\` continuation).
 
