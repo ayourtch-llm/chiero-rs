@@ -19,14 +19,19 @@ use chiero_replay::{Outcome, Replay, emit_equivalence, run};
 use chiero_span::Span;
 use std::path::PathBuf;
 
-fn scratch() -> PathBuf {
-    let d = std::env::temp_dir().join(format!("chiero-replay-{}", std::process::id()));
+/// **One directory per test.** These tests run in parallel threads of one process, so a
+/// directory keyed only on the process id is shared — and the fixtures, which have the same
+/// names in several tests, raced. The symptom was
+/// `undefined reference to chiero_after_f`: one test reading another's half-written file.
+/// Found by the whole workspace failing intermittently while the crate passed alone.
+fn scratch(tag: &str) -> PathBuf {
+    let d = std::env::temp_dir().join(format!("chiero-replay-{}-{tag}", std::process::id()));
     std::fs::create_dir_all(&d).expect("scratch");
     d
 }
 
-fn write(name: &str, src: &str) -> PathBuf {
-    let p = scratch().join(name);
+fn write(tag: &str, name: &str, src: &str) -> PathBuf {
+    let p = scratch(tag).join(name);
     std::fs::write(&p, src).expect("write");
     p
 }
@@ -51,9 +56,14 @@ fn witness(values: &[(u32, u128)]) -> Witness {
 }
 
 /// The `abs` rewrite from 041 §1.3's own example: identical everywhere but `INT_MIN`.
-fn abs_pair() -> (PathBuf, PathBuf) {
-    let before = write("abs_before.c", "int f (int x) { return x < 0 ? -x : x; }\n");
+fn abs_pair(tag: &str) -> (PathBuf, PathBuf) {
+    let before = write(
+        tag,
+        "abs_before.c",
+        "int f (int x) { return x < 0 ? -x : x; }\n",
+    );
     let after = write(
+        tag,
         "abs_after.c",
         "int f (int x)\n{\n  if (x < 0)\n    return x == (-2147483647 - 1) ? 2147483647 : -x;\n  return x;\n}\n",
     );
@@ -63,7 +73,8 @@ fn abs_pair() -> (PathBuf, PathBuf) {
 /// **Contract 10: every `Differs` produces a harness, and it is a whole C program.**
 #[test]
 fn the_harness_is_a_self_contained_program_naming_both_versions() {
-    let (b, a) = abs_pair();
+    const TAG: &str = "the_harness_is_a_self_contained_program_naming_both_versions";
+    let (b, a) = abs_pair(TAG);
     let r: Replay = emit_equivalence(&b, &a, "f", &witness(&[(32, i32::MIN as u32 as u128)]));
 
     for want in ["#include", "int main", "abs_before.c", "abs_after.c"] {
@@ -98,12 +109,13 @@ fn the_harness_is_a_self_contained_program_naming_both_versions() {
 /// nothing" cannot be mistaken for success.
 #[test]
 fn a_real_divergence_is_demonstrated() {
+    const TAG: &str = "a_real_divergence_is_demonstrated";
     let Some(cc) = chiero_replay::compiler() else {
         return; // no C compiler here; `run` says so rather than passing
     };
-    let (b, a) = abs_pair();
+    let (b, a) = abs_pair(TAG);
     let r = emit_equivalence(&b, &a, "f", &witness(&[(32, i32::MIN as u32 as u128)]));
-    match run(&r, &cc, &scratch()) {
+    match run(&r, &cc, &scratch(TAG)) {
         Outcome::Demonstrated { before, after } => {
             assert_eq!(before, i64::from(i32::MIN));
             assert_eq!(after, i64::from(i32::MAX));
@@ -119,13 +131,14 @@ fn a_real_divergence_is_demonstrated() {
 /// the one an implementation is most tempted to treat as "well, it compiled".
 #[test]
 fn a_witness_that_does_not_distinguish_is_reported_as_such() {
+    const TAG: &str = "a_witness_that_does_not_distinguish_is_reported_as_such";
     let Some(cc) = chiero_replay::compiler() else {
         return;
     };
-    let (b, a) = abs_pair();
+    let (b, a) = abs_pair(TAG);
     // 7 is not INT_MIN; both versions return 7.
     let r = emit_equivalence(&b, &a, "f", &witness(&[(32, 7)]));
-    match run(&r, &cc, &scratch()) {
+    match run(&r, &cc, &scratch(TAG)) {
         Outcome::NotDemonstrated { before, after } => assert_eq!(before, after),
         other => panic!("both versions return 7 here: {other:?}"),
     }
@@ -136,13 +149,14 @@ fn a_witness_that_does_not_distinguish_is_reported_as_such() {
 /// disagreement is about chiero.
 #[test]
 fn a_harness_that_does_not_compile_is_not_a_disagreement() {
+    const TAG: &str = "a_harness_that_does_not_compile_is_not_a_disagreement";
     let Some(cc) = chiero_replay::compiler() else {
         return;
     };
-    let b = write("bad_before.c", "int f (int x) { return x; }\n");
-    let a = write("bad_after.c", "this is not C\n");
+    let b = write(TAG, "bad_before.c", "int f (int x) { return x; }\n");
+    let a = write(TAG, "bad_after.c", "this is not C\n");
     let r = emit_equivalence(&b, &a, "f", &witness(&[(32, 1)]));
-    match run(&r, &cc, &scratch()) {
+    match run(&r, &cc, &scratch(TAG)) {
         Outcome::DidNotBuild { .. } => {}
         other => panic!("the second file is not C: {other:?}"),
     }
@@ -152,13 +166,22 @@ fn a_harness_that_does_not_compile_is_not_a_disagreement() {
 /// `#include`s the source rather than declaring it `extern`.
 #[test]
 fn a_static_function_is_reachable() {
+    const TAG: &str = "a_static_function_is_reachable";
     let Some(cc) = chiero_replay::compiler() else {
         return;
     };
-    let b = write("st_before.c", "static int f (int x) { return x + 1; }\n");
-    let a = write("st_after.c", "static int f (int x) { return x + 2; }\n");
+    let b = write(
+        TAG,
+        "st_before.c",
+        "static int f (int x) { return x + 1; }\n",
+    );
+    let a = write(
+        TAG,
+        "st_after.c",
+        "static int f (int x) { return x + 2; }\n",
+    );
     let r = emit_equivalence(&b, &a, "f", &witness(&[(32, 1)]));
-    match run(&r, &cc, &scratch()) {
+    match run(&r, &cc, &scratch(TAG)) {
         Outcome::Demonstrated { before, after } => {
             assert_eq!((before, after), (2, 3));
         }
@@ -169,16 +192,17 @@ fn a_static_function_is_reachable() {
 /// **A TU with its own `main`** (040 §3.1's first hazard) must not collide with the harness's.
 #[test]
 fn a_translation_unit_with_its_own_main_still_builds() {
+    const TAG: &str = "a_translation_unit_with_its_own_main_still_builds";
     let Some(cc) = chiero_replay::compiler() else {
         return;
     };
     let src = |k: i32| {
         format!("int f (int x) {{ return x + {k}; }}\nint main (void) {{ return f (0); }}\n")
     };
-    let b = write("main_before.c", &src(1));
-    let a = write("main_after.c", &src(2));
+    let b = write(TAG, "main_before.c", &src(1));
+    let a = write(TAG, "main_after.c", &src(2));
     let r = emit_equivalence(&b, &a, "f", &witness(&[(32, 0)]));
-    match run(&r, &cc, &scratch()) {
+    match run(&r, &cc, &scratch(TAG)) {
         Outcome::Demonstrated { before, after } => assert_eq!((before, after), (1, 2)),
         other => panic!("the TU's own main must be renamed out of the way: {other:?}"),
     }
@@ -191,31 +215,31 @@ fn a_translation_unit_with_its_own_main_still_builds() {
 /// `chiero prove-equivalent before.c after.c` from the directory holding them got
 /// `fatal error: before.c: No such file or directory` — a `did_not_build` that says nothing
 /// about the code and everything about the emitter.
+///
+/// **Asserted as the rule, not the consequence.** The first version of this test changed the
+/// process's working directory to exercise a relative path, which is racy the moment the
+/// suite runs in parallel — and it did, intermittently failing the whole workspace. The
+/// property is "the include is absolute"; building elsewhere is what that buys.
 #[test]
 fn includes_do_not_depend_on_where_the_harness_is_built() {
+    const TAG: &str = "includes_do_not_depend_on_where_the_harness_is_built";
+    let (b, a) = abs_pair(TAG);
+    let r = emit_equivalence(&b, &a, "f", &witness(&[(32, 1)]));
+    for line in r.source.lines().filter(|l| l.starts_with("#include \"")) {
+        let path = line.trim_start_matches("#include \"").trim_end_matches('"');
+        assert!(
+            PathBuf::from(path).is_absolute(),
+            "an include resolved against the harness's directory, not the caller's: {line}"
+        );
+    }
+
+    // And the consequence: built in a directory that holds neither source.
     let Some(cc) = chiero_replay::compiler() else {
         return;
     };
-    let dir = scratch();
-    std::fs::write(dir.join("rel_before.c"), "int f (int x) { return x; }\n").unwrap();
-    std::fs::write(dir.join("rel_after.c"), "int f (int x) { return x + 1; }\n").unwrap();
-
-    // The path as a caller would give it — relative to where *they* are, not to the build.
-    // `emit_equivalence` resolves it against the current directory at emit time, which is what
-    // a caller typing `chiero prove-equivalent before.c after.c` means.
-    let elsewhere = dir.join("build");
-    let prev = std::env::current_dir().expect("cwd");
-    std::env::set_current_dir(&dir).expect("cd");
-    let r = emit_equivalence(
-        &PathBuf::from("rel_before.c"),
-        &PathBuf::from("rel_after.c"),
-        "f",
-        &witness(&[(32, 1)]),
-    );
-    std::env::set_current_dir(prev).expect("cd back");
-
+    let elsewhere = scratch(TAG).join("build");
     match run(&r, &cc, &elsewhere) {
-        Outcome::Demonstrated { before, after } => assert_eq!((before, after), (1, 2)),
-        other => panic!("a relative path a caller gave must still build: {other:?}"),
+        Outcome::Demonstrated { .. } | Outcome::NotDemonstrated { .. } => {}
+        other => panic!("the harness must build away from its sources: {other:?}"),
     }
 }
