@@ -755,10 +755,18 @@ operation existing, by using it on ordinary C. Nothing in the test suite was goi
    drops to `Approximated`, and the verdict stays `differs` because something *is* wrong and a
    reader needs both claims. Execution is gated behind `--allow-replay-exec` (050 contract 11).
 
-   *Left:* the harness only takes scalar parameters. 040 §3's construction rules want memory
-   objects as initialized byte arrays with the engine's own pointer layout, extern stubs
-   returning the values the engine chose in call order, and the TU's own
-   `compile_commands.json` flags. And `find_bugs` findings do not emit one yet (040 contract 4).
+    **040 contract 4 landed 2026-08-06**: every `find_bugs` finding carries a harness, and
+   `--allow-replay-exec` reports `outcome: faulted, confirms: true` for a division by zero — a
+   real compiler dying on `SIGFPE` at chiero's witness. `FindingOutcome` is a different shape
+   from `Outcome` because a finding has one program: it is reproduced when it *faults*, and the
+   **signal** is the answer (a process killed by `SIGFPE` has no exit code at all). It reuses
+   the equivalence harness's launcher rather than copying it — every piece of that machinery
+   was earned by a review finding a hole, and a second copy would start again from the first.
+
+   *Left:* the harness takes **scalar parameters only**. 040 §3's construction rules also want
+   memory objects as initialized byte arrays with the engine's own pointer layout, and extern
+   stubs returning the values the engine chose in call order. Neither is built, and both are
+   refused by name rather than guessed at.
    *"Your rewrite is wrong" is an opinion; "here is the program" ends the discussion.* Nothing
    in the tree emits a C replay harness yet — 040 §3 wants one too.
 1a. ~~**041 §2 opportunity detection**~~ — **contract 15 built 2026-08-06.**
