@@ -455,7 +455,7 @@ have entrenched conventions real lowering then had to match.)
 | **031 change impact** | ✅ 20/20 contracts | incl. the headline — a header macro edit impacts every expansion site while coverage sees nothing |
 | **032 test selection** | 🟡 18/20 | mutation gate: **recall 100%, coverage-only 14.3%, reduction 65%** |
 | **041 `prove_equivalent`** | 🟡 contracts 1–6, 9, 12, 13, 13b | z3 proves `x*2 == x<<1` over all 2^32; finds `INT_MIN` as the one input two `abs()`s disagree on |
-| **050 tool interface** | 🟡 6 operations + a CLI | envelope + `select_tests`, `expansion_sites`, `explain_macro_expansion`, `prove_equivalent`, `impact`, `find_bugs`; all five reachable as `chiero <op>` |
+| **050 tool interface** | 🟡 7 operations + a CLI | envelope + `select_tests`, `expansion_sites`, `explain_macro_expansion`, `prove_equivalent`, `impact`, `find_bugs`, `check_reachable`; all reachable as `chiero <op>` |
 | 040 checkers, 042 recipes, 060 vpp | partial | `chiero-check`, `chiero-recipe`, `chiero-vpp` exist |
 
 **The two 032 contracts left, and why neither is "just work":**
@@ -614,6 +614,22 @@ guard fires.
    Also from the same message, and already applied: **every tutorial must show the data it
    talks about.** Tutorial 4 described an LLM's rewrite in prose and never showed the `after`
    C, which is exactly the thing a reader stops to ask about. Audited all five.
+
+### 7.3 A defect the operations found in the layer beneath them, 2026-08-06
+
+Pointing `chiero check-reachable` at a `return` line answered *"the function has no code on
+line 4"*. **015 §5's rule is written over a block's instructions, and `return <constant>;`
+lowers to a terminator with no instructions at all** — so both return blocks of
+`if (v) return 1; return 2;` had an empty `gcov_lines` while gcov counted both lines.
+
+Sixteen lines across fourteen lowered goldens were missing. §5 calls `gcov_lines` "the join
+point of the entire differentiating claim (030 → 031 → 032)", so every one was a line coverage
+correlation could not reach. The implementation matched the spec, which makes it a spec gap
+rather than a slip — and it survived a full-VPP cross-validation because that validates the
+*decoder* against gcov, not the CIR correlation.
+
+**Worth remembering as a method, not a bug:** the defect surfaced within minutes of the
+operation existing, by using it on ordinary C. Nothing in the test suite was going to find it.
 
 1. **§1.3's replay harness** (contracts 10, 11) — the half of 050 contract 8 that is missing.
    *"Your rewrite is wrong" is an opinion; "here is the program" ends the discussion.* Nothing
