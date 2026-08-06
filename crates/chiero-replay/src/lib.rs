@@ -473,6 +473,44 @@ pub fn run(r: &Replay, cc: &Path, dir: &Path) -> Outcome {
 /// about the code. The flags are the caller's, because the caller is the one that knows how the
 /// file is really built.
 pub fn run_with(r: &Replay, cc: &Path, dir: &Path, flags: &[String]) -> Outcome {
+    // **The scratch directory must be absolute and quote-free.** Its paths are interpolated
+    // into `sh -c "... exec '{}'"`, so a relative one becomes a bare word searched on a PATH
+    // that does not contain it and a quote ends the string early — both of which surfaced as
+    // "the harness wrote no result", pointing a reader at the harness rather than at the
+    // argument they passed. Refusing by name is the difference.
+    if !dir.is_absolute() {
+        return Outcome::DidNotRun {
+            detail: format!(
+                "the scratch directory must be absolute; `{}` is relative and the launcher \
+                 cannot use it",
+                dir.display()
+            ),
+        };
+    }
+    if dir.to_string_lossy().contains('\'') {
+        return Outcome::DidNotRun {
+            detail: format!(
+                "the scratch directory must not contain a quote; `{}` would end the \
+                 launcher's command early",
+                dir.display()
+            ),
+        };
+    }
+    // **A flag that merges the two programs undoes what separating them achieved.** 040 §3
+    // requires the translation unit's own flags, and `-fcommon` makes tentative definitions
+    // merge across units — so two identical sources sharing `int g;` report as differing.
+    // Passing the TU's flags is right; passing one that defeats the separation is not.
+    for bad in ["-fcommon", "--fcommon"] {
+        if flags.iter().any(|f| f == bad) {
+            return Outcome::DidNotRun {
+                detail: format!(
+                    "`{bad}` merges tentative definitions across the two programs, which \
+                     would let one version's globals reach the other — the separation this \
+                     harness depends on"
+                ),
+            };
+        }
+    }
     if std::fs::create_dir_all(dir).is_err() {
         return Outcome::DidNotRun {
             detail: format!("cannot create {}", dir.display()),
@@ -518,26 +556,12 @@ pub fn run_with(r: &Replay, cc: &Path, dir: &Path, flags: &[String]) -> Outcome 
             };
         }
         let _ = std::fs::remove_file(&result);
-        match std::process::Command::new(cc)
-            .args(["-std=gnu11", "-w", "-O0"])
-            .args(flags)
-            .arg(format!("-DCHIERO_RESULT=\"{}\"", result.display()))
-            .arg("-o")
-            .arg(&bin)
-            .arg(&src)
-            .output()
-        {
-            Err(e) => {
-                return Outcome::DidNotRun {
-                    detail: format!("{} could not be run: {e}", cc.display()),
-                };
-            }
-            Ok(o) if !o.status.success() => {
-                return Outcome::DidNotBuild {
-                    detail: String::from_utf8_lossy(&o.stderr).trim().to_string(),
-                };
-            }
-            Ok(_) => {}
+        // **The compile is bounded too.** 050 §6 covers "compilation and replay execution",
+        // and the limit wrapped only the produced binary — so a source whose `#include` names
+        // a FIFO hung the tool forever, which is the consequence the execution limit was added
+        // for, through the neighbouring door.
+        if let Err(e) = compile(cc, flags, &result, &bin, &src, dir, sandbox().timeout) {
+            return e;
         }
         if let Err(e) = bounded(&bin, dir, sandbox().timeout) {
             return Outcome::DidNotRun { detail: e };
@@ -595,6 +619,70 @@ pub fn run_with(r: &Replay, cc: &Path, dir: &Path, flags: &[String]) -> Outcome 
             before: b,
             after: a,
         }
+    }
+}
+
+/// Compile one unit, under the same wall clock the run gets.
+fn compile(
+    cc: &Path,
+    flags: &[String],
+    result: &Path,
+    bin: &Path,
+    src: &Path,
+    dir: &Path,
+    limit: std::time::Duration,
+) -> Result<(), Outcome> {
+    let mut child = std::process::Command::new(cc)
+        .args(["-std=gnu11", "-w", "-O0"])
+        .args(flags)
+        .arg(format!("-DCHIERO_RESULT=\"{}\"", result.display()))
+        .arg("-o")
+        .arg(bin)
+        .arg(src)
+        .current_dir(dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| Outcome::DidNotRun {
+            detail: format!("{} could not be run: {e}", cc.display()),
+        })?;
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let out = child
+                    .wait_with_output()
+                    .unwrap_or_else(|_| std::process::Output {
+                        status,
+                        stdout: Vec::new(),
+                        stderr: Vec::new(),
+                    });
+                if status.success() {
+                    return Ok(());
+                }
+                return Err(Outcome::DidNotBuild {
+                    detail: String::from_utf8_lossy(&out.stderr).trim().to_string(),
+                });
+            }
+            Ok(None) => {}
+            Err(e) => {
+                return Err(Outcome::DidNotRun {
+                    detail: format!("waiting for the compiler: {e}"),
+                });
+            }
+        }
+        if start.elapsed() >= limit {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(Outcome::DidNotRun {
+                detail: format!(
+                    "the compiler did not finish within {}s and was killed — a source that \
+                     blocks it (an `#include` naming a FIFO, say) is not a verdict",
+                    limit.as_secs()
+                ),
+            });
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
     }
 }
 

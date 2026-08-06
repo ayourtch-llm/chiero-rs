@@ -214,7 +214,10 @@ fn a_compile_that_never_finishes_is_bounded_too() {
         start.elapsed()
     );
     assert!(
-        matches!(outcome, Outcome::DidNotBuild { .. } | Outcome::DidNotRun { .. }),
+        matches!(
+            outcome,
+            Outcome::DidNotBuild { .. } | Outcome::DidNotRun { .. }
+        ),
         "a compile that could not finish is not a verdict: {outcome:?}"
     );
 }
@@ -253,7 +256,12 @@ fn a_scratch_path_the_launcher_cannot_use_is_refused_by_name() {
         return;
     };
     let body = "static long long chiero_fixture (void) { return 1; }";
-    match run_with(&two_programs(body), &cc, std::path::Path::new("relative/dir"), &[]) {
+    match run_with(
+        &two_programs(body),
+        &cc,
+        std::path::Path::new("relative/dir"),
+        &[],
+    ) {
         Outcome::DidNotRun { detail } => assert!(
             detail.contains("absolute"),
             "the refusal must say what is wrong with the path: {detail}"
