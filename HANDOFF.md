@@ -615,6 +615,43 @@ guard fires.
    talks about.** Tutorial 4 described an LLM's rewrite in prose and never showed the `after`
    C, which is exactly the thing a reader stops to ask about. Audited all five.
 
+### 7.4 ⚠️ `chiero-replay` is under review and the review is damning — READ BEFORE USING IT
+
+A fourth adversarial review (2026-08-06) found **ten defects**, all reproduced. The headline
+verdict is the one to keep:
+
+> "The harness is the one thing that asks a real compiler" is true only for one narrow
+> observable: *the two return values, cast to `long long`, at one input, called sequentially in
+> one process*. That observable is narrower than the divergences it adjudicates, and it is
+> corruptible by shared state in the combined TU. So the arbiter is neither sound (it can
+> fabricate `Demonstrated`) nor complete (it reports `NotDemonstrated` for real divergences),
+> and contract 11's downgrade converts the incompleteness into wrong verdict changes.
+
+**The worst is D1, and it inverts contract 11.** `prove_equivalent_with_replay` discards the
+`observation` and downgrades on any `NotDemonstrated` — so a true `SideEffect`, `Termination`
+or `Memory` divergence, which the harness cannot see at all, drops from `Exact/proven` to
+`Approximated` with the assumption text *"chiero's semantics and this compiler do not agree
+here"*. That statement is false; the compiler was never asked. **Contract 11 exists to catch
+chiero being wrong and currently punishes it for being right, systematically.**
+
+The rest, in short: `Demonstrated` can be fabricated three ways (globals merged by the
+two-include trick, pointer returns whose addresses always differ, and an entry that prints
+`before=… after=…` itself, since the result shares stdout with the program under test); no
+wall-clock limit, so `--allow-replay-exec` on a `Termination` finding hangs the tool at the
+witness chosen to show the hang; witness bindings are rendered as a positional argument list
+even when they are extern returns or when a pointer parameter minted none; `literal()`
+truncates above 64 bits and renders float bit-patterns as integers; the return channel
+`(long long) f(...)` refuses `void`, truncates `double` and `__int128`, and 050 §6's sandbox
+does not exist while the doc comments cite contract 12 as though it did.
+
+**The fix belongs at the rule, not the sites** — the pattern three earlier reviews established.
+The shape it wants: `emit_equivalence` returns a *refusal* unless it can guarantee the harness
+measures the thing claimed (return-value divergence, all-`Param` bindings, widths ≤ 64, an
+integer return), the runner gets a timeout and a private result channel, and only a divergence
+the harness *can* observe may trigger contract 11's downgrade.
+
+Probes: `$SCRATCH/replayprobe` (13 fixtures, `cargo run`).
+
 ### 7.3 A defect the operations found in the layer beneath them, 2026-08-06
 
 Pointing `chiero check-reachable` at a `return` line answered *"the function has no code on
@@ -697,6 +734,13 @@ operation existing, by using it on ordinary C. Nothing in the test suite was goi
 4. **032 §3.1's `Prover` seam wired to it.** The blocker is not equivalence — it is that
    `Prover::prove_equivalent(&chiero_diff::Entity)` has to turn an entity into two runnable
    modules, which needs the frontend from a crate that must not depend on it.
+
+### 7.5 How to check the workspace is green — `./check.sh`
+
+**Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
+three xtask gates were red: a crate whose test *binary* fails to build emits no `test result`
+line at all, so counting successes cannot detect a missing success. `./check.sh` keys on
+cargo's exit status and prints the failing suites first. Current: **2065 passed, 247 suites**.
 
 **Every spec must end with a `## Testable contracts` section** — numbered, checkable
 assertions. Those become the RED tests. This is what makes the specs actually drive TDD
