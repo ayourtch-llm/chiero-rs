@@ -208,3 +208,72 @@ entry:
         "and nothing should have been emitted: {v}"
     );
 }
+
+/// **"You said don't run it" and "there was nothing to run it with" are different facts.**
+///
+/// Both produced `outcome: null`, so a consumer could not tell a deliberate `--replay` from a
+/// machine with no C compiler — and the blind spot cited 050 contract 11's gate in both cases,
+/// which is the wrong reason for the second.
+#[test]
+fn not_run_and_no_compiler_are_distinguishable() {
+    let Some(cfg) = cfg() else { return };
+    let same = "int f (int x) { return x * 2; }\n";
+    let s = sources("nocc", same, same, "f");
+    let double = "func @f(%0: i32) -> i32 {\nentry:\n  .line 1\n  %1 = mul i32 %0, 2i32\n  ret %1\n}";
+    let triple = "func @f(%0: i32) -> i32 {\nentry:\n  .line 1\n  %1 = mul i32 %0, 3i32\n  ret %1\n}";
+
+    let emitted = prove_equivalent_with_replay(
+        &m(double),
+        &m(triple),
+        &cfg,
+        Some(&s),
+        ReplayPolicy::EmitOnly,
+    );
+    let v: serde_json::Value = serde_json::from_str(&emitted.to_json()).expect("valid JSON");
+    assert_eq!(
+        v["result"]["replay"]["outcome"], "not_run",
+        "a deliberate EmitOnly must say so rather than being a null: {v}"
+    );
+    assert!(
+        emitted.blind_spots.iter().any(|b| b.contains("contract 11")),
+        "and cite the gate, which is the right reason here: {:?}",
+        emitted.blind_spots
+    );
+}
+
+/// **A return type the `long long` channel cannot carry is refused.**
+///
+/// The harness reads both results as `long long`. A `double` return would be *converted*, so
+/// 1.25 and 1.75 both arrive as 1 and a true divergence reads as agreement — which, before the
+/// narrowing above, fed contract 11's downgrade. The type is knowable here, so it is checked
+/// here.
+#[test]
+fn a_float_return_is_refused_rather_than_truncated() {
+    let Some(cfg) = cfg() else { return };
+    let before = "\
+func @f(%0: i32) -> f64 {
+entry:
+  .line 1
+  %1 = sitofp f64 %0
+  ret %1
+}";
+    let after = "\
+func @f(%0: i32) -> f64 {
+entry:
+  .line 1
+  %1 = sitofp f64 %0
+  %2 = fadd f64 %1, fconst:f64:0x3fe0000000000000
+  ret %2
+}";
+    let c = "double f (int x) { return x; }\n";
+    let s = sources("floatret", c, c, "f");
+    let env = prove_equivalent_with_replay(&m(before), &m(after), &cfg, Some(&s), ReplayPolicy::Run);
+    let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
+    if v["result"]["verdict"] != "differs" {
+        return; // nothing to emit a harness for
+    }
+    assert_eq!(
+        v["result"]["replay"]["outcome"], "refused",
+        "a double read as a long long is a truncation, not a comparison: {v}"
+    );
+}
