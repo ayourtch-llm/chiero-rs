@@ -48,6 +48,15 @@ fn fixtures() -> PathBuf {
          int volume (int w) { return area (w) * w; }\n",
     );
     w(
+        "average.c",
+        "int average (int *a, int n)\n{\n  int total = 0;\n  for (int i = 0; i < n; i++)\n    \
+         total += a[i];\n  return total / n;\n}\n",
+    );
+    w(
+        "clamp.c",
+        "int clamp (int x)\n{\n  if (x < 0)\n    return 0;\n  return x;\n}\n",
+    );
+    w(
         "geom-after.c",
         "#define SCALE(x) ((x) * 3)\nint area (int w) { return SCALE (w) * w; }\n\
          int volume (int w) { return area (w) * w; }\n",

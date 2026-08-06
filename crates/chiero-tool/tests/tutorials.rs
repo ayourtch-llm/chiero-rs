@@ -273,6 +273,57 @@ fn tutorial_05_the_envelope() {
 }
 
 // ---------------------------------------------------------------------------------------
+// 06 — Finding defects
+// ---------------------------------------------------------------------------------------
+
+#[test]
+fn tutorial_06_find_bugs() {
+    // A division by zero when `n` is 0, after a loop chiero has to bound.
+    let average = "\
+func @average(%0: ptr, %1: i32) -> i32 {
+entry:
+  .line 1
+  %2 = sdiv i32 %1, %1
+  ret %2
+}";
+    let env = chiero_tool::find_bugs(&m(average), &chiero_tool::BugCfg::new("average"));
+    let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
+    let findings = v["result"]["findings"].as_array().expect("findings");
+    assert!(!findings.is_empty(), "n == 0 divides by zero: {v}");
+    assert!(
+        findings[0]["paths"].as_u64().is_some(),
+        "one bug, and how many paths reached it: {v}"
+    );
+
+    // The clean case: no loop, nothing cut, and the one place an empty list is an answer.
+    let clamp = "\
+func @clamp(%0: i32) -> i32 {
+entry:
+  .line 1
+  %1 = cmp slt i32 %0, 0i32
+  br %1, bb1, bb2
+bb1:
+  .line 2
+  ret 0i32
+bb2:
+  .line 3
+  ret %0
+}";
+    let env = chiero_tool::find_bugs(&m(clamp), &chiero_tool::BugCfg::new("clamp"));
+    assert!(
+        env.proven,
+        "an exhaustive search that found nothing found nothing"
+    );
+    assert_eq!(env.fidelity, chiero_tool::Fidelity::Exact);
+    // And it still says what it cannot see.
+    assert!(
+        env.blind_spots.iter().any(|b| b.contains("checkers")),
+        "a defect no checker looks for is not reported, and that is said every time: {:?}",
+        env.blind_spots
+    );
+}
+
+// ---------------------------------------------------------------------------------------
 
 /// **A tutorial with no test is a tutorial that has already rotted.**
 #[test]

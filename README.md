@@ -84,6 +84,8 @@ The tutorials are the fastest way in. Each is a complete worked example you can 
    chiero decides. Includes the `abs()` rewrite that looks right and is not.
 5. **[Reading the envelope](docs/tutorials/05-envelope.md)** — how to tell a proof from a
    guess, which is the only tutorial that is really required reading.
+6. **[Finding defects](docs/tutorials/06-find-bugs.md)** — the checkers, the input that
+   reaches each defect, and why the part of the answer that is not a finding matters more.
 
 ## The one rule worth knowing first
 
