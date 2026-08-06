@@ -76,6 +76,7 @@ bb3: ; span 187:390:0
   goto bb1
 bb4: ; span 187:390:0
   .line 13
+  .line 14
   .scope exit 2 ; span 302:349:0
   %32 = addrlocal %1 ; span 366:369:0
   %33 = load i32, %32 align 1 ; span 366:369:0

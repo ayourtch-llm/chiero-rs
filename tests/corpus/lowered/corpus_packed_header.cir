@@ -34,6 +34,7 @@ entry: ; span 718:1376:0
   .line 38
   .line 39
   .line 40
+  .line 41
   .scope enter 0 ; span 718:1376:0
   .scope enter 1 ; span 733:1376:0
   %7 = sext i32 6i32 to i64 ; span 1010:1011:0

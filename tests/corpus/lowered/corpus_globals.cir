@@ -58,6 +58,7 @@ entry: ; span 1260:1897:0
   .line 45
   .line 46
   .line 47
+  .line 48
   .scope enter 0 ; span 1260:1897:0
   .scope enter 1 ; span 1275:1897:0
   %21 = addrlocal %0 ; span 1279:1288:0

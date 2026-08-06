@@ -56,6 +56,11 @@ const OPS: &[Op] = &[
         ),
     },
     Op {
+        name: "impact_envelope",
+        samples: impact_samples,
+        never_exact: None,
+    },
+    Op {
         name: "expansion_sites_envelope",
         samples: expansion_sites_samples,
         never_exact: None,
@@ -117,6 +122,25 @@ fn select_tests_samples() -> Vec<Envelope> {
         &Suite::default(),
     );
     vec![changed, unchanged, no_coverage]
+}
+
+fn impact_samples() -> Vec<Envelope> {
+    let before = Program::parse(
+        "geom.c",
+        "#define SCALE(x) ((x) * 2)\nint area (int w) { return SCALE (w) * w; }\n",
+    )
+    .expect("parses");
+    let after = Program::parse(
+        "geom.c",
+        "#define SCALE(x) ((x) * 3)\nint area (int w) { return SCALE (w) * w; }\n",
+    )
+    .expect("parses");
+    vec![
+        // A macro edit reaching the function that expands it.
+        chiero_tool::impact_envelope(&before, &after),
+        // The empty answer: nothing changed at all.
+        chiero_tool::impact_envelope(&before, &before),
+    ]
 }
 
 fn expansion_sites_samples() -> Vec<Envelope> {

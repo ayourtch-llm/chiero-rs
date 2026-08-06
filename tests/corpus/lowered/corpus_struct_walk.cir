@@ -47,6 +47,7 @@ entry: ; span 737:1405:0
   .line 37
   .line 38
   .line 41
+  .line 42
   .scope enter 0 ; span 737:1405:0
   .scope enter 1 ; span 752:1405:0
   %14 = addrlocal %0 ; span 756:765:0

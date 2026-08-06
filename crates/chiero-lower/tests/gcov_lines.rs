@@ -309,14 +309,24 @@ fn a_static_inline_in_a_header_keeps_its_header_lines() {
 #[test]
 fn generated_only_blocks_have_no_lines_and_are_marked() {
     let dir = tmpdir("gen");
-    let src = "int probe(int a, int b) { return a && b; }\n";
+    // The `&&` join is a generated block; giving it a `goto` rather than the user's
+    // `return` as a terminator is what makes it generated through and through.
+    let src = "int probe(int a, int b)\n{\n  int c = a && b;\n  return c;\n}\n";
     std::fs::write(dir.join("g.c"), src).unwrap();
     let (m, _) = lower_file(&dir.join("g.c"), &[]);
     let f = m.funcs.iter().find(|f| &*f.name == "probe").expect("probe");
 
     let mut generated_only = 0usize;
     for b in &f.blocks {
-        let all_generated = !b.insts.is_empty() && b.insts.iter().all(|i| i.generated);
+        // **"All generated" is about the terminator too.** This used to look only at
+        // `insts`, which was the same claim while terminators contributed nothing to
+        // `gcov_lines`. They do now (a bare `return <constant>;` has no instructions and gcov
+        // still counts its line), and the `&&` join block here ends in the *user's* `return`
+        // — so it is not a block gcov has no counter for, and asserting it has no lines would
+        // be asserting the old implementation rather than the property.
+        let all_generated = !b.insts.is_empty()
+            && b.insts.iter().all(|i| i.generated)
+            && !matches!(b.term, chiero_cir::Terminator::Return(_));
         if all_generated {
             generated_only += 1;
             assert!(
@@ -330,8 +340,8 @@ fn generated_only_blocks_have_no_lines_and_are_marked() {
     }
     assert!(
         generated_only > 0,
-        "the `&&` shape introduces at least one all-generated block, or this test \
-         asserts a property of no block at all: {:#?}",
+        "the `&&` shape introduces at least one block that is generated through and \
+         through, or this test asserts a property of no block at all: {:#?}",
         f.blocks
             .iter()
             .map(|b| (

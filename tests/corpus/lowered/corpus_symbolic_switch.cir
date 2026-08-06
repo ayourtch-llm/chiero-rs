@@ -52,6 +52,7 @@ bb1: ; span 229:855:0
   .line 30
   .line 31
   .line 32
+  .line 33
   %26 = addrlocal %1 ; span 776:777:0
   %27 = load i32, %26 align 1 ; span 776:777:0
   %28 = srem i32 %27, 10i32 signed ; span 776:782:0

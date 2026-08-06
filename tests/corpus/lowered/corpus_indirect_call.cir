@@ -83,6 +83,7 @@ bb3: ; span 340:802:0
   .line 15
   .line 20
   .line 21
+  .line 22
   %29 = addrlocal %2 ; span 445:466:0
   %30 = load ptr, %29 align 4 ; span 445:466:0
   %31 = addrlocal %1 ; span 428:466:0

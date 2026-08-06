@@ -44,6 +44,7 @@ bb2: ; span 287:338:0
   store i32 %20 -> %21 align 4 ; span 321:335:0
   goto bb3
 bb3: ; span 287:338:0
+  .line 8
   %22 = addrlocal %1 ; span 321:335:0
   %23 = load i32, %22 align 4 ; span 321:335:0
   .scope exit 1 ; span 314:336:0
@@ -58,6 +59,7 @@ entry: ; span 340:668:0
   .line 12
   .line 15
   .line 16
+  .line 17
   .scope enter 0 ; span 340:668:0
   .scope enter 1 ; span 355:668:0
   %24 = addrlocal %0 ; span 359:368:0

@@ -218,6 +218,7 @@ bb19: ; span 344:1150:0
   goto bb20
 bb20: ; span 344:1150:0
   .line 36
+  .line 37
   %90 = addrlocal %6 ; span 1110:1134:0
   %91 = load i32, %90 align 4 ; span 1110:1134:0
   %92 = call @chiero_assert(%91) ; span 1096:1135:0

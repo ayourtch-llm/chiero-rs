@@ -188,6 +188,11 @@ struct FnState {
     variadic: bool,
     allocas: Vec<AllocaDecl>,
     blocks: Vec<Block>,
+    /// Where each block's *terminator* came from, when it came from source at all.
+    ///
+    /// A side table rather than a field on `Block` — see `set_term_at` for why. Consumed and
+    /// emptied by `compute_gcov_lines`.
+    term_spans: Vec<(BlockId, Span)>,
     entry: BlockId,
     /// The block instructions are appended to. Every emit goes here, so "which block am
     /// I in" is one piece of state rather than a parameter threaded everywhere.
@@ -364,8 +369,33 @@ impl Lowerer<'_> {
     }
 
     fn set_term(&mut self, t: Terminator) {
+        self.set_term_at(t, Span::DUMMY);
+    }
+
+    /// Terminate the current block, **recording where the terminator came from**.
+    ///
+    /// 015 §5's rule is written over a block's *instructions*, and `return <constant>;` lowers
+    /// to a `Return` with no instructions at all — so both return blocks of
+    /// `if (v) return 1; return 2;` had an empty `gcov_lines` while gcov counted both lines.
+    /// `gcov_lines` is §5's own "join point of the entire differentiating claim
+    /// (030 → 031 → 032)", so a line gcov counts and chiero attributes to nothing is a line
+    /// coverage correlation cannot reach. Found by asking `chiero check-reachable` about a
+    /// `return` line and being told the function has no code there.
+    ///
+    /// **A side table rather than a field on `Block`.** The span is needed for exactly one
+    /// computation, at the end of one function; putting it in the IR would make every
+    /// hand-written fixture and every pass carry a value only this uses, and 020 §9 already
+    /// makes a pass responsible for preserving spans it has no other reason to touch.
+    ///
+    /// `Span::DUMMY` from [`Self::set_term`] means "this terminator has no source of its own"
+    /// — a lowering-introduced `Goto` to a join block — and contributes nothing, exactly as a
+    /// `generated` instruction does.
+    fn set_term_at(&mut self, t: Terminator, span: Span) {
         let cur = self.fs().cur;
         let fs = self.fs();
+        if !span.is_dummy() {
+            fs.term_spans.push((cur, span));
+        }
         let b = fs
             .blocks
             .iter_mut()
@@ -1381,6 +1411,7 @@ impl Lowerer<'_> {
             order_sensitive: order_sensitive_body(self.ast, self.analysis, body),
             name: cir_name.clone(),
             static_locals: Vec::new(),
+            term_spans: Vec::new(),
             params: Vec::new(),
             ret: ret.clone(),
             variadic,
@@ -1658,6 +1689,7 @@ impl Lowerer<'_> {
     fn compute_gcov_lines(&mut self) {
         let Some(map) = self.map else { return };
         let fs = self.f.as_mut().expect("in a function");
+        let term_spans = std::mem::take(&mut fs.term_spans);
         for b in &mut fs.blocks {
             let mut lines: Vec<u32> = Vec::new();
             for i in &b.insts {
@@ -1670,6 +1702,13 @@ impl Lowerer<'_> {
                 if !lines.contains(&loc.line) {
                     lines.push(loc.line);
                 }
+            }
+            // **And the terminator**, when it came from source. See `set_term_at`.
+            if let Some((_, span)) = term_spans.iter().find(|(id, _)| *id == b.id)
+                && let Some(loc) = map.expansion_loc(*span)
+                && !lines.contains(&loc.line)
+            {
+                lines.push(loc.line);
             }
             lines.sort_unstable();
             b.gcov_lines = lines.into_iter().collect();
@@ -1835,7 +1874,7 @@ impl Lowerer<'_> {
                     self.unwind_to(0, span);
                     // The value handed back is the caller's own pointer, so the caller's
                     // `CopyMem` (015 c6) reads bytes it owns and that are still live.
-                    self.set_term(Terminator::Return(Some(Operand::Value(sret))));
+                    self.set_term_at(Terminator::Return(Some(Operand::Value(sret))), span);
                     // **The same dead block the scalar path opens.** Without it, everything
                     // emitted after the `return` — the enclosing compound's `Scope(Exit)`,
                     // and wave 109's trailing exit for the parameter scope — was appended
@@ -1856,7 +1895,7 @@ impl Lowerer<'_> {
                 };
                 // 015 §3: every open scope is exited **before** the `Return`.
                 self.unwind_to(0, span);
-                self.set_term(Terminator::Return(op));
+                self.set_term_at(Terminator::Return(op), span);
                 // Anything after a `return` is unreachable but must still have somewhere
                 // to be emitted, or the next statement writes into a terminated block.
                 let dead = self.new_block();
