@@ -190,3 +190,116 @@ fn detection_does_not_change_the_module() {
         "detect() must take the module by reference and leave it alone"
     );
 }
+
+/// **Contract 14 — the same finding, two labels, and the difference is what chiero could
+/// prove.**
+///
+/// > 14. A redundant load across a call to a function proven not to write the address is
+/// >     proposed with all obligations `Discharged`; across an unmodeled extern it is proposed
+/// >     with an `Open` obligation and labelled advisory.
+///
+/// This is the contract that makes the obligation machinery mean something: the *observation*
+/// is identical in both cases — the same address loaded twice with a call between — and only
+/// the strength of the claim differs. §2 puts it plainly:
+///
+/// > The honest statement "this looks redundant but I could not prove the intervening call does
+/// > not write it" is more useful than a confident wrong claim.
+///
+/// A load across a callee chiero can see through and which contains no store at all.
+const ACROSS_A_PURE_CALLEE: &str = "\
+func @quiet(%0: i32) -> i32 {
+entry:
+  .line 1
+  ret %0
+}
+
+func @f(%0: ptr) -> i32 {
+entry:
+  .line 4
+  %1 = load i32, %0 align 4
+  %2 = call @quiet(%1)
+  %3 = load i32, %0 align 4
+  %4 = add i32 %1, %3
+  ret %4
+}";
+
+/// The same shape across a function chiero has no body for.
+const ACROSS_AN_UNMODELED_EXTERN: &str = "\
+func @opaque(%0: i32) -> i32
+
+func @f(%0: ptr) -> i32 {
+entry:
+  .line 4
+  %1 = load i32, %0 align 4
+  %2 = call @opaque(%1)
+  %3 = load i32, %0 align 4
+  %4 = add i32 %1, %3
+  ret %4
+}";
+
+#[test]
+fn a_redundant_load_across_a_callee_that_cannot_write_is_discharged() {
+    let props = detect(&m(ACROSS_A_PURE_CALLEE), &cfg("f"));
+    let p = props
+        .iter()
+        .find(|p| matches!(p.kind, OppKind::RedundantLoad { .. }))
+        .unwrap_or_else(|| panic!("the second load is redundant: {props:?}"));
+    assert!(
+        p.obligations
+            .iter()
+            .all(|o| matches!(o, Obligation::Discharged { .. })),
+        "`quiet` contains no store, so nothing can have written the address: {p:?}"
+    );
+    assert!(!p.advisory, "{p:?}");
+    assert!(
+        p.evidence.iter().any(|e| e.contains("quiet")),
+        "the callee that was cleared must be named: {p:?}"
+    );
+}
+
+#[test]
+fn the_same_load_across_an_unmodeled_extern_is_advisory() {
+    let props = detect(&m(ACROSS_AN_UNMODELED_EXTERN), &cfg("f"));
+    let p = props
+        .iter()
+        .find(|p| matches!(p.kind, OppKind::RedundantLoad { .. }))
+        .unwrap_or_else(|| panic!("the observation is the same one: {props:?}"));
+    assert!(
+        p.obligations
+            .iter()
+            .any(|o| matches!(o, Obligation::Open { .. })),
+        "chiero has no body for `opaque`, so it cannot say the address was not written: {p:?}"
+    );
+    assert!(p.advisory, "an open obligation means advisory (041 §2): {p:?}");
+    assert!(
+        p.rationale.to_lowercase().contains("could not prove")
+            || p.obligations.iter().any(|o| match o {
+                Obligation::Open { why } => why.contains("opaque"),
+                _ => false,
+            }),
+        "and it must say which call it could not clear: {p:?}"
+    );
+}
+
+/// **A load that is not redundant is not proposed.** Without this, a detector that proposes
+/// every second load passes both tests above.
+#[test]
+fn a_load_across_a_store_is_not_redundant() {
+    let writes = "\
+func @f(%0: ptr, %1: i32) -> i32 {
+entry:
+  .line 1
+  %2 = load i32, %0 align 4
+  store i32 %1 -> %0 align 4
+  %3 = load i32, %0 align 4
+  %4 = add i32 %2, %3
+  ret %4
+}";
+    let props = detect(&m(writes), &cfg("f"));
+    assert!(
+        !props
+            .iter()
+            .any(|p| matches!(p.kind, OppKind::RedundantLoad { .. })),
+        "the store between them is exactly what makes the second load necessary: {props:?}"
+    );
+}
