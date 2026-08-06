@@ -474,7 +474,10 @@ fn a_store_that_is_overwritten_before_any_read_is_proposed() {
         .iter()
         .find(|p| matches!(p.kind, OppKind::DeadStore { .. }))
         .unwrap_or_else(|| panic!("the first store is overwritten: {props:?}"));
-    assert!(!p.advisory, "nothing reads it and nothing could have: {p:?}");
+    assert!(
+        !p.advisory,
+        "nothing reads it and nothing could have: {p:?}"
+    );
     assert!(
         p.obligations
             .iter()

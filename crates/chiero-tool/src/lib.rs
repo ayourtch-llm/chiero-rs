@@ -1747,6 +1747,10 @@ pub fn find_optimizations(
                         serde_json::json!({
                             "kind": "redundant_load", "object": object, "offset": offset,
                         }),
+                    chiero_opt::opportunity::OppKind::DeadStore { object, offset } =>
+                        serde_json::json!({
+                            "kind": "dead_store", "object": object, "offset": offset,
+                        }),
                 },
                 "rationale": p.rationale,
                 "advisory": p.advisory,
@@ -1778,8 +1782,9 @@ pub fn find_optimizations(
         },
     )
     .with_blind_spot(
-        "only 041 §2's dead-branch and redundant-load detectors ran; a dead store, a \
-         loop-invariant computation or a redundant bounds check is not reported",
+        "only 041 §2's dead-branch, redundant-load and dead-store detectors ran; a \
+         loop-invariant computation, a redundant bounds check or a call-site specialization \
+         is not reported",
     );
     // **Nothing here rewrites anything** (041 contract 17), and a consumer reading proposals
     // should be told that rather than inferring it from an absence.

@@ -51,7 +51,7 @@ proposals:
         what: nothing between the two loads could have written the address
 count: 2
 proven — this holds for all inputs (Exact)
-  blind spot: only 041 §2's dead-branch and redundant-load detectors ran; a dead store, a loop-invariant computation or a redundant bounds check is not reported
+  blind spot: only 041 §2's dead-branch, redundant-load and dead-store detectors ran; a loop-invariant computation, a redundant bounds check or a call-site specialization is not reported
   assumed: proposals_only (chiero never patches code (041 §1))
 ```
 

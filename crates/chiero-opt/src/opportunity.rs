@@ -68,6 +68,12 @@ pub enum OppKind {
     /// it: `p` lives in a stack slot and is reloaded before each dereference, so `*p` twice is
     /// two loads through two different values.
     RedundantLoad { object: u32, offset: i64 },
+    /// A value written and then overwritten with nothing reading it in between.
+    ///
+    /// Keyed on the engine's `Pointer`, like [`OppKind::RedundantLoad`] and for the same
+    /// reason: where a store *lands* is 021's answer, and matching on how the CIR spelled the
+    /// address is what made the first version of that detector blind to real C.
+    DeadStore { object: u32, offset: i64 },
 }
 
 impl OppKind {
@@ -84,6 +90,9 @@ impl OppKind {
             }
             OppKind::RedundantLoad { .. } => {
                 "nothing between the two loads could have written the address"
+            }
+            OppKind::DeadStore { .. } => {
+                "nothing between the two stores could have read the address"
             }
         }
     }
@@ -103,6 +112,10 @@ impl OppKind {
             OppKind::RedundantLoad { object, offset } => format!(
                 "object {object} at offset {offset} is loaded twice with nothing between that \
                  could have written it, so the second load could reuse the first{tail}"
+            ),
+            OppKind::DeadStore { object, offset } => format!(
+                "object {object} at offset {offset} is written twice with nothing between that \
+                 could have read it, so the first write is dead{tail}"
             ),
         }
     }
@@ -410,6 +423,12 @@ fn confined_locals(f: &chiero_cir::Function) -> Vec<u32> {
 struct LoadState {
     /// (object, offset) → what has happened since it was last loaded.
     seen: Vec<((u32, i64), Since)>,
+    /// (object, offset) → what has happened since it was last *stored*.
+    ///
+    /// A separate table because the two detectors ask opposite questions: a load is redundant
+    /// when nothing could have *written* between, a store is dead when nothing could have
+    /// *read* between. Sharing one would have to answer both with whichever was checked last.
+    stored: Vec<((u32, i64), Since)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -503,6 +522,10 @@ impl Checker for RedundantLoad {
                     };
                     let key = (p.base.0, p.off);
                     let st = ctx.state_mut::<LoadState>();
+                    // **A read is what makes a store live.** The dead-store table is retired
+                    // here rather than in a second event handler, because "was it read" is a
+                    // question only the load knows the answer to.
+                    st.stored.retain(|(k, _)| *k != key);
                     match st
                         .seen
                         .iter()
@@ -556,11 +579,57 @@ impl Checker for RedundantLoad {
                 chiero_cir::InstKind::Store { addr, .. }
                 | chiero_cir::InstKind::StoreBits { addr, .. }
                 | chiero_cir::InstKind::CopyMem { dst: addr, .. }
-                | chiero_cir::InstKind::SetMem { dst: addr, .. }
-                    if !self.confined(ctx, st, addr) =>
-                {
-                    for (_, since) in &mut ctx.state_mut::<LoadState>().seen {
-                        *since = Since::Written;
+                | chiero_cir::InstKind::SetMem { dst: addr, .. } => {
+                    let confined = self.confined(ctx, st, addr);
+                    // **A store to an address already written and not read is a dead store.**
+                    if let chiero_cir::Operand::Value(a) = addr
+                        && let Some(chiero_exec::Value::Ptr(p)) = st.local(*a)
+                    {
+                        let key = (p.base.0, p.off);
+                        let prior = ctx
+                            .state_mut::<LoadState>()
+                            .stored
+                            .iter()
+                            .find(|(k, _)| *k == key)
+                            .map(|(_, s)| s.clone());
+                        if let Some(since) = prior {
+                            let (constraints, own_doubt) = match &since {
+                                Since::ClearedCall(f) => (
+                                    vec![format!("`{f}` between them cannot have read it")],
+                                    None,
+                                ),
+                                Since::Doubt(f) => (
+                                    vec![format!("`{f}` is called between them")],
+                                    Some(format!(
+                                        "chiero could not prove `{f}` does not read this \
+                                         address, so the first write may be live"
+                                    )),
+                                ),
+                                _ => (vec!["nothing reads it between them".to_string()], None),
+                            };
+                            self.found
+                                .lock()
+                                .expect("no other thread holds this")
+                                .push(Seen {
+                                    kind: OppKind::DeadStore {
+                                        object: key.0,
+                                        offset: key.1,
+                                    },
+                                    constraints,
+                                    own_doubt,
+                                });
+                        }
+                        let st_ = ctx.state_mut::<LoadState>();
+                        st_.stored.retain(|(k, _)| *k != key);
+                        st_.stored.push((key, Since::Nothing));
+                    }
+                    // **And a barrier for every load**, unless it is into a local nothing can
+                    // reach. Deciding *which* addresses a store could alias is 021's question;
+                    // asking whether the address ever left the function is not.
+                    if !confined {
+                        for (_, since) in &mut ctx.state_mut::<LoadState>().seen {
+                            *since = Since::Written;
+                        }
                     }
                 }
                 _ => {}
@@ -611,11 +680,17 @@ impl Checker for RedundantLoad {
                     Some((false, name)) => Since::Doubt(name),
                     None => Since::Doubt("an indirect call".to_string()),
                 };
-                for (_, s) in &mut ctx.state_mut::<LoadState>().seen {
+                let st = ctx.state_mut::<LoadState>();
+                for (_, s) in &mut st.seen {
                     // A store already ends the matter; a call cannot make it less certain.
                     if *s != Since::Written {
                         *s = since.clone();
                     }
+                }
+                // A callee that could *read* the address makes a pending store live — the
+                // mirror of the load side, and the reason the two tables are separate.
+                for (_, s) in &mut st.stored {
+                    *s = since.clone();
                 }
             }
             _ => {}
