@@ -493,3 +493,59 @@ fn promotion_does_not_lose_what_021_6_established() {
         );
     }
 }
+
+/// **"chiero could not resolve this pointer" is not a defect in the program.**
+///
+/// 23 of the 42 findings on the 220-entry `vnet/` sweep were these two sentences:
+///
+/// ```text
+/// unresolvable pointer: the value is unconstrained, so it could refer to any object or to none
+/// a symbolic pointer could not be resolved: the solver did not decide which objects its
+///                                           value can fall in
+/// ```
+///
+/// The second one's own code comment settles it — *"the path ends at `SolverUnknown` instead —
+/// a statement about chiero, which is what it is"* — and then pushes a finding anyway. The
+/// first is 021 §5.1 step 4, which is the rule that chiero must **not** concretize a pointer it
+/// cannot pin; that is a decision about chiero's honesty, not an accusation about the code.
+///
+/// **The argument against filtering, and why it does not hold.** A genuinely arbitrary pointer
+/// value *is* a hazard, so this could be suppressing a real class. It is not, because the real
+/// cases are reported by something else and stay: an uninitialized pointer variable is an
+/// `uninitialized-read`, and an address chiero *proves* lands in no object is a `WildPointer`.
+/// Those are knowledge. These two are the absence of it — and both already degrade the run
+/// with a named assumption, so nothing is lost by not also calling them defects.
+#[test]
+fn a_pointer_chiero_cannot_resolve_is_not_a_defect() {
+    let p = write(
+        "unresolvable.c",
+        // An integer of unknown value, used as an address: chiero has no constraint on it,
+        // which is 021 §5.1 step 4 exactly.
+        "int f (unsigned long v) { return *(int *) v; }\n",
+    );
+    let r = run(&[
+        "find-bugs",
+        p.to_str().expect("utf-8 path"),
+        "--entry",
+        "f",
+        "--json",
+    ]);
+    let v = json(&r);
+    for f in v["result"]["findings"].as_array().expect("array") {
+        let m = f["message"].as_str().unwrap_or_default();
+        assert!(
+            !m.contains("unresolvable pointer") && !m.contains("could not be resolved"),
+            "chiero's own inability is not this program's defect: {m}"
+        );
+    }
+    // **Said, not swallowed.** The path really did end there, and the envelope carries why.
+    assert_ne!(v["fidelity"], "Exact", "the path ended unresolved: {v}");
+    assert!(
+        v["assumptions"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|x| x["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains("pointer")))),
+        "and the assumption names it: {v}"
+    );
+}
