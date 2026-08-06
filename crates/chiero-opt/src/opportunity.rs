@@ -59,11 +59,15 @@ pub enum OppKind {
     DeadBranch { taken: bool },
     /// The same address loaded twice with nothing between that could have written it.
     ///
-    /// `addr` is the value holding the address, as the CIR names it — the two loads are of
-    /// *that* value, which is a syntactic identity rather than an aliasing claim. A detector
-    /// that reasoned about which addresses might be equal would be doing 021's job in the wrong
-    /// crate; this one reports only the case where the program itself used one name twice.
-    RedundantLoad { addr: u32 },
+    /// `object` and `offset` are **the engine's own answer** for where the two loads read —
+    /// 021's `Pointer`, not a name this crate matched. A detector reasoning about which
+    /// addresses *might* be equal would be doing the memory model's job in the wrong crate;
+    /// asking it what an address resolved to is not.
+    ///
+    /// Keying on the CIR value instead was the first attempt, and unoptimized C never satisfies
+    /// it: `p` lives in a stack slot and is reloaded before each dereference, so `*p` twice is
+    /// two loads through two different values.
+    RedundantLoad { object: u32, offset: i64 },
 }
 
 impl OppKind {
@@ -96,9 +100,9 @@ impl OppKind {
                  decides it{tail}",
                 if *taken { "false" } else { "true" }
             ),
-            OppKind::RedundantLoad { addr } => format!(
-                "`%{addr}` is loaded twice with nothing between that could have written it, \
-                 so the second load could reuse the first{tail}"
+            OppKind::RedundantLoad { object, offset } => format!(
+                "object {object} at offset {offset} is loaded twice with nothing between that \
+                 could have written it, so the second load could reuse the first{tail}"
             ),
         }
     }
@@ -404,8 +408,8 @@ fn confined_locals(f: &chiero_cir::Function) -> Vec<u32> {
 /// What a path has seen since each address was loaded.
 #[derive(Clone, Debug, Default)]
 struct LoadState {
-    /// Address value → (the line it was first loaded on, what has happened since).
-    seen: Vec<(u32, Since)>,
+    /// (object, offset) → what has happened since it was last loaded.
+    seen: Vec<((u32, i64), Since)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -486,10 +490,18 @@ impl Checker for RedundantLoad {
                     rv: chiero_cir::RValue::Load { addr, .. },
                     ..
                 } => {
+                    // **Ask the engine where this reads.** A `ValueId` is how the CIR spelled
+                    // the address; a `Pointer` is where it *is*, which is what makes two loads
+                    // the same load. `SymPtr` — an object at an offset the program computed —
+                    // is deliberately excluded: two symbolic offsets may or may not be equal,
+                    // and deciding that is 021's question rather than this crate's.
                     let chiero_cir::Operand::Value(a) = addr else {
                         return Vec::new();
                     };
-                    let key = a.0;
+                    let Some(chiero_exec::Value::Ptr(p)) = st.local(*a) else {
+                        return Vec::new();
+                    };
+                    let key = (p.base.0, p.off);
                     let st = ctx.state_mut::<LoadState>();
                     match st
                         .seen
@@ -523,7 +535,10 @@ impl Checker for RedundantLoad {
                                 .lock()
                                 .expect("no other thread holds this")
                                 .push(Seen {
-                                    kind: OppKind::RedundantLoad { addr: key },
+                                    kind: OppKind::RedundantLoad {
+                                        object: key.0,
+                                        offset: key.1,
+                                    },
                                     constraints,
                                     own_doubt,
                                 });
@@ -556,22 +571,34 @@ impl Checker for RedundantLoad {
                         let m = ctx.module();
                         m.funcs.iter().find(|f| f.id == *id).map(|f| {
                             let name = f.name.to_string();
-                            // **A function with a body and no store cannot have written it.**
-                            // Syntactic and conservative: a callee that stores anywhere, or
-                            // calls anything, is not cleared. Narrower than an escape analysis
-                            // and defensible without one.
+                            // **A callee whose every store is into its own confined local
+                            // cannot have written the caller's memory.**
+                            //
+                            // "No store at all" was the first rule and it cleared nothing real:
+                            // lowering stores every parameter into a stack slot, so
+                            // `static int quiet (int x) { return x; }` has a store and was
+                            // never cleared. The same escape question the caller asks answers
+                            // it — a store through the address of a local the function never
+                            // lets out is invisible from outside.
+                            let confined = confined_locals(f);
+                            let writes_out = |o: &chiero_cir::Operand| match o {
+                                chiero_cir::Operand::Value(v) => !confined.contains(&v.0),
+                                _ => true,
+                            };
                             let quiet = f.body == chiero_cir::Body::Defined
                                 && f.blocks.iter().all(|b| {
-                                    b.insts.iter().all(|i| {
-                                        !matches!(
-                                            i.kind,
-                                            chiero_cir::InstKind::Store { .. }
-                                                | chiero_cir::InstKind::StoreBits { .. }
-                                                | chiero_cir::InstKind::CopyMem { .. }
-                                                | chiero_cir::InstKind::SetMem { .. }
-                                                | chiero_cir::InstKind::Call { .. }
-                                                | chiero_cir::InstKind::Opaque { .. }
-                                        )
+                                    b.insts.iter().all(|i| match &i.kind {
+                                        chiero_cir::InstKind::Store { addr, .. }
+                                        | chiero_cir::InstKind::StoreBits { addr, .. }
+                                        | chiero_cir::InstKind::CopyMem { dst: addr, .. }
+                                        | chiero_cir::InstKind::SetMem { dst: addr, .. } => {
+                                            !writes_out(addr)
+                                        }
+                                        // A call or an `Opaque` could do anything; neither is
+                                        // something this rule can see through.
+                                        chiero_cir::InstKind::Call { .. }
+                                        | chiero_cir::InstKind::Opaque { .. } => false,
+                                        _ => true,
                                     })
                                 });
                             (quiet, name)

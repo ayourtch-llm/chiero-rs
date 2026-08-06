@@ -1743,8 +1743,10 @@ pub fn find_optimizations(
                 "kind": match &p.kind {
                     chiero_opt::opportunity::OppKind::DeadBranch { taken } =>
                         serde_json::json!({ "kind": "dead_branch", "reachable_side": taken }),
-                    chiero_opt::opportunity::OppKind::RedundantLoad { addr } =>
-                        serde_json::json!({ "kind": "redundant_load", "address": addr }),
+                    chiero_opt::opportunity::OppKind::RedundantLoad { object, offset } =>
+                        serde_json::json!({
+                            "kind": "redundant_load", "object": object, "offset": offset,
+                        }),
                 },
                 "rationale": p.rationale,
                 "advisory": p.advisory,

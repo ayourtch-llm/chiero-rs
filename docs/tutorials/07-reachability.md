@@ -37,7 +37,19 @@ proposals:
     obligations:
       - state: discharged
         what: the search was exhaustive, so no path reaches the other side
-count: 1
+  - kind:
+      kind: redundant_load
+      object: 2
+      offset: 0
+    rationale: object 2 at offset 0 is loaded twice with nothing between that could have written it, so the second load could reuse the first
+    advisory: false
+    benefit: Unquantified
+    evidence:
+      - nothing happens between them
+    obligations:
+      - state: discharged
+        what: nothing between the two loads could have written the address
+count: 2
 proven — this holds for all inputs (Exact)
   blind spot: only 041 §2's dead-branch and redundant-load detectors ran; a dead store, a loop-invariant computation or a redundant bounds check is not reported
   assumed: proposals_only (chiero never patches code (041 §1))
