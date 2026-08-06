@@ -909,7 +909,8 @@ that or dismiss it in one pass, which is the whole objective.
 |---|---|
 | first run | 16 |
 | after `__builtin_expect` | 3 of the first 198 (12 at the tail) |
-| after `copy_via` | **10**, of which **9 are one defect** |
+| after `copy_via` | 10, of which 9 were one defect |
+| after `memoize_fresh` | **1** — `relax_ip4_addr`, and it is about a `static` helper analysed in isolation |
 
 Two engine defects, both with wide blast radius:
 
@@ -1058,32 +1059,29 @@ typing the paths ever would.
 > a value the path allows to be zero, `Unknown`, with inline asm, `__builtin_expect`, an opaque
 > write and 1496 unreported invented-bound accesses named in the envelope.
 >
-> ### 🚨 OPEN, AND THE MOST SERIOUS THING IN THIS FILE — a struct copy over 16 bytes is truncated
+> ### ✅ CLOSED — "a struct copy over 16 bytes is truncated" was the wrong diagnosis
 >
-> ```c
-> typedef struct { unsigned int a, b, c, d, e; } s20;   /* 20 bytes */
-> unsigned f (s20 *in) { s20 t; t = *in; return t.e; }  /* offset 16 */
-> ```
+> The symptom was real: `struct {unsigned int a,b,c,d,e;}` (20 B) copied out of an entry
+> pointer read back uninitialized past offset 16, and 12 and 16 bytes were clean. I wrote it up
+> here as *"a struct copy is silently losing its tail… prove_equivalent would decide equality on
+> bytes that were never copied"*, and that was wrong. **The copy was fine.** The same copy from a
+> fully-written *local* was always clean — which is the experiment that separates the two, and
+> the one I should have run before writing the entry.
 >
-> → `uninitialized-read: read at offset 16 of t`. **12 and 16 bytes are clean; 20 is not**, and
-> the boundary is exactly `chiero_mem::MAX_ACCESS_BITS` (128 bits). Bisected: it is the *size*,
-> not the field count and not unions — `struct {unsigned long a,b;}` (16 B, 2 fields) is fine
-> and `struct {unsigned int a,b,c,d,e;}` (20 B, 5 fields) is not.
+> The cause was `Object::memoize_fresh`, which flips `No` init bits to `Yes` and **moves no data
+> at all**, running through `check_bits` — whose first rule bounds a *value*: "`v >> 128` is
+> `v >> 0`… an over-wide field silently wrote bit 0 of the value into bit 128". So every
+> materialization wider than 16 bytes did nothing, and silently, because the error was dropped
+> rather than reported.
 >
-> **This is not a false-positive problem, it is a wrong-answer problem.** A struct assignment is
-> silently losing its tail, so every later read of those bytes is analysed against a program
-> that did not run. It is worse for 041 than for 040: `prove_equivalent` would call two versions
-> equal, or unequal, on the strength of bytes that were never copied.
+> So it was a **false-positive** bug (021 §6's initialized-but-unknown bytes never got marked),
+> not a wrong-answer one, and 041 was never affected. Fixed: the range check stays, the payload
+> bound goes.
 >
-> Lowering is **not** the culprit — it emits one `CopyMem` of the layout's size (015 contract 6)
-> and `lvalue_addr` handles `*p`. The trail runs into `Memory::copy` → `read_raw`, and
-> `check_int_width` caps the byte-addressed integer API at `MAX_ACCESS_BITS` with the note "above
-> 16 bytes the write duplicated the value's low bytes and the read silently narrowed". Start
-> there; a copy should chunk rather than inherit an access-width limit.
->
-> Found by pointing `find-bugs` at the ACL plugin — 9 of its last 10 findings were this, in
-> `format_ip46_session_bihash_kv`, whose `fa_5tuple_t` union has *compile-time assertions*
-> pinning the very offsets chiero called unwritten.
+> **The lesson, which is the reusable part:** a payload bound applied to an operation with no
+> payload. Two others in this family were the same shape one level up — `read`, `read_bits` and
+> `read_raw` cannot mint a symbol because they have no arena. When something about lazy memory
+> is wrong, ask *what this operation actually carries* before assuming it carries a value.
 >
 > ### ⏭️ What to do next, in order
 >
