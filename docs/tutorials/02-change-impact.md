@@ -40,7 +40,7 @@ entities:
     distance: 1
     changed_lines: (empty)
     edges:
-    - ExpandsMacro { name: "SCALE" }
+      - ExpandsMacro { name: "SCALE" }
   - name: volume
     file: geom-after.c
     kind: function
@@ -49,8 +49,8 @@ entities:
     distance: 2
     changed_lines: (empty)
     edges:
-    - Calls { callee: "area" }
-    - ExpandsMacro { name: "SCALE" }
+      - Calls { callee: "area" }
+      - ExpandsMacro { name: "SCALE" }
   - name: SCALE
     file: geom-after.c
     kind: macro
@@ -59,7 +59,7 @@ entities:
     distance: 0
     changed_lines: (empty)
     edges:
-    - DirectlyChanged
+      - DirectlyChanged
 count: 3
 completeness: Complete
 proven — this holds for all inputs (Exact)

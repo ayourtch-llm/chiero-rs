@@ -455,7 +455,7 @@ have entrenched conventions real lowering then had to match.)
 | **031 change impact** | ✅ 20/20 contracts | incl. the headline — a header macro edit impacts every expansion site while coverage sees nothing |
 | **032 test selection** | 🟡 18/20 | mutation gate: **recall 100%, coverage-only 14.3%, reduction 65%** |
 | **041 `prove_equivalent`** | 🟡 contracts 1–6, 9, 12, 13, 13b | z3 proves `x*2 == x<<1` over all 2^32; finds `INT_MIN` as the one input two `abs()`s disagree on |
-| **050 tool interface** | 🟡 5 operations | envelope + `select_tests`, `expansion_sites`, `explain_macro_expansion`, `prove_equivalent` |
+| **050 tool interface** | 🟡 6 operations + a CLI | envelope + `select_tests`, `expansion_sites`, `explain_macro_expansion`, `prove_equivalent`, `impact`, `find_bugs`; all five reachable as `chiero <op>` |
 | 040 checkers, 042 recipes, 060 vpp | partial | `chiero-check`, `chiero-recipe`, `chiero-vpp` exist |
 
 **The two 032 contracts left, and why neither is "just work":**

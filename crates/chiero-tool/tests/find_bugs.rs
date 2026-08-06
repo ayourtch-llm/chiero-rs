@@ -83,13 +83,16 @@ fn a_run_that_hit_a_budget_says_which_and_is_not_proven() {
     let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
 
     assert!(!env.proven, "a truncated search proves nothing: {v}");
-    let hit = v["result"]["budgets"]["hit"].as_array().expect("budgets.hit");
+    let hit = v["result"]["budgets"]["hit"]
+        .as_array()
+        .expect("budgets.hit");
     assert!(
         !hit.is_empty(),
         "the budget that stopped the search must be named: {v}"
     );
     assert!(
-        hit.iter().any(|b| b.as_str().is_some_and(|s| s.contains("max_loop_iters"))),
+        hit.iter()
+            .any(|b| b.as_str().is_some_and(|s| s.contains("max_loop_iters"))),
         "and named specifically, not as `a budget`: {hit:?}"
     );
     assert!(
@@ -147,7 +150,9 @@ entry:
         "signed overflow of INT_MAX + 1 is a defect: {v}"
     );
     assert!(
-        findings[0]["message"].as_str().is_some_and(|s| !s.is_empty()),
+        findings[0]["message"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()),
         "a finding with no message is not a finding: {v}"
     );
     // 023 contract 15: a witness, or a recorded reason there is none. Never silence.
@@ -164,7 +169,9 @@ fn a_missing_entry_is_not_an_empty_finding_list() {
     let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
     assert!(!env.proven, "nothing was analysed: {v}");
     assert!(
-        v["result"]["error"].as_str().is_some_and(|e| e.contains("nosuch")),
+        v["result"]["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("nosuch")),
         "the error must name what was not found: {v}"
     );
 }

@@ -172,9 +172,9 @@ entry:
 }";
 
 fn find_bugs_samples() -> Vec<Envelope> {
-    let clean = "func @f(%0: i32) -> i32 {\nentry:\n  .line 1\n  %1 = add i32 %0, 1i32\n  ret %1\n}";
-    let overflow =
-        "func @f() -> i32 {\nentry:\n  .line 1\n  %0 = add i32 2147483647i32, 1i32 signed\n  ret %0\n}";
+    let clean =
+        "func @f(%0: i32) -> i32 {\nentry:\n  .line 1\n  %1 = add i32 %0, 1i32\n  ret %1\n}";
+    let overflow = "func @f() -> i32 {\nentry:\n  .line 1\n  %0 = add i32 2147483647i32, 1i32 signed\n  ret %0\n}";
     vec![
         // Finished and clean — the one case an empty list is an answer.
         chiero_tool::find_bugs(&m(clean), &chiero_tool::BugCfg::new("f")),

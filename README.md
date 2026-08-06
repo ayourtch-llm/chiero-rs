@@ -33,11 +33,14 @@ is worth two minutes before anything else.
 | You want to know | Ask | Status |
 |---|---|---|
 | what each test executed, line by line | `chiero_gcov::ingest_native` | ✅ exact on all of VPP, both compilers |
-| what a source change actually reaches | `chiero_diff::impact` | ✅ including through macros |
-| which tests are worth running | `chiero_select::select` | ✅ 100% recall on a mutation gate, 65% fewer tests |
-| whether a rewrite is safe | `chiero_opt::prove_equivalent` | 🟡 return values, termination, side effects |
-| where a macro came from | `chiero_tool::explain_macro_expansion` | ✅ |
-| what a macro expands into, everywhere | `chiero_tool::expansion_sites` | ✅ |
+| what a source change actually reaches | `chiero impact` | ✅ including through macros |
+| which tests are worth running | `chiero select-tests` | ✅ 100% recall on a mutation gate, 65% fewer tests |
+| whether a rewrite is safe | `chiero prove-equivalent` | 🟡 return values, termination, side effects |
+| where the defects are | `chiero find-bugs` | 🟡 two checkers of 040 |
+| where a macro came from | `chiero explain-macro` | ✅ |
+| what a macro expands into, everywhere | `chiero expansion-sites` | ✅ |
+
+Each is a command *and* a library call; `chiero --help` lists them.
 
 **Verified against the whole of VPP** (~1.5M lines): 1,871 translation units parse and lower;
 1,895 gcc `.gcno` files and 1,872 clang ones decode; line counts for 322 objects match `gcov`

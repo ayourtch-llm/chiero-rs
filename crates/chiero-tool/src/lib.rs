@@ -849,13 +849,20 @@ fn render_value(v: &serde_json::Value, indent: usize) -> String {
                 serde_json::Value::Object(_) => {
                     // The first line of an element carries the bullet, so a list of records
                     // reads as a list rather than as a wall.
+                    //
+                    // **Only the first line is re-padded.** Trimming and re-padding *every*
+                    // line worked for a flat record and flattened anything inside one — a
+                    // finding's witness came out with its fields beside the bullet that
+                    // introduced them instead of under it. The element is rendered at the
+                    // right indent to begin with; the bullet replaces two of its leading
+                    // spaces.
                     let body = render_value(item, indent + 1);
                     let mut lines = body.lines();
-                    let first = lines.next().unwrap_or("").trim_start();
-                    let rest: Vec<&str> = lines.collect();
-                    let mut s = format!("{pad}- {first}");
-                    for l in rest {
-                        s.push_str(&format!("\n{pad}  {}", l.trim_start()));
+                    let first = lines.next().unwrap_or("");
+                    let mut s = format!("{pad}- {}", first.trim_start());
+                    for l in lines {
+                        s.push('\n');
+                        s.push_str(l);
                     }
                     s
                 }
@@ -925,7 +932,7 @@ impl BugCfg {
 /// `max_loop_iters` and `max_states` is which knob to turn, and a reader who cannot tell them
 /// apart cannot decide whether re-running would help.
 pub fn find_bugs(module: &chiero_cir::Module, cfg: &BugCfg) -> Envelope {
-    if !module.funcs.iter().any(|f| &*f.name == cfg.entry) {
+    if !module.funcs.iter().any(|f| *f.name == cfg.entry) {
         // **An error, not an empty finding list.** A typo in an entry name would otherwise
         // produce the most confident possible all-clear.
         return Envelope::new(
@@ -956,12 +963,33 @@ pub fn find_bugs(module: &chiero_cir::Module, cfg: &BugCfg) -> Envelope {
     }
     let run = engine.run(&mut arena);
 
-    let findings: Vec<serde_json::Value> = run
-        .reports()
+    // **One bug is one entry, and the number of paths that reached it is kept.**
+    //
+    // 023 §6.1 deduplicates a *fork's* copies and deliberately does not deduplicate a *loop's*
+    // — those are separate reports of one bug, which is the right answer for the engine and
+    // the wrong shape for a reader: an unrolled loop turns one division by zero into nine
+    // near-identical lines and the eighth is where somebody stops reading. Grouped here, at
+    // the layer whose job is what a consumer sees.
+    //
+    // **Never silently.** "1 finding" and "1 finding on 9 paths" are different facts, and the
+    // second is what tells a reader the loop is involved — so `paths` is on every entry.
+    let mut grouped: Vec<(chiero_exec::Finding, usize)> = Vec::new();
+    for f in run.reports() {
+        match grouped
+            .iter_mut()
+            .find(|(g, _)| g.message == f.message && g.span == f.span)
+        {
+            Some((_, n)) => *n += 1,
+            None => grouped.push((f, 1)),
+        }
+    }
+
+    let findings: Vec<serde_json::Value> = grouped
         .iter()
-        .map(|f| {
+        .map(|(f, paths)| {
             serde_json::json!({
                 "message": f.message,
+                "paths": paths,
                 "fidelity": format!("{:?}", f.fidelity),
                 "solver": f.solver,
                 // 023 contract 15: a witness, or the reason there is none. The absence is
