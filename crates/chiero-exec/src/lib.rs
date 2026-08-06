@@ -3631,7 +3631,9 @@ impl<'m> Engine<'m> {
                     self.lowering_gap(s, i.span, "a copy with an untranslatable operand");
                     return;
                 };
-                let r = s.mem.copy(d, sp, n, chiero_mem::Overlap::Forbidden, i.span);
+                let r = s
+                    .mem
+                    .copy_via(a, d, sp, n, chiero_mem::Overlap::Forbidden, i.span);
                 self.report_faults(a, s, &r.faults, i.span);
             }
             InstKind::SetMem { dst, byte, size } => {

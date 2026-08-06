@@ -2778,6 +2778,36 @@ impl Memory {
 
     /// 021 contract 22. `Overlap::Forbidden` is `memcpy`; `Overlap::Allowed` is
     /// `memmove` and copies as if through a temporary.
+    /// [`Memory::copy`], with the arena it needs to **discharge 021 §6's laziness on the
+    /// source**.
+    ///
+    /// The third API in this family, after [`Memory::read_bits_via`] and the materialization
+    /// inside `promote_to_array`, and they all exist for one reason: an entry that cannot mint
+    /// a symbol cannot tell "the caller wrote something chiero does not know" from "nobody
+    /// wrote this". `copy` reads through `read_raw`, which has no arena, so the destination
+    /// inherited the source's *unmaterialized* mask and every byte of it read back as
+    /// uninitialized.
+    ///
+    /// Reached by every aggregate parameter: 015 lowers `f (struct id s)` to a `CopyMem` from
+    /// the caller's pointer into a local slot, so `s.thread_index` was an uninitialized read of
+    /// a struct the caller built member by member. Found on the ACL plugin's
+    /// `prefetch_session_entry`.
+    pub fn copy_via(
+        &mut self,
+        a: &mut TermArena,
+        dst: Pointer,
+        src: Pointer,
+        size: u64,
+        overlap: Overlap,
+        at: Span,
+    ) -> AccessResult<()> {
+        if self.entry(src.base).is_some_and(|e| e.lazy) && src.off >= 0 {
+            self.materialize_fresh(a, src.base, src.off, size);
+            self.memoize_via(a, src.base, src.off as u64 * 8, size * 8);
+        }
+        self.copy(dst, src, size, overlap, at)
+    }
+
     pub fn copy(
         &mut self,
         dst: Pointer,
