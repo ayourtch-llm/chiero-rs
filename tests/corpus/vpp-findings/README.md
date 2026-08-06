@@ -14,11 +14,21 @@ Release binary, `/home/ubuntu/vpp` at `7fe9c266`, 60-second cap per entry point.
 
 | | findings | `Exact` | timed out |
 |---|---|---|---|
-| `./measure.sh` | 231 | 0 | 3 |
-| `./measure.sh --entry-ptr-nonnull` | 157 | 0 | 2 |
+| `./measure.sh` | 23 | 0 | 3 |
+| `./measure.sh --entry-ptr-nonnull` | **1** | 0 | 2 |
 
-**Read the `Exact` column first, and know that it used to say 1.** That one finding was a false
-positive that claimed `proven: true` — chiero's strongest claim, on real code, wrong:
+**It started at 231, and one of them was a false `proven: true`.** The four defects that took
+it to 1 were all found by looking at what was left after removing the previous class, which is
+the argument for taking a measurement at all:
+
+| | | findings after |
+|---|---|---|
+| the one `Exact` finding was wrong — `_vec_update_len` | fidelity capped for a bound chiero invented | 231 |
+| 147 of 157 were about that same invented bound | not reported by default, **counted** in the envelope | 32 |
+| an `extern` global read as uninitialized | 021 §6's "unknown *and* initialized", one object kind over | 27 |
+| a bitfield through an entry pointer, then the same read as `symbolic-byte` | `read_bits_via`, then `read_bits_term` | 23 |
+
+The false proof, in full, because it is the one worth remembering:
 
 ```text
 _vec_update_len:
@@ -34,12 +44,10 @@ pointer parameter is `ENTRY_PARAM_BYTES` = 4096 bytes, and the pointer is placed
 of it. The finding's own wording carries the contradiction: a pointer cannot be both
 "unconstrained" and known to sit at the base of a 4096-byte object.
 
-Fixed at the rule rather than at the site — a bounds fault against an `ObjKind::Lazy` object
-degrades to `Approximated` and names the size chiero chose.
-
-**The 157 that remain are the open problem.** Every one is `Unknown`, and nearly every one says
-"…of the 4096-byte object reached through an unconstrained pointer": a statement about the
-*caller contract*, not about the function. Nobody can act on those. See HANDOFF §7.6 and §9.
+**The one that remains is the shape a finding should have.** `clib_time_init` divides by a
+value the path allows to be zero, the envelope says `Unknown`, and it names what stands behind
+it — inline asm, `__builtin_expect`, an opaque write, and 1496 accesses against the invented
+bound that were not reported. A reader can decide what to do with that in one pass.
 
 ## What `entries.tsv` is
 
