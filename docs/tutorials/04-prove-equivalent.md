@@ -143,11 +143,30 @@ $ chiero prove-equivalent before.c after.c --entry f --allow-replay-exec
 proven — this holds for all inputs (Exact)
 ```
 
-chiero emits a self-contained C program that includes both versions with the entry renamed,
-calls each at the witness, and **exits 0 only when they disagree** — so "it ran and said
-nothing" cannot be mistaken for success. `gcc` built it, ran it, and produced the two numbers.
-The blind spot about the divergence being unconfirmed is gone from that output, because it is
-no longer true.
+chiero emits three C files — one per version, each compiled alone with the entry renamed and a
+wrapper appended, plus a harness that calls both and **exits 0 only when they disagree**, so
+"it ran and said nothing" cannot be mistaken for success. `gcc` built them, ran the result, and
+produced the two numbers. The blind spot about the divergence being unconfirmed is gone,
+because it is no longer true.
+
+Three files rather than one because two versions of a real file share their `static` helpers,
+and putting both in one translation unit defines each of them twice. Separate compilation keeps
+a `static` file-local; the wrapper is inside the version's own unit, so a `static` *entry* is
+still reachable. (A **non**-static helper the two versions share still collides — renaming
+every shared symbol would mean parsing the file, which is more than a harness should do.)
+
+### What the program that agreed was allowed to do
+
+```
+assumed: replay_sandbox (network is isolated (a namespace of its own); memory is
+capped at 2048 MiB; writes are NOT confined to the scratch directory (050 §6
+wants them to be); wall clock 10s)
+```
+
+Every confirmation carries this, because "a compiler agreed" is worth knowing the conditions
+of. The network isolation and the memory cap are real; **write confinement is not**, and the
+line says so in those words rather than leaving it to be assumed. Doing it without root needs
+more than an unprivileged user namespace.
 
 `--replay` alone emits the program without running it: compiling and executing code is
 something a caller has to ask for (050 §6). With it, the response carries the source and a

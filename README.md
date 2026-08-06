@@ -36,7 +36,7 @@ is worth two minutes before anything else.
 | what a source change actually reaches | `chiero impact` | ✅ including through macros |
 | which tests are worth running | `chiero select-tests` | ✅ 100% recall on a mutation gate, 65% fewer tests |
 | whether a rewrite is safe | `chiero prove-equivalent` | 🟡 return values, termination, side effects |
-| whether chiero is right about it | `--allow-replay-exec` | 🟡 a C harness a real compiler runs |
+| whether chiero is right about it | `--allow-replay-exec` | 🟡 a C harness a real compiler runs, in a network namespace with a memory cap |
 | where the defects are | `chiero find-bugs` | 🟡 two checkers of 040 |
 | where a macro came from | `chiero explain-macro` | ✅ |
 | what a macro expands into, everywhere | `chiero expansion-sites` | ✅ |
