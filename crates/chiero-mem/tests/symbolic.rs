@@ -2211,7 +2211,8 @@ fn memoizing_more_than_a_payload_wide_range_still_works() {
     assert!(c.faults.is_empty(), "the copy itself: {:?}", c.faults);
     let tail = m.read_term(&mut a, ptr(d, 16), 4, Endian::Little, sp(6));
     assert!(
-        !tail.faults
+        !tail
+            .faults
             .iter()
             .any(|f| matches!(f, MemFault::Uninitialized { .. })),
         "and the destination's tail came across initialized: {:?}",

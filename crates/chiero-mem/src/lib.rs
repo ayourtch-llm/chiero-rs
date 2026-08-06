@@ -407,7 +407,14 @@ impl MemObject {
     /// Record that a fresh symbol has been invented for this range, so a repeated read
     /// returns the same value and does not report the same defect twice (021 §5).
     pub fn memoize_fresh(&mut self, lo_bit: u64, n_bits: u64) {
-        if self.check_bits(lo_bit, n_bits).is_err() {
+        // **The range, not the payload.** `check_bits` leads with a bound on a *value* — an
+        // over-wide field would shift bit 0 into bit 128 — and this operation carries no value:
+        // it flips `No` to `Yes`. Applying it made every materialization wider than 16 bytes do
+        // nothing, and silently, because the error was dropped rather than reported. A 20-byte
+        // struct read out of an entry pointer's object then reported an uninitialized read past
+        // offset 16, on memory 021 §6 says the caller filled. Nine of ten findings on the ACL
+        // plugin were this.
+        if lo_bit as u128 + n_bits as u128 > self.size as u128 * 8 {
             return;
         }
         // **Only `No` bits are memoized.** Upgrading a `Cond` bit discharges its guard in
