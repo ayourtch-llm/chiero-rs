@@ -807,8 +807,26 @@ pub mod models {
     ) -> ModelOutcome {
         let n = match strlen(cx, src, policy) {
             StrScan::Exact(n) => n,
-            // Nothing to copy that we can vouch for; `strlen` already reported why.
-            other => return ModelOutcome::Finding(format!("strcpy: source scan gave {other:?}")),
+            // **An unterminated source is a real overrun** — 024 §4 calls it the most
+            // valuable thing these models catch — and the scan has already reported it.
+            StrScan::Unterminated { .. } => {
+                return ModelOutcome::Bounded(
+                    "strcpy: the source is unterminated, reported by the scan; the copy \
+                     itself was not modeled"
+                        .to_string(),
+                );
+            }
+            // **A bound, not a defect.** The scan hit `max_scan`, or a byte it could not read
+            // — a symbolic one, which is most of them when the caller filled the buffer. This
+            // used to be `Finding(format!("strcpy: source scan gave {other:?}"))`, which put a
+            // `{:?}` of an internal Rust enum in front of a reader as a defect in their code.
+            // 023 §7's distinction, and `ModelOutcome::Bounded` is what it is for.
+            StrScan::CapReached { scanned } => {
+                return ModelOutcome::Bounded(format!(
+                    "strcpy: the source string could not be measured — the scan stopped \
+                     after {scanned} byte(s), so nothing is claimed about this copy"
+                ));
+            }
         };
         // The terminator is part of the string, so the destination needs `n + 1`.
         let need = n + 1;

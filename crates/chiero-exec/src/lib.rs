@@ -6982,7 +6982,22 @@ impl<'m> Engine<'m> {
                 ),
             );
         }
-        for f in &faults {
+        // **A fault about chiero's own limits degrades and does not report.** See
+        // `MemFault::is_chiero_limit`. The degradation is the part a reader needs: the answer
+        // is weaker, and there is no program in which "a concrete access cannot answer for
+        // this byte" is a defect.
+        for f in faults.iter().filter(|f| f.is_chiero_limit()) {
+            s.degrade(
+                Fidelity::Unknown,
+                AssumptionKind::NoInformation,
+                span,
+                &format!(
+                    "{} — a limit of chiero's memory model, not a property of the program",
+                    f.kind()
+                ),
+            );
+        }
+        for f in faults.iter().filter(|f| !f.is_chiero_limit()) {
             self.finding_seq += 1;
             let key = FindingKey {
                 kind: f.kind(),
@@ -7280,10 +7295,16 @@ impl<'m> Engine<'m> {
                         // `translated` true, so the `dst` fallback minted a *fresh
                         // unconstrained* symbol and the run stayed `Exact`. `Finding`
                         // carries the reason and marks the gap.
-                        other => chiero_model::ModelOutcome::Finding(format!(
-                            "strlen: no length was established ({other:?}), so the result \
-                             is unknown"
-                        )),
+                        // **A bound, not a defect, and not a `{:?}` of an internal enum.**
+                        // The scan already reported why it stopped; what is left to say is
+                        // that this call's result is unknown, which is what `Bounded` means.
+                        // The `{other:?}` this replaces put `CapReached { scanned: 0 }` in
+                        // front of a reader as a defect in their code.
+                        _ => chiero_model::ModelOutcome::Bounded(
+                            "strlen: the scan could not establish a length, so this call's \
+                             result is unknown"
+                                .to_string(),
+                        ),
                     }
                 }),
                 "printf" => {
@@ -7439,6 +7460,26 @@ impl<'m> Engine<'m> {
             });
         }
         for (fault, text) in keyed {
+            // **The same rule as `report_faults`, at the model funnel.** A model lifts every
+            // fault its concrete reads produce, and a fault about chiero's own limits is no
+            // more a defect for having travelled through `strcpy`. It degrades instead — and
+            // this is the path the twenty-one `symbolic-byte` findings on `bier_api.c` took,
+            // which is why filtering in one funnel was not enough.
+            if fault
+                .as_ref()
+                .is_some_and(chiero_mem::MemFault::is_chiero_limit)
+            {
+                s.degrade(
+                    Fidelity::Unknown,
+                    AssumptionKind::NoInformation,
+                    span,
+                    &format!(
+                        "{} — a limit of chiero's memory model, not a property of the program",
+                        fault.as_ref().map_or("", chiero_mem::MemFault::kind)
+                    ),
+                );
+                continue;
+            }
             self.finding_seq += 1;
             // **Re-described from the fault rather than patched.** `ModelRegistry::lift` renders
             // with `to_string`, because `chiero-model` knows no more than `chiero-mem` does — but

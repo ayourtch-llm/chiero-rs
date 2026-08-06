@@ -3271,68 +3271,51 @@ fn a_strlen_that_established_nothing_does_not_leave_the_run_exact() {
 }
 
 /// **A `ModelOutcome::Finding`'s message reaches the run.** `dispatch` matched only
-/// `Value`, so `Finding(msg)` fell into the catch-all and the payload was dropped. It
-/// looked fine because two of the three producers *also* call `cx.report` — the third,
-/// `strcpy`'s source-scan bail, does not, and reported nothing at all. Found by review.
+/// `Value`, so `Finding(msg)` fell into the catch-all and the payload was dropped. Found by
+/// review.
+///
+/// The probe is `calloc`'s overflow check, and it is chosen for one property: **it depends on
+/// the arguments and not on memory.** The fixture used to be `strcpy` over an unmeasurable
+/// source, which stopped being a `Finding` when chiero-being-unable-to-measure-a-string became
+/// a `Bounded` — a limit, not a defect in the program. A `Finding` also sets
+/// `translated = false`, so the call falls back to the opaque path and invalidates everything
+/// it can reach; a probe that reads memory can therefore only fire once, which is what makes
+/// this shape wrong for the loop test below.
 #[test]
 fn a_findings_only_outcome_still_reports() {
-    let mut caller = defined(
+    // `calloc(1 << 63, 4)`: the size computation overflows, so there is no allocation that
+    // could satisfy the request, and wrapping would hand back a small object for a large one.
+    let caller = defined(
         0,
         "main",
         vec![block(
             0,
-            vec![
-                inst(InstKind::Assign {
-                    dst: ValueId(0),
-                    rv: RValue::AddrOfLocal {
-                        alloca: AllocaId(0),
-                    },
-                }),
-                inst(InstKind::Assign {
-                    dst: ValueId(1),
-                    rv: RValue::AddrOfLocal {
-                        alloca: AllocaId(1),
-                    },
-                }),
-                // 'x' with no terminator: the source scan cannot give a length, so
-                // `strcpy` returns a bare `Finding`.
-                inst(InstKind::Call {
-                    dst: None,
-                    callee: Callee::Direct(FuncId(2)),
-                    args: vec![
-                        Operand::Value(ValueId(1)),
-                        Operand::Const(Const::Int { bits: 32, val: 120 }),
-                        Operand::Const(Const::Int { bits: 64, val: 16 }),
-                    ],
-                }),
-                inst(InstKind::Call {
-                    dst: None,
-                    callee: Callee::Direct(FuncId(1)),
-                    args: vec![Operand::Value(ValueId(0)), Operand::Value(ValueId(1))],
-                }),
-            ],
+            vec![inst(InstKind::Call {
+                dst: None,
+                callee: Callee::Direct(FuncId(1)),
+                args: vec![
+                    Operand::Const(Const::Int {
+                        bits: 64,
+                        val: 1i128 << 63,
+                    }),
+                    Operand::Const(Const::Int { bits: 64, val: 4 }),
+                ],
+            })],
             Terminator::Return(Some(i32c(0))),
         )],
         CTy::Int(32),
     );
-    caller.allocas = vec![alloca(0, CTy::Int(8), 4), alloca(1, CTy::Int(8), 16)];
     let m = Module {
         funcs: vec![
             caller,
-            extern_fn(1, "strcpy", vec![CTy::Ptr, CTy::Ptr], CTy::Ptr),
-            extern_fn(
-                2,
-                "memset",
-                vec![CTy::Ptr, CTy::Int(32), CTy::Int(64)],
-                CTy::Ptr,
-            ),
+            extern_fn(1, "calloc", vec![CTy::Int(64), CTy::Int(64)], CTy::Ptr),
         ],
         ..Default::default()
     };
     let mut a = TermArena::new();
     let r = Engine::new(&m).run(&mut a);
     assert!(
-        r.findings().iter().any(|f| f.contains("strcpy")),
+        r.findings().iter().any(|f| f.contains("calloc")),
         "the model said why it gave up: {:#?}",
         r.findings()
     );
@@ -8450,47 +8433,22 @@ fn va_copy_advances_independently_of_its_source() {
     );
     assert_eq!(r.fidelity(), Fidelity::Exact);
 }
-
-/// **A model that gives up inside a loop reports once.** `ModelOutcome::Finding` is pushed
-/// with no key, so it falls back to fork identity and produces one copy per iteration —
-/// the exact shape already fixed for *lifted* faults and missed on this path. A `strcpy`
-/// overflow inside a loop over `VLIB_FRAME_SIZE` buffers is 256 copies of one bug. Raised
-/// as a suspicion by review; confirmed here.
+/// **A model that gives up in a loop reports once per call site.** `FindingKey`'s `span`
+/// component, pinned: without it, two `calloc`s that cannot be satisfied are one report, and
+/// with the key dropped entirely they are one report per iteration.
+///
+/// The probe depends on the call's **arguments** and not on memory, which the previous
+/// `strcpy` fixture did. That mattered: a `Finding` sets `translated = false`, the call falls
+/// back to the opaque path, and everything it can reach is invalidated — so a memory-reading
+/// probe fires at the first call site and can no longer measure anything at the second. The
+/// test then pins "reports once" for the wrong reason.
 #[test]
 fn a_model_that_gives_up_in_a_loop_reports_once() {
-    let mut caller = defined(
+    let caller = defined(
         0,
         "main",
         vec![
-            block(
-                0,
-                vec![
-                    inst(InstKind::Assign {
-                        dst: ValueId(0),
-                        rv: RValue::AddrOfLocal {
-                            alloca: AllocaId(0),
-                        },
-                    }),
-                    inst(InstKind::Assign {
-                        dst: ValueId(1),
-                        rv: RValue::AddrOfLocal {
-                            alloca: AllocaId(1),
-                        },
-                    }),
-                    // 'x' with no terminator, so `strcpy`'s source scan gives up and the
-                    // model returns a bare `Finding`.
-                    inst(InstKind::Call {
-                        dst: None,
-                        callee: Callee::Direct(FuncId(2)),
-                        args: vec![
-                            Operand::Value(ValueId(1)),
-                            Operand::Const(Const::Int { bits: 8, val: 120 }),
-                            Operand::Const(Const::Int { bits: 64, val: 16 }),
-                        ],
-                    }),
-                ],
-                Terminator::Goto(BlockId(1)),
-            ),
+            block(0, vec![], Terminator::Goto(BlockId(1))),
             // **Two call sites in the loop.** With one, the span component of the key is
             // unpinned: every report already shares it.
             block(
@@ -8500,7 +8458,13 @@ fn a_model_that_gives_up_in_a_loop_reports_once() {
                         InstKind::Call {
                             dst: None,
                             callee: Callee::Direct(FuncId(1)),
-                            args: vec![Operand::Value(ValueId(0)), Operand::Value(ValueId(1))],
+                            args: vec![
+                                Operand::Const(Const::Int {
+                                    bits: 64,
+                                    val: 1i128 << 63,
+                                }),
+                                Operand::Const(Const::Int { bits: 64, val: 4 }),
+                            ],
                         },
                         10,
                     ),
@@ -8508,7 +8472,13 @@ fn a_model_that_gives_up_in_a_loop_reports_once() {
                         InstKind::Call {
                             dst: None,
                             callee: Callee::Direct(FuncId(1)),
-                            args: vec![Operand::Value(ValueId(0)), Operand::Value(ValueId(1))],
+                            args: vec![
+                                Operand::Const(Const::Int {
+                                    bits: 64,
+                                    val: 1i128 << 63,
+                                }),
+                                Operand::Const(Const::Int { bits: 64, val: 8 }),
+                            ],
                         },
                         20,
                     ),
@@ -8518,17 +8488,10 @@ fn a_model_that_gives_up_in_a_loop_reports_once() {
         ],
         CTy::Int(32),
     );
-    caller.allocas = vec![alloca(0, CTy::Int(8), 4), alloca(1, CTy::Int(8), 16)];
     let m = Module {
         funcs: vec![
             caller,
-            extern_fn(1, "strcpy", vec![CTy::Ptr, CTy::Ptr], CTy::Ptr),
-            extern_fn(
-                2,
-                "memset",
-                vec![CTy::Ptr, CTy::Int(32), CTy::Int(64)],
-                CTy::Ptr,
-            ),
+            extern_fn(1, "calloc", vec![CTy::Int(64), CTy::Int(64)], CTy::Ptr),
         ],
         ..Default::default()
     };
@@ -8537,7 +8500,7 @@ fn a_model_that_gives_up_in_a_loop_reports_once() {
     let gave_up: Vec<_> = r
         .findings()
         .into_iter()
-        .filter(|f| f.contains("strcpy"))
+        .filter(|f| f.contains("calloc"))
         .collect();
     assert_eq!(
         gave_up.len(),

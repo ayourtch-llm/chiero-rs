@@ -1157,6 +1157,31 @@ impl MemFault {
     /// The entries stay. They are a statement about what a fault *means*, and `PointerOutsideObject`
     /// is observable through a different path already — so "no fixture reaches it at the scalar
     /// load" is not evidence that removing it would be safe.
+    /// **A fault that is about chiero rather than about the program.**
+    ///
+    /// `SymbolicByte` cannot be true or false of a C program: it says `Memory::read` returns a
+    /// `Vec<u8>` and the byte holds a symbol. Measured: 21 of these on one VPP file, every one
+    /// unactionable — and the same filter already existed inside the format model, commented
+    /// "reporting that as a program bug is the confusion 023 §7 exists to prevent. Found by
+    /// review." One site is not a rule.
+    ///
+    /// A caller must still **degrade** for these: the answer is weaker, and the engine says so
+    /// with a fidelity and a named assumption. What it may not do is put them in a defect list.
+    ///
+    /// ⚠️ **`BadRange` belongs to this class and is deliberately not in it yet.**
+    /// "unsupported-access-width" on a 32-byte AVX load is the same sentence about chiero, and
+    /// the note beside it in `read_term` already draws the line — *"`BadRange` is a chiero
+    /// limit; a use-after-free is a fact about the program, and reporting the limit instead
+    /// hides the bug"*. It still reports because three tests in `chiero-exec/tests/step.rs` use
+    /// it as their probe for `FindingKey`'s `func` and `span` components, and it is the **only**
+    /// objectless non-fatal fault there is: `NullDeref` and `WildPointer` are objectless and
+    /// fatal, so neither can produce two findings on one path. Moving `BadRange` here means
+    /// giving those tests a probe first, and doing it the other way round would trade a wrong
+    /// finding for a hole in the deduplication rules.
+    pub fn is_chiero_limit(&self) -> bool {
+        matches!(self, MemFault::SymbolicByte { .. })
+    }
+
     pub fn yields_unknown_value(&self) -> bool {
         matches!(
             self,
