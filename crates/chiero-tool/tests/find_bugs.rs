@@ -505,3 +505,58 @@ entry:
         "another translation unit initialized it, and C guarantees that happened: {v}"
     );
 }
+
+/// **A bitfield read through an entry pointer is not an uninitialized read either.**
+///
+/// The last of the noise on the VPP sample, and the fourth finding of the same shape:
+///
+/// ```text
+/// clib_mem_alloc: uninitialized-read: read at offset 25 of the 4096-byte object reached
+///                 through an unconstrained pointer touches bit 201, which was never
+///                 written through h->traced
+/// ```
+///
+/// `h->traced` is a bitfield in `clib_mem_heap_t`, and `h` is a pointer parameter. 021 §6 says
+/// that object's bytes are "fully symbolic and fully initialized" — so this report should not
+/// be constructible at all. It is, because laziness is discharged on a **byte** read and a
+/// bitfield read does not take that path.
+///
+/// Two lines of C are enough:
+///
+/// ```c
+/// struct s { unsigned int a:1; unsigned int traced:1; int rest; };
+/// int f (struct s *p) { return p->traced; }
+/// ```
+///
+/// The same rule as the `extern` global and the entry object before it, for the third time:
+/// **chiero not knowing a value is not the program failing to write one.** What is different
+/// here is that the rule was already implemented and one access path went around it — so this
+/// is not a missing decision, it is a decision with a hole in it.
+#[test]
+fn a_bitfield_read_discharges_laziness_like_every_other_read() {
+    let bitfield = "\
+func @f(%0: ptr) -> i32 {
+entry:
+  .line 1
+  %1 = loadbits i32, %0 bits 1..2 align 4
+  ret %1
+}";
+    let mut c = cfg("f");
+    c.entry_ptr_nonnull = true;
+    let env = find_bugs(&m(bitfield), &c);
+    let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
+    let uninit: Vec<_> = v["result"]["findings"]
+        .as_array()
+        .expect("a findings array")
+        .iter()
+        .filter(|f| {
+            f["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("uninitialized"))
+        })
+        .collect();
+    assert!(
+        uninit.is_empty(),
+        "021 §6: the caller filled this object; chiero does not know what with: {v}"
+    );
+}
