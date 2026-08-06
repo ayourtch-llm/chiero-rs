@@ -261,3 +261,60 @@ fn an_unknown_operation_is_refused_by_name() {
     assert!(text.contains("frobnicate"), "{text}");
     assert!(text.contains("prove-equivalent"), "{text}");
 }
+
+/// **A file that includes a system header must be analysable.**
+///
+/// Every operation reads real C, and real C starts with `#include <stdio.h>`. Without the
+/// compiler's own include paths and predefined macros, `chiero find-bugs` on anything from an
+/// actual codebase answers `cannot include stdarg.h: No such file or directory` — which is not
+/// a fact about the code.
+///
+/// **The predefines matter as much as the paths.** glibc's `bits/floatn.h` alone branches on a
+/// dozen `__HAVE_FLOAT*` macros, and a preprocessor lacking them compiles code the compiler
+/// never sees. The sweep learned that the hard way — its first run reported 101 findings that
+/// were entirely this — and a command line pointed at a tree has exactly the same problem.
+#[test]
+fn a_file_that_includes_a_system_header_can_be_analysed() {
+    let f = write(
+        "sys.c",
+        "#include <stdarg.h>\n#include <stdint.h>\nint f (int x) { return x / (x - x); }\n",
+    );
+    let r = run(&["find-bugs", f.to_str().unwrap(), "--entry", "f", "--json"]);
+    assert_eq!(
+        r.code, 0,
+        "a file with a system header is ordinary C:\n{}",
+        r.err
+    );
+    let v = json(&r);
+    assert!(
+        v["result"]["findings"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty()),
+        "and the division by zero in it is still found: {v}"
+    );
+}
+
+/// **And the discovery is a runtime fact, reported rather than assumed.**
+///
+/// chiero links no compiler (010 §1), so where the system headers are is something it asks at
+/// run time — like the solver and like the replay compiler. On a machine with no `gcc` the
+/// answer is "none", and a caller passing `-I` themselves must still work.
+#[test]
+fn system_headers_can_be_turned_off_and_supplied_by_hand() {
+    let f = write("nosys.c", "int f (int x) { return x / (x - x); }\n");
+    let r = run(&[
+        "find-bugs",
+        f.to_str().unwrap(),
+        "--entry",
+        "f",
+        "--no-system-headers",
+        "--json",
+    ]);
+    assert_eq!(r.code, 0, "stderr:\n{}", r.err);
+    assert!(
+        json(&r)["result"]["findings"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty()),
+        "a file needing no headers is unaffected"
+    );
+}
