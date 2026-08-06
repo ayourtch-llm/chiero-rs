@@ -615,7 +615,7 @@ guard fires.
    talks about.** Tutorial 4 described an LLM's rewrite in prose and never showed the `after`
    C, which is exactly the thing a reader stops to ask about. Audited all five.
 
-### 7.4 ⚠️ `chiero-replay` is under review and the review is damning — READ BEFORE USING IT
+### 7.4 `chiero-replay` — a review that found ten defects, and what is left of them
 
 A fourth adversarial review (2026-08-06) found **ten defects**, all reproduced. The headline
 verdict is the one to keep:
@@ -644,11 +644,31 @@ truncates above 64 bits and renders float bit-patterns as integers; the return c
 `(long long) f(...)` refuses `void`, truncates `double` and `__int128`, and 050 §6's sandbox
 does not exist while the doc comments cite contract 12 as though it did.
 
-**The fix belongs at the rule, not the sites** — the pattern three earlier reviews established.
-The shape it wants: `emit_equivalence` returns a *refusal* unless it can guarantee the harness
-measures the thing claimed (return-value divergence, all-`Param` bindings, widths ≤ 64, an
-integer return), the runner gets a timeout and a private result channel, and only a divergence
-the harness *can* observe may trigger contract 11's downgrade.
+**Seven of the ten are fixed** (2026-08-06), at the rule rather than at the sites:
+
+| # | fix |
+|---|---|
+| D1 | only a `ReturnValue` divergence may be adjudicated; anything else refuses and says which kind went unchecked. Contract 11 still fires where the harness *did* measure — a test asserts it |
+| D4 | `emit_equivalence` returns `Result<Replay, Refusal>`; a witness that is not an argument list (extern returns, pointer params, non-contiguous indices) is refused, not compiled |
+| D5 | widths > 64 refused — gcc truncates a decimal constant silently and `-w` hides it |
+| D6 | the tool layer refuses a return type the `long long` channel would convert (`double`) or truncate (`__int128`) |
+| D7 | the result goes to a file the harness is compiled with, not stdout, which the included program can write |
+| D3 | a ten-second wall-clock limit — a `Termination` witness *is* an input that does not terminate |
+| D8 | `Outcome::NotRun` and `Outcome::NoCompiler` are distinct |
+| D10 | `ReplaySources::flags` carries the TU's `-I`/`-D` (040 §3's last rule) |
+
+**Left, and worth knowing before trusting `--allow-replay-exec` on real code:**
+
+- **050 §6's sandbox does not exist.** No network isolation, no memory cap, no write
+  confinement; the child inherits the caller's cwd. Contract 12 wants a fixture asserting
+  both, and there is none. The timeout is the only limit.
+- **D9, the two-include trick.** Two versions of a real file share definitions, so including
+  both puts each `static` helper in one TU twice → `DidNotBuild`. Fails closed, and makes
+  contract 10 ("for every case in the corpus") true only of a toy corpus.
+- **D2's remaining route.** `Demonstrated` could in principle be fabricated by state the two
+  includes merge — a `__attribute__((constructor))`, which 040 §3.1 says must be *recorded*
+  and is not. The other two routes are closed: a pointer return cannot produce a
+  `ReturnValue` divergence at all, and the stdout hijack is gone with D7.
 
 Probes: `$SCRATCH/replayprobe` (13 fixtures, `cargo run`).
 
