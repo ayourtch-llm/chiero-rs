@@ -23,28 +23,47 @@ fn dir(tag: &str) -> PathBuf {
     d
 }
 
-/// A harness that is a whole C program of its own, so the fixtures can attempt things a
-/// generated equivalence harness never would.
-fn raw(source: &str) -> Replay {
+/// A fixture as the two programs `run_with` expects — the same body twice, since these tests
+/// are about what a program is *allowed to do* rather than about a divergence.
+///
+/// **Built through the real shape, not around it.** These used to hand-construct a `Replay`
+/// with no units, which meant they exercised a path no caller takes. A reviewer's note: a
+/// direct crate user gets an unguarded oracle, and a test that is such a user proves less than
+/// it looks.
+fn two_programs(body: &str) -> Replay {
+    let unit = |tag: &str| {
+        (
+            format!("chiero_{tag}.c"),
+            format!(
+                "#include <stdio.h>\n#include <unistd.h>\n\
+                 {body}\n\
+                 int main (void)\n{{\n  \
+                 long long v = chiero_fixture ();\n  \
+                 FILE *o = fopen (CHIERO_RESULT, \"w\");\n  \
+                 if (!o) return 2;\n  \
+                 fprintf (o, \"value=%lld\\n\", v);\n  \
+                 fclose (o);\n  \
+                 _exit (0);\n}}\n"
+            ),
+        )
+    };
     Replay {
-        source: source.to_string(),
-        // These fixtures are whole programs; there is no before/after pair to compile beside
-        // them, which is itself worth exercising — a harness with no units must still run.
-        units: Vec::new(),
+        source: "/* a fixture that attempts something 050 §6 forbids */\n".into(),
+        units: vec![unit("before"), unit("after")],
         claim: "a fixture that attempts something 050 §6 forbids".into(),
     }
 }
 
-/// The result protocol every harness follows: two numbers in a file the harness is told about.
-const REPORT: &str = "\
-#include <stdio.h>\n\
-static void chiero_report (long long b, long long a)\n\
-{\n\
-  FILE *f = fopen (CHIERO_RESULT, \"w\");\n\
-  if (!f) return;\n\
-  fprintf (f, \"before=%lld after=%lld\\n\", b, a);\n\
-  fclose (f);\n\
-}\n";
+/// What the fixture reported, however the comparison came out — these programs are identical,
+/// so the interesting number is the value rather than the verdict.
+fn reported(o: Outcome) -> i64 {
+    match o {
+        Outcome::Demonstrated { before, .. }
+        | Outcome::NotDemonstrated { before, .. }
+        | Outcome::Nondeterministic { first: before, .. } => before,
+        other => panic!("the fixture should build and run: {other:?}"),
+    }
+}
 
 /// **A harness that tries to open a socket must not reach the network.**
 #[test]
@@ -62,36 +81,23 @@ fn a_harness_cannot_reach_the_network() {
         );
         return;
     }
-    let src = format!(
-        "{REPORT}\
-         #include <sys/socket.h>\n\
-         #include <netinet/in.h>\n\
-         #include <arpa/inet.h>\n\
-         #include <unistd.h>\n\
-         int main (void)\n\
-         {{\n\
-         \x20 int s = socket (AF_INET, SOCK_STREAM, 0);\n\
-         \x20 long long reached = 0;\n\
-         \x20 if (s >= 0) {{\n\
-         \x20   struct sockaddr_in a;\n\
-         \x20   a.sin_family = AF_INET;\n\
-         \x20   a.sin_port = htons (80);\n\
-         \x20   a.sin_addr.s_addr = inet_addr (\"1.1.1.1\");\n\
-         \x20   reached = connect (s, (struct sockaddr *) &a, sizeof a) == 0;\n\
-         \x20   close (s);\n\
-         \x20 }}\n\
-         \x20 chiero_report (reached, 0);\n\
-         \x20 return reached == 0;\n\
-         }}\n"
-    );
+    let body = "#include <sys/socket.h>\n#include <netinet/in.h>\n#include <arpa/inet.h>\n\
+                static long long chiero_fixture (void)\n{\n  \
+                int s = socket (AF_INET, SOCK_STREAM, 0);\n  \
+                if (s < 0) return 0;\n  \
+                struct sockaddr_in a;\n  \
+                a.sin_family = AF_INET;\n  \
+                a.sin_port = htons (80);\n  \
+                a.sin_addr.s_addr = inet_addr (\"1.1.1.1\");\n  \
+                long long reached = connect (s, (struct sockaddr *) &a, sizeof a) == 0;\n  \
+                close (s);\n  \
+                return reached;\n}";
     let d = dir("net");
-    match run_with(&raw(&src), &cc, &d, &[]) {
-        // `before` is 1 if the connect succeeded. It must not have.
-        Outcome::Demonstrated { before, .. } | Outcome::NotDemonstrated { before, .. } => {
-            assert_eq!(before, 0, "the harness reached the network");
-        }
-        other => panic!("the fixture should build and run: {other:?}"),
-    }
+    assert_eq!(
+        reported(run_with(&two_programs(body), &cc, &d, &[])),
+        0,
+        "the harness reached the network"
+    );
 }
 
 /// **What a harness can write is claimed exactly, and the claim is checked.**
@@ -110,24 +116,16 @@ fn what_a_harness_may_write_is_claimed_accurately() {
         .join("..")
         .join(format!("chiero-escape-{}", std::process::id()));
     let _ = std::fs::remove_file(&outside);
-    let src = format!(
-        "{REPORT}\
-         int main (void)\n\
-         {{\n\
-         \x20 FILE *f = fopen (\"{}\", \"w\");\n\
-         \x20 long long escaped = 0;\n\
-         \x20 if (f) {{ fputs (\"x\", f); fclose (f); escaped = 1; }}\n\
-         \x20 chiero_report (escaped, 0);\n\
-         \x20 return 0;\n\
-         }}\n",
+    let body = format!(
+        "static long long chiero_fixture (void)\n{{\n  \
+         FILE *f = fopen (\"{}\", \"w\");\n  \
+         if (!f) return 0;\n  \
+         fputs (\"x\", f);\n  \
+         fclose (f);\n  \
+         return 1;\n}}",
         outside.display()
     );
-    let escaped = match run_with(&raw(&src), &cc, &d, &[]) {
-        Outcome::Demonstrated { before, .. } | Outcome::NotDemonstrated { before, .. } => {
-            before == 1
-        }
-        other => panic!("the fixture should build and run: {other:?}"),
-    };
+    let escaped = reported(run_with(&two_programs(&body), &cc, &d, &[])) == 1;
     let _ = std::fs::remove_file(&outside);
 
     assert_eq!(
@@ -154,30 +152,19 @@ fn a_harness_that_allocates_without_bound_is_stopped() {
     if sandbox().memory_bytes.is_none() {
         return;
     }
-    let src = format!(
-        "{REPORT}\
-         #include <stdlib.h>\n\
-         #include <string.h>\n\
-         int main (void)\n\
-         {{\n\
-         \x20 for (long long i = 0; i < 100000; i++) {{\n\
-         \x20   void *p = malloc (16u << 20);\n\
-         \x20   if (!p) {{ chiero_report (0, 1); return 0; }}\n\
-         \x20   memset (p, 1, 4096);\n\
-         \x20 }}\n\
-         \x20 chiero_report (1, 1);\n\
-         \x20 return 0;\n\
-         }}\n"
-    );
+    let body = "#include <stdlib.h>\n#include <string.h>\n\
+                static long long chiero_fixture (void)\n{\n  \
+                for (long long i = 0; i < 100000; i++) {\n    \
+                void *p = malloc (16u << 20);\n    \
+                if (!p) return 0;\n    \
+                memset (p, 1, 4096);\n  }\n  \
+                return 1;\n}";
     let d = dir("mem");
-    match run_with(&raw(&src), &cc, &d, &[]) {
-        // Either the allocation failed (0, 1) or the process died — both are the cap working.
-        Outcome::Demonstrated { before, .. } => assert_eq!(before, 0, "the cap did not bite"),
-        Outcome::NotDemonstrated { before, after } => {
-            panic!("the harness allocated {before}/{after} GB unchecked")
-        }
+    match run_with(&two_programs(body), &cc, &d, &[]) {
+        // Either the allocation failed (0) or the process died — both are the cap working.
+        Outcome::NotDemonstrated { before, .. } => assert_eq!(before, 0, "the cap did not bite"),
         Outcome::DidNotRun { .. } => {}
-        other => panic!("the fixture should build: {other:?}"),
+        other => panic!("the cap must bite: {other:?}"),
     }
 }
 

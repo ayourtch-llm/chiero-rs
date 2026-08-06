@@ -87,6 +87,16 @@ pub enum Outcome {
     NoCompiler,
     /// The caller asked for the program and not for a verdict — 050 contract 11's default.
     NotRun,
+    /// **The program does not give the same answer twice**, so comparing two of its runs
+    /// establishes nothing.
+    ///
+    /// Found by running the first version twice before comparing anything. A function that
+    /// reads the clock, or `rand()` without a fixed seed, or anything else the process does not
+    /// determine, produces two different numbers from one program — and every earlier version
+    /// of this reported that as `Demonstrated`. Isolation cannot fix it, because the
+    /// nondeterminism is the program's rather than the harness's; the only honest move is to
+    /// notice and refuse.
+    Nondeterministic { first: i64, second: i64 },
 }
 
 impl Outcome {
@@ -102,6 +112,7 @@ impl Outcome {
             Outcome::DidNotBuild { .. } => "did_not_build",
             Outcome::DidNotRun { .. } => "did_not_run",
             Outcome::NoCompiler => "no_compiler",
+            Outcome::Nondeterministic { .. } => "nondeterministic",
             Outcome::NotRun => "not_run",
         }
     }
@@ -132,11 +143,27 @@ pub struct Sandbox {
 }
 
 impl Sandbox {
+    /// How to launch, given what is available — **the single place that decides, so the report
+    /// and the run cannot disagree.**
+    ///
+    /// `sandbox()` used to derive `network` from `unshare` alone while the runner applied
+    /// isolation only when a shell was present too. On a machine with no `sh` the report said
+    /// "network is isolated" and a harness opened a TCP connection. That report is attached to
+    /// every confirmation as an assumption, so it was a false statement in the one place a
+    /// reader looks to decide what a verdict rests on.
+    fn plan(&self) -> Option<(PathBuf, Vec<String>)> {
+        let sh = shell()?;
+        let sh_s = sh.to_string_lossy().into_owned();
+        match (self.network, which("unshare")) {
+            (true, Some(u)) => Some((u, vec!["-rn".into(), "--".into(), sh_s, "-c".into()])),
+            _ => Some((sh, vec!["-c".into()])),
+        }
+    }
+
     /// One line per limit, in the words a reader needs to decide what the verdict rests on.
     pub fn describe(&self) -> String {
         format!(
-            "replay sandbox: network is {}; memory is {}; writes are NOT confined to the \
-             scratch directory (050 §6 wants them to be); wall clock {}s",
+            "replay sandbox: network is {}; memory is {}; writes are {}; wall clock {}s",
             if self.network {
                 "isolated (a namespace of its own)"
             } else {
@@ -145,6 +172,14 @@ impl Sandbox {
             match self.memory_bytes {
                 Some(b) => format!("capped at {} MiB", b / (1024 * 1024)),
                 None => "NOT capped".to_string(),
+            },
+            // **Read from the field rather than hardcoded.** The one thing this method exists
+            // to report was the one it did not consult, so if the field ever became true the
+            // description would have lied.
+            if self.writes_confined {
+                "confined to the scratch directory"
+            } else {
+                "NOT confined to the scratch directory (050 §6 wants them to be)"
             },
             self.timeout.as_secs()
         )
@@ -156,9 +191,12 @@ impl Sandbox {
 /// Discovery at run time, like the compiler's and the solver's: whether an unprivileged user
 /// namespace may be created is a property of the kernel's configuration, not of the build.
 pub fn sandbox() -> Sandbox {
+    // **Both limits need a shell**, because both are applied through one. Reporting the network
+    // isolated without one was the defect this now rules out by construction.
+    let have_shell = shell().is_some();
     Sandbox {
-        network: unshare_works(),
-        memory_bytes: shell().map(|_| 2 * 1024 * 1024 * 1024),
+        network: have_shell && unshare_works(),
+        memory_bytes: have_shell.then_some(2 * 1024 * 1024 * 1024),
         writes_confined: false,
         timeout: std::time::Duration::from_secs(10),
     }
@@ -363,48 +401,51 @@ pub fn emit_equivalence(
     // Each version becomes its own unit with a non-static wrapper appended. The wrapper is in
     // the same TU as the entry, so a `static` entry is reachable; the unit is separate, so a
     // `static` helper the two versions share does not collide.
-    let params: Vec<String> = (0..args.len()).map(|i| format!("long long p{i}")).collect();
-    let sig = if params.is_empty() {
-        "void".to_string()
-    } else {
-        params.join(", ")
-    };
-    let forward: Vec<String> = (0..args.len()).map(|i| format!("p{i}")).collect();
     let mut units = Vec::new();
     for (tag, path) in [("before", before), ("after", after)] {
         units.push((
             format!("chiero_{tag}.c"),
             format!(
-                "/* chiero replay unit: the {tag} version of `{entry}` */\n\
+                "/* chiero replay unit: the {tag} version of `{entry}`, as its own program */\n\
+                 #include <stdio.h>\n\
+                 #include <unistd.h>\n\
                  #define {entry} chiero_{tag}_{entry}\n\
                  #define main chiero_{tag}_main\n\
                  #include \"{}\"\n\
                  #undef main\n\
                  #undef {entry}\n\n\
-                 long long chiero_call_{tag} ({sig})\n{{\n  \
-                 return (long long) chiero_{tag}_{entry} ({});\n}}\n",
+                 int main (void)\n{{\n  \
+                 long long v = (long long) chiero_{tag}_{entry} ({});\n  \
+                 FILE *o = fopen (CHIERO_RESULT, \"w\");\n  \
+                 if (!o) return 2;\n  \
+                 fprintf (o, \"value=%lld\\n\", v);\n  \
+                 fclose (o);\n  \
+                 /* `_exit`, not `return`: an atexit handler the analysed code registered\n     \
+                    must not get a chance to rewrite what we just wrote. */\n  \
+                 _exit (0);\n}}\n",
                 path.display(),
-                forward.join(", ")
+                call
             ),
         ));
     }
 
+    // **One program per version, run in its own process.**
+    //
+    // Calling both from one `main` shared everything outside a translation unit — libc's PRNG,
+    // the clock, both constructors — so two identical programs reported different numbers and
+    // `Demonstrated` could be fabricated four ways. Four earlier rounds closed such doors one
+    // at a time; separate processes closes the class. Each program computes one number and
+    // says nothing about the other.
+    //
+    // **`_exit` after writing**, so an `atexit` handler registered by the analysed code cannot
+    // rewrite the result: `_exit` does not run them. That is the other half of "the verdict
+    // travels on a channel the included code cannot write" — the first half, moving it off
+    // stdout, was necessary and not sufficient.
     let source = format!(
         "/* chiero replay: {claim}\n   \
-         Exits 0 when the two versions disagree, which is what chiero claimed.\n   \
-         Exits 1 when they AGREE: chiero and this compiler do not, and the finding is\n   \
-         downgraded rather than trusted (041 contract 11). */\n\
-         #include <stdio.h>\n\n\
-         long long chiero_call_before ({sig});\n\
-         long long chiero_call_after ({sig});\n\n\
-         int main (void)\n{{\n  \
-         long long b = chiero_call_before ({call});\n  \
-         long long a = chiero_call_after ({call});\n  \
-         FILE *chiero_out = fopen (CHIERO_RESULT, \"w\");\n  \
-         if (!chiero_out) return 2;\n  \
-         fprintf (chiero_out, \"before=%lld after=%lld\\n\", b, a);\n  \
-         fclose (chiero_out);\n  \
-         return b == a;\n}}\n"
+         Each version is built and run as its OWN program, writing one number to the path it\n   \
+         is compiled with. Sharing a process let libc state make two identical programs look\n   \
+         different, which is a fabricated confirmation and the worst thing this can do. */\n"
     );
     Ok(Replay {
         source,
@@ -455,77 +496,95 @@ pub fn run_with(r: &Replay, cc: &Path, dir: &Path, flags: &[String]) -> Outcome 
         std::process::id(),
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     );
-    let src = dir.join(format!("chiero_replay_{tag}.c"));
-    let bin = dir.join(format!("chiero_replay_{tag}.bin"));
-    // Each version's unit alongside the harness, named per call for the same reason.
-    let mut unit_paths = Vec::new();
-    for (n, (name, text)) in r.units.iter().enumerate() {
-        let p = dir.join(format!("chiero_unit_{tag}_{n}_{name}"));
-        if let Err(e) = std::fs::write(&p, text) {
-            return Outcome::DidNotRun {
-                detail: format!("cannot write {}: {e}", p.display()),
-            };
-        }
-        unit_paths.push(p);
-    }
-    if let Err(e) = std::fs::write(&src, &r.source) {
+    // **One build and one run per version.** `Replay::source` is documentation — the comment a
+    // reader is shown — and the units are the programs. Nothing links them together, which is
+    // what keeps one version's process state out of the other's.
+    if r.units.len() != 2 {
         return Outcome::DidNotRun {
-            detail: format!("cannot write the harness: {e}"),
+            detail: format!(
+                "a harness needs exactly two programs, one per version; this one has {}",
+                r.units.len()
+            ),
         };
     }
-
-    // **The result goes to a file, not to stdout.** The program under test is `#include`d into
-    // the harness and can write to stdout itself — a constructor, a `printf` in the entry — and
-    // an entry printing `before=… after=…` would have been read as the verdict. The reviewer
-    // demonstrated exactly that. A path the harness is compiled with is a channel the included
-    // code has no name for.
-    let result = dir.join(format!("chiero_result_{tag}.txt"));
-    match std::process::Command::new(cc)
-        .args(["-std=gnu11", "-w", "-O0"])
-        .args(flags)
-        .arg(format!("-DCHIERO_RESULT=\"{}\"", result.display()))
-        .arg("-o")
-        .arg(&bin)
-        .arg(&src)
-        .args(&unit_paths)
-        .output()
-    {
-        Err(e) => {
+    let mut values = Vec::new();
+    for (n, (name, text)) in r.units.iter().enumerate() {
+        let src = dir.join(format!("chiero_unit_{tag}_{n}_{name}"));
+        let bin = dir.join(format!("chiero_unit_{tag}_{n}.bin"));
+        let result = dir.join(format!("chiero_result_{tag}_{n}.txt"));
+        if let Err(e) = std::fs::write(&src, text) {
             return Outcome::DidNotRun {
-                detail: format!("{} could not be run: {e}", cc.display()),
+                detail: format!("cannot write {}: {e}", src.display()),
             };
         }
-        Ok(o) if !o.status.success() => {
-            return Outcome::DidNotBuild {
-                detail: String::from_utf8_lossy(&o.stderr).trim().to_string(),
+        let _ = std::fs::remove_file(&result);
+        match std::process::Command::new(cc)
+            .args(["-std=gnu11", "-w", "-O0"])
+            .args(flags)
+            .arg(format!("-DCHIERO_RESULT=\"{}\"", result.display()))
+            .arg("-o")
+            .arg(&bin)
+            .arg(&src)
+            .output()
+        {
+            Err(e) => {
+                return Outcome::DidNotRun {
+                    detail: format!("{} could not be run: {e}", cc.display()),
+                };
+            }
+            Ok(o) if !o.status.success() => {
+                return Outcome::DidNotBuild {
+                    detail: String::from_utf8_lossy(&o.stderr).trim().to_string(),
+                };
+            }
+            Ok(_) => {}
+        }
+        if let Err(e) = bounded(&bin, dir, sandbox().timeout) {
+            return Outcome::DidNotRun { detail: e };
+        }
+        let text = match std::fs::read_to_string(&result) {
+            Ok(t) => t,
+            Err(e) => {
+                return Outcome::DidNotRun {
+                    detail: format!("the {} program wrote no result: {e}", label(n)),
+                };
+            }
+        };
+        match parse_value(&text) {
+            Some(v) => values.push(v),
+            None => {
+                return Outcome::DidNotRun {
+                    detail: format!(
+                        "the {} program's result is unreadable: {}",
+                        label(n),
+                        text.trim()
+                    ),
+                };
+            }
+        }
+    }
+    // **Is the program deterministic at all?**
+    //
+    // Running the first version a second time costs one execution and rules out the whole class
+    // the previous rounds kept meeting: a function reading the clock, or `rand()` without a
+    // fixed seed, gives two different numbers from ONE program, and comparing two such numbers
+    // establishes nothing. Isolation cannot fix that — the nondeterminism is the program's —
+    // so the only honest move is to notice.
+    //
+    // Checked after both runs rather than before, so a pair that does not build is reported as
+    // not building rather than as nondeterministic.
+    match rerun_first(r, cc, dir, flags, &tag) {
+        Ok(again) if again != values[0] => {
+            return Outcome::Nondeterministic {
+                first: values[0],
+                second: again,
             };
         }
         Ok(_) => {}
+        Err(detail) => return Outcome::DidNotRun { detail },
     }
 
-    let _ = std::fs::remove_file(&result);
-    // **A wall-clock limit, because a `Termination` witness is an input chosen to hang.**
-    // `prove_equivalent` reports a divergence in *how a path ends*, and the distinguishing
-    // input for one is precisely the input that does not terminate. Running that under
-    // `Command::output()` blocks forever, so `--allow-replay-exec` on a true non-termination
-    // finding hung the tool at the witness picked to show the hang. Found by review.
-    if let Err(e) = bounded(&bin, dir, sandbox().timeout) {
-        return Outcome::DidNotRun { detail: e };
-    }
-
-    let text = match std::fs::read_to_string(&result) {
-        Ok(t) => t,
-        Err(e) => {
-            return Outcome::DidNotRun {
-                detail: format!("the harness wrote no result: {e}"),
-            };
-        }
-    };
-    let Some((b, a)) = parse_line(&text) else {
-        return Outcome::DidNotRun {
-            detail: format!("the harness's result is unreadable: {}", text.trim()),
-        };
-    };
+    let (b, a) = (values[0], values[1]);
     if b == a {
         Outcome::NotDemonstrated {
             before: b,
@@ -539,41 +598,36 @@ pub fn run_with(r: &Replay, cc: &Path, dir: &Path, flags: &[String]) -> Outcome 
     }
 }
 
-/// Run a binary with a wall-clock limit, killing it if it overruns.
+/// Run a binary under 050 §6's limits, killing it if it overruns.
 ///
-/// Polling rather than a thread with a channel: this is the whole of the requirement, and a
-/// helper that spawns a thread per run would be more machinery than the thing it guards.
+/// **Kills the whole process group.** The leader is `unshare`, which execs in place, so a kill
+/// reaches the harness — but a child it forked outlives it and the runner returns while a
+/// grandchild is still running. `setsid` puts the run in a group of its own and a negative pid
+/// signals all of it.
 fn bounded(bin: &Path, dir: &Path, limit: std::time::Duration) -> Result<(), String> {
     let sb = sandbox();
-    // **The limits are applied by what is available, and `sandbox()` says which.** `ulimit -v`
-    // through a shell rather than `setrlimit` keeps this crate's dependency list at zero, and
-    // `unshare -rn` gives the harness a network namespace with no route out of it.
-    let mut cmd = match (sb.network.then(|| which("unshare")).flatten(), shell()) {
-        (Some(u), Some(sh)) => {
-            let mut c = std::process::Command::new(u);
-            c.arg("-rn").arg("--").arg(sh).arg("-c").arg(format!(
+    // **The limits applied are the limits reported.** `sandbox()` used to say the network was
+    // isolated whenever `unshare` existed, while this applied isolation only when a shell was
+    // there too — so on a machine with no `sh` the report said "isolated" and a harness reached
+    // the network. One decision, made once, in `Sandbox::plan`.
+    let mut cmd = match sb.plan() {
+        Some((launcher, args)) => {
+            let mut c = std::process::Command::new(launcher);
+            c.args(args).arg(format!(
                 "ulimit -v {}; exec '{}'",
                 sb.memory_bytes.unwrap_or(2 << 30) / 1024,
                 bin.display()
             ));
             c
         }
-        (None, Some(sh)) => {
-            let mut c = std::process::Command::new(sh);
-            c.arg("-c").arg(format!(
-                "ulimit -v {}; exec '{}'",
-                sb.memory_bytes.unwrap_or(2 << 30) / 1024,
-                bin.display()
-            ));
-            c
-        }
-        _ => std::process::Command::new(bin),
+        None => std::process::Command::new(bin),
     };
-    // The scratch directory is the working directory: it bounds a well-behaved program, which
-    // is not the same as confining a misbehaving one, and `Sandbox::writes_confined` says so.
     let mut child = cmd
         .current_dir(dir)
         .env_clear()
+        // `sh` needs to find `unshare`'s target and its own builtins; an empty PATH broke the
+        // launcher rather than the harness.
+        .env("PATH", "/usr/bin:/bin")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
@@ -598,12 +652,49 @@ fn bounded(bin: &Path, dir: &Path, limit: std::time::Duration) -> Result<(), Str
     }
 }
 
-fn parse_line(text: &str) -> Option<(i64, i64)> {
-    let line = text.lines().find(|l| l.starts_with("before="))?;
-    let mut it = line.split_whitespace();
-    let b = it.next()?.strip_prefix("before=")?.parse().ok()?;
-    let a = it.next()?.strip_prefix("after=")?.parse().ok()?;
-    Some((b, a))
+/// Run the `before` program once more, to see whether it answers the same way twice.
+fn rerun_first(
+    r: &Replay,
+    cc: &Path,
+    dir: &Path,
+    flags: &[String],
+    tag: &str,
+) -> Result<i64, String> {
+    let (name, text) = &r.units[0];
+    let src = dir.join(format!("chiero_recheck_{tag}_{name}"));
+    let bin = dir.join(format!("chiero_recheck_{tag}.bin"));
+    let result = dir.join(format!("chiero_recheck_{tag}.txt"));
+    std::fs::write(&src, text).map_err(|e| format!("cannot write {}: {e}", src.display()))?;
+    let _ = std::fs::remove_file(&result);
+    let o = std::process::Command::new(cc)
+        .args(["-std=gnu11", "-w", "-O0"])
+        .args(flags)
+        .arg(format!("-DCHIERO_RESULT=\"{}\"", result.display()))
+        .arg("-o")
+        .arg(&bin)
+        .arg(&src)
+        .output()
+        .map_err(|e| format!("{} could not be run: {e}", cc.display()))?;
+    if !o.status.success() {
+        return Err(format!(
+            "the determinism re-check would not build: {}",
+            String::from_utf8_lossy(&o.stderr).trim()
+        ));
+    }
+    bounded(&bin, dir, sandbox().timeout)?;
+    let text = std::fs::read_to_string(&result)
+        .map_err(|e| format!("the determinism re-check wrote no result: {e}"))?;
+    parse_value(&text).ok_or_else(|| "the determinism re-check's result is unreadable".to_string())
+}
+
+fn label(n: usize) -> &'static str {
+    if n == 0 { "before" } else { "after" }
+}
+
+fn parse_value(text: &str) -> Option<i64> {
+    text.lines()
+        .find_map(|l| l.strip_prefix("value="))
+        .and_then(|v| v.trim().parse().ok())
 }
 
 /// FNV-1a over 128 bits, as `chiero-gcov::source_hash` and `Envelope::determinism_key` use it

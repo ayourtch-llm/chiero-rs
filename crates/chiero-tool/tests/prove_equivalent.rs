@@ -243,11 +243,21 @@ fn the_response_carries_a_harness_that_compiles() {
     );
     let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
     let replay = &v["result"]["replay"];
-    assert!(
-        replay["source"]
-            .as_str()
-            .is_some_and(|s| s.contains("int main")),
-        "the response must carry the program: {v}"
+    // The programs are the *units* — one per version, each with its own `main`. `source` is the
+    // comment a reader is shown; asserting on it alone stopped meaning "the response carries a
+    // program" the moment the harness became two of them.
+    let programs: String = replay["units"]
+        .as_array()
+        .expect("two units")
+        .iter()
+        .filter_map(|u| u["source"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(replay["units"].as_array().map(Vec::len), Some(2));
+    assert_eq!(
+        programs.matches("int main").count(),
+        2,
+        "each version must be its own program: {v}"
     );
     // **050 contract 11**: with execution off, text and no verdict — said, not absent.
     //

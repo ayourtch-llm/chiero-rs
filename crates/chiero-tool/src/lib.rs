@@ -1451,6 +1451,16 @@ pub fn prove_equivalent_with_replay(
             "the replay harness could not be run, so nothing has checked chiero's semantics \
              here: {detail}"
         )),
+        // **Not a downgrade.** The program does not answer the same way twice, so nothing was
+        // learned about chiero — the same reason a build failure changes nothing. Reporting it
+        // as contract 11's disagreement would blame the analysis for the program's clock.
+        chiero_replay::Outcome::Nondeterministic { first, second } => {
+            env.with_blind_spot(&format!(
+                "the program does not give the same answer twice ({first} then {second}), so \
+             running two of its versions establishes nothing and chiero's semantics are \
+             unchecked here"
+            ))
+        }
     }
 }
 
