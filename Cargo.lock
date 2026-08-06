@@ -214,6 +214,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "chiero-replay"
+version = "0.1.0"
+dependencies = [
+ "chiero-exec",
+ "chiero-span",
+]
+
+[[package]]
 name = "chiero-select"
 version = "0.1.0"
 dependencies = [

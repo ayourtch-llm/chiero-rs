@@ -27,6 +27,7 @@ chiero-gcov   = { path = "crates/chiero-gcov",   version = "0.1.0" }
 chiero-diff   = { path = "crates/chiero-diff",   version = "0.1.0" }
 chiero-select = { path = "crates/chiero-select", version = "0.1.0" }
 chiero-check  = { path = "crates/chiero-check",  version = "0.1.0" }
+chiero-replay = { path = "crates/chiero-replay", version = "0.1.0" }
 chiero-opt    = { path = "crates/chiero-opt",    version = "0.1.0" }
 chiero-recipe = { path = "crates/chiero-recipe", version = "0.1.0" }
 chiero-vpp    = { path = "crates/chiero-vpp",    version = "0.1.0" }
