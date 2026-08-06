@@ -55,13 +55,17 @@ fn a_field_crossing_a_line_boundary_is_reported_and_one_that_fits_is_not() {
 
     let straddling = analyse(&one_field_at(60), &cfg);
     assert!(
-        straddling.iter().any(|p| matches!(p.kind, OptKind::LineStraddle { field, .. } if field == "f")),
+        straddling
+            .iter()
+            .any(|p| matches!(&p.kind, OptKind::LineStraddle { field, .. } if field == "f")),
         "a 64-bit field at offset 60 spans two lines: {straddling:?}"
     );
 
     let fitting = analyse(&one_field_at(56), &cfg);
     assert!(
-        !fitting.iter().any(|p| matches!(p.kind, OptKind::LineStraddle { .. })),
+        !fitting
+            .iter()
+            .any(|p| matches!(p.kind, OptKind::LineStraddle { .. })),
         "offsets 56..64 are one line: {fitting:?}"
     );
 }
@@ -75,9 +79,21 @@ fn padded() -> Record {
         packed: false,
         externally_visible: false,
         fields: vec![
-            Field { name: "a".into(), offset: 0, size: 1 },
-            Field { name: "big".into(), offset: 8, size: 8 },
-            Field { name: "b".into(), offset: 16, size: 1 },
+            Field {
+                name: "a".into(),
+                offset: 0,
+                size: 1,
+            },
+            Field {
+                name: "big".into(),
+                offset: 8,
+                size: 8,
+            },
+            Field {
+                name: "b".into(),
+                offset: 16,
+                size: 1,
+            },
         ],
     }
 }
@@ -99,7 +115,10 @@ fn recoverable_padding_is_reported_with_the_number_of_bytes() {
         "a padding proposal with no size delta is not actionable"
     );
     // `char, long, char` is 24 bytes; `long, char, char` is 16.
-    assert_eq!(waste, 8, "the delta is what a reorder would actually recover");
+    assert_eq!(
+        waste, 8,
+        "the delta is what a reorder would actually recover"
+    );
 }
 
 /// **Contract 21: a `packed` struct, or one reachable from a serialization path, yields only
@@ -108,9 +127,38 @@ fn recoverable_padding_is_reported_with_the_number_of_bytes() {
 /// > "Reordering an `ip4_header_t` is a protocol violation, not an optimization."
 #[test]
 fn a_struct_whose_layout_escapes_gets_an_advisory_proposal_that_says_so() {
+    // **A straddling field, not the padded fixture.** A `packed` struct has no alignment
+    // padding to recover, so the padding analysis correctly says nothing about one — and a
+    // test asserting "the observation is still worth making" needs an observation there is.
+    // A wire-format header with a field across a line boundary is the real shape: the finding
+    // is true, and acting on it is a protocol change.
+    let header = Record {
+        tag: "hdr".into(),
+        size: 68,
+        align: 8,
+        packed: false,
+        externally_visible: false,
+        fields: vec![Field {
+            name: "seq".into(),
+            offset: 60,
+            size: 8,
+        }],
+    };
     for (what, r) in [
-        ("packed", Record { packed: true, ..padded() }),
-        ("externally visible", Record { externally_visible: true, ..padded() }),
+        (
+            "packed",
+            Record {
+                packed: true,
+                ..header.clone()
+            },
+        ),
+        (
+            "externally visible",
+            Record {
+                externally_visible: true,
+                ..header.clone()
+            },
+        ),
     ] {
         let proposals = analyse(&r, &LocalityCfg::default());
         assert!(
@@ -123,7 +171,9 @@ fn a_struct_whose_layout_escapes_gets_an_advisory_proposal_that_says_so() {
                 "{what}: a proposal to reorder this must be advisory: {p:?}"
             );
             assert!(
-                p.obligations.iter().any(|o| matches!(o, Obligation::Open { .. })),
+                p.obligations
+                    .iter()
+                    .any(|o| matches!(o, Obligation::Open { .. })),
                 "{what}: and carry the open obligation that says why: {p:?}"
             );
             assert!(
@@ -145,11 +195,7 @@ fn benefit_is_unquantified_without_access_counts() {
     let proposals = analyse(&padded(), &LocalityCfg::default());
     assert!(!proposals.is_empty());
     for p in &proposals {
-        assert_eq!(
-            p.benefit,
-            Benefit::Unquantified,
-            "no run, no number: {p:?}"
-        );
+        assert_eq!(p.benefit, Benefit::Unquantified, "no run, no number: {p:?}");
     }
 }
 
@@ -157,11 +203,13 @@ fn benefit_is_unquantified_without_access_counts() {
 /// implementation that always says `Unquantified` passes the test above.
 #[test]
 fn access_counts_make_a_benefit_measured() {
+    // A straddling field with a real count: the cost is "this many accesses, each touching two
+    // lines", which is exactly a number backed by a run.
     let cfg = LocalityCfg {
-        counts: vec![("big".into(), 1_000_000), ("a".into(), 3)],
+        counts: vec![("f".into(), 1_000_000)],
         ..LocalityCfg::default()
     };
-    let proposals = analyse(&padded(), &cfg);
+    let proposals = analyse(&one_field_at(60), &cfg);
     assert!(
         proposals.iter().any(|p| p.benefit == Benefit::Measured),
         "with real counts a benefit may be measured: {proposals:?}"
@@ -205,8 +253,16 @@ fn a_well_packed_struct_yields_no_proposals() {
         packed: false,
         externally_visible: false,
         fields: vec![
-            Field { name: "x".into(), offset: 0, size: 8 },
-            Field { name: "y".into(), offset: 8, size: 8 },
+            Field {
+                name: "x".into(),
+                offset: 0,
+                size: 8,
+            },
+            Field {
+                name: "y".into(),
+                offset: 8,
+                size: 8,
+            },
         ],
     };
     assert!(

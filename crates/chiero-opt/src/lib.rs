@@ -28,6 +28,7 @@
 //! — and it obeys the same rule they do: **it never writes to a source file** (contract 17).
 
 pub mod equiv;
+pub mod locality;
 pub use equiv::{
     Claim, Divergence, EquivCfg, Equivalence, Footprint, Replay, Unmatched, prove_equivalent,
 };
