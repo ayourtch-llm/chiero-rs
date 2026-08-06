@@ -451,3 +451,83 @@ entry:
         "`%0` and `%1` are distinct objects: {props:?}"
     );
 }
+
+/// **041 §2's "dead store"** — a value written and then overwritten with nothing reading it in
+/// between.
+///
+/// The mirror of the redundant load, and it keys on the same thing: the engine's answer for
+/// where each store lands, rather than how the CIR spelled the address.
+const OVERWRITTEN: &str = "\
+func @f(%0: ptr, %1: i32, %2: i32) -> i32 {
+entry:
+  .line 1
+  store i32 %1 -> %0 align 4
+  store i32 %2 -> %0 align 4
+  %3 = load i32, %0 align 4
+  ret %3
+}";
+
+#[test]
+fn a_store_that_is_overwritten_before_any_read_is_proposed() {
+    let props = detect(&m(OVERWRITTEN), &cfg("f"));
+    let p = props
+        .iter()
+        .find(|p| matches!(p.kind, OppKind::DeadStore { .. }))
+        .unwrap_or_else(|| panic!("the first store is overwritten: {props:?}"));
+    assert!(!p.advisory, "nothing reads it and nothing could have: {p:?}");
+    assert!(
+        p.obligations
+            .iter()
+            .all(|o| matches!(o, Obligation::Discharged { .. })),
+        "{p:?}"
+    );
+}
+
+/// **A store that is read before being overwritten is not dead.** Without this, a detector
+/// proposing every store passes the test above.
+#[test]
+fn a_store_that_is_read_is_not_dead() {
+    let read = "\
+func @f(%0: ptr, %1: i32, %2: i32) -> i32 {
+entry:
+  .line 1
+  store i32 %1 -> %0 align 4
+  %3 = load i32, %0 align 4
+  store i32 %2 -> %0 align 4
+  ret %3
+}";
+    let props = detect(&m(read), &cfg("f"));
+    assert!(
+        !props
+            .iter()
+            .any(|p| matches!(p.kind, OppKind::DeadStore { .. })),
+        "the load between them is what makes the first store live: {props:?}"
+    );
+}
+
+/// **A call between the two stores makes it advisory**, for exactly the reason contract 14
+/// gives: the callee may have read what was written, and chiero cannot say it did not.
+#[test]
+fn a_store_overwritten_across_an_unmodeled_call_is_advisory() {
+    let across = "\
+func @opaque(%0: i32) -> i32
+
+func @f(%0: ptr, %1: i32, %2: i32) -> i32 {
+entry:
+  .line 1
+  store i32 %1 -> %0 align 4
+  %3 = call @opaque(%1)
+  store i32 %2 -> %0 align 4
+  %4 = load i32, %0 align 4
+  ret %4
+}";
+    let props = detect(&m(across), &cfg("f"));
+    for p in &props {
+        if matches!(p.kind, OppKind::DeadStore { .. }) {
+            assert!(
+                p.advisory,
+                "`opaque` may have read what the first store wrote: {p:?}"
+            );
+        }
+    }
+}
