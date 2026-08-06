@@ -277,3 +277,88 @@ fn a_float_return_is_refused_rather_than_truncated() {
         "a double read as a long long is a truncation, not a comparison: {v}"
     );
 }
+
+/// **Every value crossing the `long long` channel, in either direction.**
+///
+/// The return type was guarded and the *parameters* were not — and the parameters are where it
+/// mattered: a `float` parameter's witness is a **bit pattern** (the engine sorts floats as
+/// `BitVec`), so it was rendered as a decimal and passed through `long long`, `2.0f` arriving
+/// as `1073741824.0f`. The harness reported agreement and contract 11 downgraded a **true**
+/// finding with the exact false sentence D1 was filed for.
+///
+/// **Tested on the rule rather than through the operation**, because `prove_equivalent`
+/// currently refuses both of these upstream — a float parameter leaves the run `Unknown`, a
+/// pointer parameter is refused outright. A test that went through the operation would return
+/// early and assert nothing, and would keep passing if the guard were removed. The guard is
+/// defence in depth for a refusal that has moved before and may move again.
+#[test]
+fn every_value_crossing_the_channel_is_checked_in_both_directions() {
+    let f = |sig: &str| {
+        chiero_cir::text::parse(&format!(
+            "target x86_64-unknown-linux-gnu\n\nfunc @f({sig}) -> i32 {{\nentry:\n  .line 1\n               ret 0i32\n}}\n"
+        ))
+        .expect("parses")
+    };
+    // A parameter the channel cannot carry.
+    assert!(
+        chiero_tool::harness_signature_objection(&f("%0: f64"), "f")
+            .is_some_and(|w| w.contains("floating-point")),
+        "a float parameter's witness is a bit pattern, not a number to pass"
+    );
+    assert!(
+        chiero_tool::harness_signature_objection(&f("%0: i128"), "f")
+            .is_some_and(|w| w.contains("above 64")),
+        "128 bits do not fit in a long long"
+    );
+    // A plain one does.
+    assert_eq!(
+        chiero_tool::harness_signature_objection(&f("%0: i32, %1: i64"), "f"),
+        None
+    );
+    // **And an absent entry is an objection, not silence.** Returning "no objection" for a
+    // function the module does not have meant the gate no-opped on exactly the case where
+    // nothing had been checked.
+    assert!(
+        chiero_tool::harness_signature_objection(&f("%0: i32"), "nosuch")
+            .is_some_and(|w| w.contains("not in the module")),
+        "an entry that is not there cannot be checked, which is an objection"
+    );
+}
+
+/// **The harness must compile the function chiero compared.**
+///
+/// `cfg.entry` and `src.entry` were independent strings and never compared, so a harness could
+/// be built for a different function entirely — and `unrepresentable_return` returns "no
+/// objection" for an entry it cannot find, so the type gate no-opped on exactly that case. The
+/// reviewer got a fabricated `demonstrated` at `proven: true`, with the standing caveat
+/// removed.
+#[test]
+fn a_harness_for_a_different_function_is_refused() {
+    let Some(cfg) = cfg() else { return };
+    let double =
+        "func @f(%0: i32) -> i32 {\nentry:\n  .line 1\n  %1 = mul i32 %0, 2i32\n  ret %1\n}";
+    let triple =
+        "func @f(%0: i32) -> i32 {\nentry:\n  .line 1\n  %1 = mul i32 %0, 3i32\n  ret %1\n}";
+    // chiero compares `f`; the sources are handed to the harness as `g`.
+    let mut s = sources(
+        "mismatch",
+        "int g (int x) { return x + 1; }\n",
+        "int g (int x) { return x + 2; }\n",
+        "g",
+    );
+    s.entry = "g".into();
+    let env =
+        prove_equivalent_with_replay(&m(double), &m(triple), &cfg, Some(&s), ReplayPolicy::Run);
+    let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
+    assert_eq!(
+        v["result"]["replay"]["outcome"], "refused",
+        "the harness must be about the function chiero compared: {v}"
+    );
+    assert!(
+        env.blind_spots
+            .iter()
+            .any(|b| b.contains("chiero's semantics")),
+        "and the standing caveat must stay: {:?}",
+        env.blind_spots
+    );
+}

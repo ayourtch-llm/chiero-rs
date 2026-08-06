@@ -1356,8 +1356,34 @@ pub fn prove_equivalent_with_replay(
     // 1.25 and 1.75 both arrive as 1 and a true divergence reads as agreement — which, before
     // the narrowing above, fed contract 11's downgrade. A `__int128` loses its high half the
     // same way. The type is knowable here, where the module is, and nowhere in the emitter.
-    if let Some(why) = unrepresentable_return(before, &src.entry) {
+    // **The harness must be about the function chiero compared.** `cfg.entry` and `src.entry`
+    // were independent strings, never compared, so a harness could be built for a different
+    // function entirely — and the signature gate, which looked the entry up in the module,
+    // silently found nothing and objected to nothing on exactly that case. A fabricated
+    // `demonstrated` at `proven: true`, with the standing caveat removed. Found by review.
+    if cfg.entry != src.entry {
+        return refuse(format!(
+            "chiero compared `{}` and the harness would compile `{}`; a harness about a \
+             different function checks nothing about this verdict",
+            cfg.entry, src.entry
+        ));
+    }
+    if let Some(why) = harness_signature_objection(before, &src.entry) {
         return refuse(why);
+    }
+    // The *witness* must be the argument list too — a pointer parameter mints no binding, so a
+    // trailing one leaves the indices contiguous and the call one argument short. "Contiguous"
+    // was written where the rule is "the function's".
+    if let Some(f) = before.funcs.iter().find(|f| *f.name == *src.entry)
+        && input.bindings.len() != f.params.len()
+    {
+        return refuse(format!(
+            "the witness binds {} value(s) and `{}` takes {} parameter(s); a witness that is \
+             not the argument list cannot be passed positionally",
+            input.bindings.len(),
+            src.entry,
+            f.params.len()
+        ));
     }
 
     let replay = match chiero_replay::emit_equivalence(&src.before, &src.after, &src.entry, input) {
@@ -1529,32 +1555,56 @@ pub fn layout_envelope(
     }
 }
 
-/// The word for a divergence's kind, for a message a reader has to act on.
+/// Why this function's signature cannot cross the harness's `long long` channel, if it cannot.
+///
+/// **Every value, in either direction.** This guarded the return type and not the parameters,
+/// and the parameters are where it mattered most: a `float` parameter's witness is a *bit
+/// pattern* — the engine sorts floats as `BitVec` — so it was rendered as a decimal and passed
+/// through `long long`, `2.0f` arriving as `1073741824.0f`. The harness then reported agreement
+/// and contract 11 downgraded a **true** finding. The rule was written for one direction; that
+/// asymmetry was the bug, and writing it as one rule is the fix.
+///
+/// **An absent entry is an objection, not silence.** Returning `None` for a function the module
+/// does not have meant "no objection" for exactly the case where nothing had been checked —
+/// which is how a harness for a different function passed the gate.
+pub fn harness_signature_objection(m: &chiero_cir::Module, entry: &str) -> Option<String> {
+    let Some(f) = m.funcs.iter().find(|f| *f.name == *entry) else {
+        return Some(format!(
+            "`{entry}` is not in the module chiero analysed, so nothing about the harness's              signature could be checked"
+        ));
+    };
+    let carries = |t: &chiero_cir::CTy, what: &str| -> Option<String> {
+        match t {
+            chiero_cir::CTy::Int(bits) if *bits <= 64 => None,
+            chiero_cir::CTy::Int(bits) => Some(format!(
+                "{what} is {bits} bits and the harness passes values as `long long`, which                  would drop everything above 64"
+            )),
+            chiero_cir::CTy::Float(_) => Some(format!(
+                "{what} is floating-point: the witness records its *bits*, and passing those                  through `long long` would convert a bit pattern into a number"
+            )),
+            other => Some(format!(
+                "{what} is {other:?}, which the harness's `long long` channel cannot carry"
+            )),
+        }
+    };
+    if let Some(w) = carries(&f.ret, &format!("`{entry}`'s return")) {
+        return Some(w);
+    }
+    for (i, p) in f.params.iter().enumerate() {
+        if let Some(w) = carries(&p.ty, &format!("`{entry}` parameter {i}")) {
+            return Some(w);
+        }
+    }
+    None
+}
+
+/// The word for a divergence's kind, for a message a reader has to act on./// The word for a divergence's kind, for a message a reader has to act on.
 fn divergence_kind(d: &chiero_opt::Divergence) -> &'static str {
     match d {
         chiero_opt::Divergence::ReturnValue { .. } => "return-value",
         chiero_opt::Divergence::Memory { .. } => "caller-visible memory",
         chiero_opt::Divergence::SideEffect { .. } => "side-effect",
         chiero_opt::Divergence::Termination { .. } => "termination",
-    }
-}
-
-/// Why the harness's `long long` channel cannot carry this function's return, if it cannot.
-fn unrepresentable_return(m: &chiero_cir::Module, entry: &str) -> Option<String> {
-    let f = m.funcs.iter().find(|f| *f.name == *entry)?;
-    match &f.ret {
-        chiero_cir::CTy::Int(bits) if *bits <= 64 => None,
-        chiero_cir::CTy::Int(bits) => Some(format!(
-            "`{entry}` returns {bits} bits and the harness compares two `long long` values, \
-             which would drop everything above 64"
-        )),
-        chiero_cir::CTy::Float(_) => Some(format!(
-            "`{entry}` returns a floating-point value and the harness compares two `long long` \
-             values, which would convert rather than compare it"
-        )),
-        other => Some(format!(
-            "`{entry}` returns {other:?}, which the harness's `long long` channel cannot carry"
-        )),
     }
 }
 
