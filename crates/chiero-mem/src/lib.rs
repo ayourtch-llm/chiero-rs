@@ -1905,6 +1905,40 @@ impl Memory {
     /// The byte offset is signed and the bit offset within it is not, which is what makes
     /// `((vec_header_t *)v)[-1].flags` expressible — the founding case the old
     /// unsigned-only bit API could not spell.
+    /// [`Memory::read_bits`], with the arena it needs to **discharge 021 §6's laziness**.
+    ///
+    /// The byte path does this inside `read_term`; the bit path could not, having no arena to
+    /// mint a symbol into, so a lazy object's unwritten bits stayed `No` and every bitfield read
+    /// through an entry pointer was an uninitialized-read report. Measured on VPP: the last four
+    /// findings on the 40-entry-point sample, all of them `h->traced` in `clib_mem_heap_t`.
+    ///
+    /// A comment inside `read_bits` says "the bit API runs the same five steps as the byte API",
+    /// written when *alignment* turned out to be one of them. Materialization is a sixth, and the
+    /// shape of the miss is identical — which is the argument for the delegation below rather
+    /// than a second implementation of the steps.
+    pub fn read_bits_via(
+        &mut self,
+        a: &mut TermArena,
+        p: Pointer,
+        lo_bit: u64,
+        n_bits: u64,
+        at: Span,
+    ) -> AccessResult<u128> {
+        // Negative offsets are excluded exactly as the byte path excludes them: an object
+        // chiero invented has nothing before its base to materialize.
+        if self.entry(p.base).is_some_and(|e| e.lazy)
+            && p.off >= 0
+            && let Some(b) = abs_bit(p.off, lo_bit)
+        {
+            // Whole bytes, because materialization is byte-granular: a 1-bit field lives in a
+            // byte, and giving that byte a symbol is what makes the bit known.
+            let (first, last) = (b / 8, (b + n_bits - 1) / 8);
+            self.materialize_fresh(a, p.base, first as i64, last - first + 1);
+            self.memoize_via(a, p.base, b, n_bits);
+        }
+        self.read_bits(p, lo_bit, n_bits, at)
+    }
+
     pub fn read_bits(
         &mut self,
         p: Pointer,

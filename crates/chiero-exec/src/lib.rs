@@ -5270,7 +5270,9 @@ impl<'m> Engine<'m> {
                 let Some(Value::Ptr(p)) = self.operand(a, s, addr) else {
                     return self.lowering_gap(s, span, "a bitfield load through a non-pointer");
                 };
-                let r = s.mem.read_bits(p, bits.off as u64, bits.width as u64, span);
+                let r = s
+                    .mem
+                    .read_bits_via(a, p, bits.off as u64, bits.width as u64, span);
                 self.report_faults(a, s, &r.faults, span);
                 let w = bits_of_cty(unit).unwrap_or(bits.width);
                 // **A value that arrived with a fault is not the program's.** 021 §5
