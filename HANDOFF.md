@@ -910,7 +910,20 @@ that or dismiss it in one pass, which is the whole objective.
 | first run | 16 |
 | after `__builtin_expect` | 3 of the first 198 (12 at the tail) |
 | after `copy_via` | 10, of which 9 were one defect |
-| after `memoize_fresh` | **1** — `relax_ip4_addr`, and it is about a `static` helper analysed in isolation |
+| after `memoize_fresh` | **1** — 196 analysed, 11 time out |
+
+The one that remains, `relax_ip4_addr`, is about a **`static` helper analysed in isolation**:
+
+```c
+int shifts_per_relax[2][4] = { { 6, 5, 4, 2 }, { 3, 2, 1, 1 } };
+int *shifts = shifts_per_relax[relax2];      /* relax2 unchecked */
+```
+
+Both call sites pass a literal `0` or `1`, so the program is safe as assembled. The engine
+already has this rule for *null* parameters — "only an **exported** entry gets the assumption…
+for a `static` function every call site is in this module" — and it is not applied to a scalar
+parameter used as an index. That is the next honest improvement here, and it is the same
+sentence one argument-kind over.
 
 Two engine defects, both with wide blast radius:
 
@@ -15605,7 +15618,14 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
 ~~Re-verify clang/z3~~ — done, both verified working (§3). `070`'s oracle section can
 assume gcc 13.3 + clang 18.1.3 + z3 4.8.12 are all present.
 
-## 9.9 ⏰ RE-ARM THE HEARTBEAT AFTER A CONTEXT REFRESH
+## 9.9 ⏰ THE HEARTBEAT — **stopped 2026-08-06 at the owner's request; do not re-arm unasked**
+
+The owner asked for the cron to be stopped ("also: stop the cron please"), and both schedulers
+were cleared — the `CronCreate` job *and* `mcp__tttt__tttt_cron_delete cron-1`, which was the
+one actually firing at a 270-second interval. **The instructions below are how to bring it back
+when asked, not a standing instruction to do so.**
+
+## 9.9b ⏰ How to re-arm it, when the owner asks
 
 `mcp__tttt__tttt_clear_and_read_handoff_md` does a `/clear`, which **destroys the heartbeat**:
 `CronCreate` jobs are session-only, held in memory, and wiped along with the context. This
