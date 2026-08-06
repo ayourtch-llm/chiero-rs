@@ -715,8 +715,7 @@ does not exist while the doc comments cite contract 12 as though it did.
   a relative or quoted scratch path is refused with a message about the path.
 - **S7 — the kill leaks grandchildren** (no `setsid`, no process-group kill). A resource leak
   rather than a wrong answer, which is why it is last.
-- Refusal text carries 20–30-space runs into `blind_spots` (raw multi-line strings in
-  `format!` with no `\` continuation).
+- ~~Refusal whitespace~~ and ~~`sandbox()`'s per-call `unshare` spawn~~ — fixed.
 
 Probes: `$SCRATCH/rev5` (20 fixtures, `cargo run -- <name>`); `$SCRATCH/replayprobe` (13).
 
