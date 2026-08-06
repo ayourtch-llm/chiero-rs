@@ -1357,3 +1357,112 @@ pub fn prove_equivalent_with_replay(
         )),
     }
 }
+
+/// [041 §3](../../../docs/specs/041-optimization-analysis.md)'s locality analysis in 050 §2's
+/// envelope.
+///
+/// # The fidelity, which is the judgement here
+///
+/// **`Exact`.** The layout is 014 §3's, measured against gcc in its own corpus gate, and the
+/// analysis over it is complete — a struct with no proposals genuinely has nothing this
+/// analysis looks for. That is a narrower claim than it sounds and the blind spots say so: the
+/// analysis is about *layout*, so it is silent on everything §3 needs a profile for, and it
+/// only sees the records of the translation units it was given.
+///
+/// # Why `advisory` is not a fidelity
+///
+/// A proposal about a `packed` struct is *correct* — the field really does straddle a line —
+/// and acting on it is a protocol change. That is a property of the proposal, not of the
+/// analysis, so it rides on the proposal where a reader deciding about one struct will see it,
+/// rather than lowering a fidelity that describes all of them.
+pub fn layout_envelope(
+    records: &[chiero_opt::locality::Record],
+    cfg: &chiero_opt::locality::LocalityCfg,
+) -> Envelope {
+    let rendered: Vec<serde_json::Value> = records
+        .iter()
+        .map(|r| {
+            let proposals: Vec<serde_json::Value> = chiero_opt::locality::analyse(r, cfg)
+                .iter()
+                .map(proposal_json)
+                .collect();
+            serde_json::json!({
+                "tag": r.tag,
+                "size": r.size,
+                "align": r.align,
+                "packed": r.packed,
+                "proposals": proposals,
+            })
+        })
+        .collect();
+
+    let total: usize = rendered
+        .iter()
+        .map(|r| r["proposals"].as_array().map(Vec::len).unwrap_or(0))
+        .sum();
+    let env = Envelope::new(
+        serde_json::json!({
+            "records": rendered,
+            "proposals": total,
+            "cache_line_bytes": cfg.cache_line_bytes,
+        }),
+        Fidelity::Exact,
+    )
+    .with_blind_spot(
+        "this is an analysis of layout; §3's hot/cold, false-sharing and prefetch findings \
+         need a profile and 025's sharing classification, and are not produced at all rather \
+         than produced from nothing",
+    );
+    if cfg.counts.is_empty() {
+        env.with_blind_spot(
+            "no run supplied access counts, so every benefit is Unquantified — chiero has no \
+             cycle model and will not estimate one",
+        )
+    } else {
+        env
+    }
+}
+
+fn proposal_json(p: &chiero_opt::locality::Proposal) -> serde_json::Value {
+    use chiero_opt::locality::OptKind;
+    let mut v = match &p.kind {
+        OptKind::LineStraddle {
+            field,
+            offset,
+            size,
+        } => serde_json::json!({
+            "kind": "line_straddle", "field": field, "offset": offset, "size": size,
+        }),
+        OptKind::PaddingWaste { recoverable } => serde_json::json!({
+            "kind": "padding_waste", "recoverable": recoverable,
+        }),
+        OptKind::HotFieldPlacement { field, offset } => serde_json::json!({
+            "kind": "hot_field_placement", "field": field, "offset": offset,
+        }),
+    };
+    v["rationale"] = serde_json::Value::String(p.rationale.clone());
+    v["benefit"] = serde_json::Value::String(format!("{:?}", p.benefit));
+    // **`advisory` travels with the proposal**, because a reader deciding about one struct
+    // reads one proposal.
+    v["advisory"] = serde_json::Value::Bool(p.advisory);
+    v["evidence"] = serde_json::Value::Array(
+        p.evidence
+            .iter()
+            .map(|e| serde_json::Value::String(e.clone()))
+            .collect(),
+    );
+    v["obligations"] = serde_json::Value::Array(
+        p.obligations
+            .iter()
+            .map(|o| match o {
+                chiero_opt::locality::Obligation::Discharged { what } => {
+                    serde_json::json!({ "state": "discharged", "what": what })
+                }
+                chiero_opt::locality::Obligation::Open { why } => {
+                    serde_json::json!({ "state": "open", "why": why })
+                }
+            })
+            .collect(),
+    );
+    v
+}

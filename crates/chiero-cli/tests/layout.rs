@@ -86,7 +86,9 @@ fn a_packed_struct_gets_only_advisory_proposals() {
             "reordering a packed struct is a protocol change: {p}"
         );
         assert!(
-            p["rationale"].as_str().is_some_and(|s| s.contains("observable")),
+            p["rationale"]
+                .as_str()
+                .is_some_and(|s| s.contains("observable")),
             "and it must say so in words: {p}"
         );
     }
@@ -117,13 +119,20 @@ fn every_benefit_is_unquantified_without_a_profile() {
 }
 
 /// **The cache line is a parameter**, because 64 is a fact about a machine rather than about C.
+///
+/// **The fixture is `packed`, and it has to be.** A naturally-aligned scalar cannot straddle a
+/// cache line whose size is a multiple of its alignment — an 8-byte `long` sits at a multiple
+/// of 8, and 8 divides 32 and 64. So straddling is reachable only through `packed`, a
+/// misaligned outer struct, or an array/aggregate member. That is not a limitation: it is
+/// precisely VPP's wire formats and its `CLIB_CACHE_LINE_ALIGN_MARK` structs, which is what
+/// §3 is about. Learned by writing this test with an unpacked struct and getting nothing.
 #[test]
 fn the_cache_line_size_changes_the_answer() {
     let f = write(
         "line.c",
-        "struct s { char pad[28]; long v; };\nstruct s x;\n",
+        "struct s { char pad[28]; long v; } __attribute__((packed));\nstruct s x;\n",
     );
-    // At 32 bytes a `long` at offset 28 straddles; at 64 it does not.
+    // Packed, so `v` sits at 28: it crosses the boundary at 32 and not the one at 64.
     let (_, at32, _) = run(&[
         "layout",
         f.to_str().unwrap(),

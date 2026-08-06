@@ -249,6 +249,12 @@ fn shared(escapes: Option<&str>) -> Vec<Obligation> {
 /// Contract 18. A field straddles when the line it starts in is not the line its last byte is
 /// in.
 ///
+/// **When this can fire at all is worth knowing.** A naturally-aligned scalar *cannot* straddle
+/// a cache line whose size is a multiple of its alignment: an 8-byte `long` sits at a multiple
+/// of 8, and 8 divides both 32 and 64. So a straddle needs `packed`, a misaligned outer struct,
+/// or an array/aggregate member. That is not a limitation of the analysis — it is exactly VPP's
+/// wire formats and its `CLIB_CACHE_LINE_ALIGN_MARK` structs, which is what §3 is about.
+///
 /// **Computed from first and last byte, not from `offset % line + size > line`.** The two agree
 /// for a field smaller than a line and disagree for one larger, where the second says "always"
 /// — and a 128-byte field on a 64-byte line does not straddle in the sense that matters, it

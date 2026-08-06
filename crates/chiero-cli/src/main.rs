@@ -34,6 +34,10 @@ OPERATIONS:
             Can execution get to that line? Proved-nothing-does and
             chiero-did-not are different answers, and it says which.  (050 §3)
 
+    layout <file.c> [--cache-line <n>]
+            Cache-line and padding analysis of the structs in a translation
+            unit. Proposals only — nothing is ever rewritten.  (041 §3)
+
     impact <before.c> <after.c>
             What a source change reaches — through calls, types, globals and
             macro expansions.  (031)
@@ -49,6 +53,8 @@ OPERATIONS:
             What macro chain produced the code on a line, innermost first.
 
 OPTIONS:
+    --cache-line <n>
+                    Cache-line size in bytes for `layout`. Default 64.
     --json          Print the envelope as JSON. Default is a human rendering.
     --replay        Emit a C harness demonstrating a `differs` verdict.
     --allow-replay-exec
@@ -103,6 +109,7 @@ fn run(args: &[String]) -> Result<String, Fault> {
         "prove-equivalent" => prove_equivalent(&opts)?,
         "find-bugs" => find_bugs(&opts)?,
         "check-reachable" => check_reachable(&opts)?,
+        "layout" => layout(&opts)?,
         "impact" => impact(&opts)?,
         "select-tests" => select_tests(&opts)?,
         "expansion-sites" => expansion_sites(&opts)?,
@@ -126,6 +133,7 @@ struct Options {
     entry: Option<String>,
     macro_name: Option<String>,
     line: Option<u32>,
+    cache_line: Option<u64>,
     col: Option<u32>,
     cursor: Option<usize>,
     limit: Option<usize>,
@@ -170,6 +178,13 @@ impl Options {
                 }
                 "--macro" => {
                     o.macro_name = Some(need(i, args, "--macro")?);
+                    i += 1;
+                }
+                "--cache-line" => {
+                    o.cache_line = Some(u64::from(num(
+                        &need(i, args, "--cache-line")?,
+                        "--cache-line",
+                    )?));
                     i += 1;
                 }
                 "--line" => {
@@ -328,6 +343,16 @@ fn check_reachable(o: &Options) -> Result<chiero_tool::Envelope, Fault> {
         &chiero_tool::BugCfg::new(entry),
         line,
     ))
+}
+
+fn layout(o: &Options) -> Result<chiero_tool::Envelope, Fault> {
+    let f = o.files(1, "layout")?;
+    let records = frontend::records(&f[0], &read(&f[0])?, o.frontend()).map_err(Fault::Failed)?;
+    let cfg = chiero_opt::locality::LocalityCfg {
+        cache_line_bytes: o.cache_line.unwrap_or(64),
+        counts: Vec::new(),
+    };
+    Ok(chiero_tool::layout_envelope(&records, &cfg))
 }
 
 fn impact(o: &Options) -> Result<chiero_tool::Envelope, Fault> {
