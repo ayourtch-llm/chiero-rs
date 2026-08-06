@@ -363,8 +363,17 @@ fn entry_pointers_can_be_declared_non_null_from_the_command_line() {
     assert!(
         v["assumptions"]
             .as_array()
-            .is_some_and(|a| a.iter().any(|x| x[0] == "entry_ptr_nonnull")),
+            .is_some_and(|a| a.iter().any(|x| x["kind"] == "entry_ptr_nonnull")),
         "and the envelope has to carry the assumption that bought the quiet: {v}"
+    );
+
+    // The default rendering is the human one, and it is what a reader actually sees. An empty
+    // finding list there without the assumption beside it reads as "clean".
+    let human = run(&["find-bugs", path, "--entry", "f", "--entry-ptr-nonnull"]);
+    assert!(
+        human.out.contains("entry_ptr_nonnull"),
+        "the human rendering has to say it too: {}",
+        human.out
     );
 
     let help = run(&["--help"]);

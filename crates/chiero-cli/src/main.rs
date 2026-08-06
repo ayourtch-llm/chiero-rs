@@ -68,6 +68,11 @@ OPTIONS:
     --no-system-headers
                     Do not ask the C compiler where its own headers are. On by
                     default, because real C includes <stdio.h>.
+    --entry-ptr-nonnull
+                    Assume the pointer parameters of --entry are not null. For a
+                    helper whose callers check, the null path is one the program
+                    does not have. Removes real paths, so it is recorded as an
+                    assumption in the envelope.
     -D <k[=v]>      Define a macro. Repeatable.
     -h, --help      This text.
 
@@ -153,6 +158,7 @@ struct Options {
     no_system_headers: bool,
     replay: bool,
     allow_replay_exec: bool,
+    entry_ptr_nonnull: bool,
 }
 
 fn define(d: &str) -> (String, String) {
@@ -177,6 +183,7 @@ impl Options {
             match a.as_str() {
                 "--json" => o.json = true,
                 "--no-system-headers" => o.no_system_headers = true,
+                "--entry-ptr-nonnull" => o.entry_ptr_nonnull = true,
                 "--replay" => o.replay = true,
                 "--allow-replay-exec" => {
                     o.replay = true;
@@ -345,6 +352,7 @@ fn find_bugs(o: &Options) -> Result<chiero_tool::Envelope, Fault> {
         .ok_or_else(|| Fault::Usage("find-bugs needs --entry <fn>".into()))?;
     let m = lower(&f[0], &read(&f[0])?, o.frontend()).map_err(Fault::Failed)?;
     let mut cfg = chiero_tool::BugCfg::new(entry.clone());
+    cfg.entry_ptr_nonnull = o.entry_ptr_nonnull;
     if o.replay {
         cfg.source = Some(chiero_tool::ReplaySources {
             before: f[0].clone(),
@@ -379,11 +387,9 @@ fn check_reachable(o: &Options) -> Result<chiero_tool::Envelope, Fault> {
         .line
         .ok_or_else(|| Fault::Usage("check-reachable needs --line <n>".into()))?;
     let m = lower(&f[0], &read(&f[0])?, o.frontend()).map_err(Fault::Failed)?;
-    Ok(chiero_tool::check_reachable(
-        &m,
-        &chiero_tool::BugCfg::new(entry),
-        line,
-    ))
+    let mut cfg = chiero_tool::BugCfg::new(entry);
+    cfg.entry_ptr_nonnull = o.entry_ptr_nonnull;
+    Ok(chiero_tool::check_reachable(&m, &cfg, line))
 }
 
 fn layout(o: &Options) -> Result<chiero_tool::Envelope, Fault> {
