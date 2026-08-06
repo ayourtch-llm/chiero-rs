@@ -678,12 +678,47 @@ does not exist while the doc comments cite contract 12 as though it did.
 
   *Still open:* a **non-static** helper the two versions share collides the same way. Renaming
   every shared symbol needs the file parsed, which is more than a harness should do.
-- **D2's remaining route.** `Demonstrated` could in principle be fabricated by state the two
-  includes merge — a `__attribute__((constructor))`, which 040 §3.1 says must be *recorded*
-  and is not. The other two routes are closed: a pointer return cannot produce a
-  `ReturnValue` divergence at all, and the stdout hijack is gone with D7.
+- ~~**D2's remaining route.**~~ **Closed 2026-08-06, at the class rather than the door.** A
+  fifth review fabricated `Demonstrated` from two byte-identical sources *four* ways —
+  `rand()`, `clock_gettime()`, a constructor, and an `atexit` handler rewriting the result
+  file. All four were one defect: `before` and `after` ran **in one process**, so everything
+  outside a translation unit was shared.
 
-Probes: `$SCRATCH/replayprobe` (13 fixtures, `cargo run`).
+  **Each version is now its own program**, built and run separately, `_exit`ing after it writes
+  so no atexit handler can rewrite the answer — plus a **determinism re-check**, since
+  isolation cannot fix a program that reads the clock. Running `before` twice and disagreeing
+  is `Outcome::Nondeterministic`, which is *not* a downgrade: nothing was learned about chiero.
+
+  > **The lesson, after five rounds on one file: I kept fixing the door.** Each round I closed
+  > the demonstrated route and the next review walked through a neighbouring one. The fixes that
+  > held were the ones that changed the *shape* — refuse what the channel cannot carry, one
+  > process per version, one place that decides how to launch.
+
+**Still open from the fifth review, and worth reading before trusting a `demonstrated`:**
+
+- **S1/S9 — the argument types are unchecked.** `unrepresentable_return` guards the *return*
+  type; nothing guards the *parameters*. A `float` parameter's witness is a **bit pattern**
+  (the engine sorts floats as `BitVec`), rendered as a decimal and passed through `long long`
+  — so `2.0f` goes in as `1073741824.0f`, the harness reports agreement, and contract 11
+  downgrades a **true** finding with the false sentence D1 was filed for. The rule is *every
+  value crossing the channel, in either direction*; only one direction is written. Arity is
+  the same gap: a trailing pointer parameter leaves the indices contiguous and the call short.
+- **S4 — nothing ties `cfg.entry` to `src.entry`.** `prove_equivalent` compares one function
+  and the harness compiles whichever the sources name; they are independent strings.
+  `unrepresentable_return` returns `None` (= representable) for an absent entry, so the type
+  gate silently no-ops on exactly that case. The reviewer got a fabricated `demonstrated` at
+  `proven: true`.
+- **S6 — the compile is unbounded.** 050 §6 covers "compilation *and* replay execution"; the
+  timeout wraps only the produced binary, so a `#include` naming a FIFO hangs the tool.
+- **S7 — the kill leaks grandchildren** (no `setsid`, no process-group kill).
+- **S8 — `-fcommon` re-opens the shared-global route**, through the very flags 040 §3 requires
+  passing through.
+- **S10 — a relative or quoted `scratch` breaks a good harness**, and nothing documents that it
+  must be absolute.
+- Refusal text carries 20–30-space runs into `blind_spots` (raw multi-line strings in
+  `format!` with no `\` continuation).
+
+Probes: `$SCRATCH/rev5` (20 fixtures, `cargo run -- <name>`); `$SCRATCH/replayprobe` (13).
 
 ### 7.3 A defect the operations found in the layer beneath them, 2026-08-06
 
