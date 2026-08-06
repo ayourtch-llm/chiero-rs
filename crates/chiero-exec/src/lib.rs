@@ -6445,10 +6445,33 @@ impl<'m> Engine<'m> {
                     );
                 }
             }
-            // `Extern` is defined in another TU: the bytes are genuinely unknown here,
-            // and leaving them uninitialized is the honest answer rather than a zero
-            // chiero invented.
-            Some(chiero_cir::GlobalInit::Extern) | None => {}
+            // **`Extern` is defined in another TU: unknown, and initialized.**
+            //
+            // Those are two facts and the code here used to run them together — "leaving them
+            // uninitialized is the honest answer rather than a zero chiero invented". The first
+            // half is right and the second does not follow. An object with static storage
+            // duration is initialized before `main` by C's own rules (C11 6.7.9p10): zero if its
+            // defining unit says nothing, whatever that unit says if it does. chiero not knowing
+            // *which* is a fact about chiero. Reporting it as a read of memory nobody wrote is a
+            // claim about the program, and a false one.
+            //
+            // `mark_lazy` is the third answer, and 021 §6 already argued for it one object kind
+            // over: the bytes stay writable, and each becomes a symbol nobody has claimed when it
+            // is first read — "fully symbolic and fully initialized". §6 chose it to avoid "an
+            // uninitialized-read false-positive storm" through entry pointers; an `extern` global
+            // is the same storm through a header, and VPP opens every source file with a hundred
+            // lines of them. Measured: 5 of the 10 findings left on the VPP sample after the
+            // invented-bound suppression were this, all on `clib_mem_thread_main` and
+            // `vlib_global_main`.
+            //
+            // No fidelity degradation, for §6's reason: a symbol standing for a value chiero does
+            // not know is an exact model of not knowing it. Inventing the *zero* would be the
+            // confidently-wrong move, and this is not that.
+            Some(chiero_cir::GlobalInit::Extern) => s.mem.mark_lazy(o),
+            // A definition with no initializer is zeroed by the lowering, so `None` here is a
+            // global chiero has no record for at all — left alone rather than quietly given the
+            // `extern` treatment, since "not recorded" and "defined elsewhere" are not the same.
+            None => {}
         }
         if is_const {
             s.mem.set_readonly(o);
