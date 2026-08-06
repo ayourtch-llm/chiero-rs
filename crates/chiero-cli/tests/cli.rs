@@ -760,3 +760,113 @@ fn an_aggregate_parameter_arrives_filled_in() {
         "nobody wrote this one: {v}"
     );
 }
+
+/// **A run nobody waits for still answers** — 023 §8.1's wall clock, on the surface where the
+/// waiting happens.
+///
+/// Measuring `find-bugs` over 220 VPP entry points, six were killed by the harness's external
+/// `timeout` and 11 more on the ACL plugin. A killed process prints nothing: no findings, no
+/// fidelity, no envelope. So the measurement recorded `timeout` beside `ok` and had no way to
+/// say what those functions were or were not hiding — "nothing there" and "did not look" became
+/// the same row, which is the one collapse this project does not allow itself.
+///
+/// With a wall clock the process ends by its own decision and prints what it had: the findings
+/// it already made, `Bounded`, and `budgets.hit` naming the clock. That is a *worse* answer than
+/// a complete run and an incomparably better one than silence.
+///
+/// **And it says the answer is not reproducible** (050 contract 16). Everything else chiero
+/// prints is a computation over its input; this one depends on how fast the machine was, so the
+/// envelope carries `nondeterministic_abort` and a consumer that caches results knows not to.
+#[test]
+fn a_run_that_cannot_finish_is_cut_by_the_clock_and_says_so() {
+    // 64 branch points on one path, each on a fresh symbol: the state cap is thousands of
+    // states away and no machine reaches it in 50 ms.
+    let p = write(
+        "endless.c",
+        "int f (unsigned a, unsigned b)\n\
+         {\n\
+         \x20 int t = 0;\n\
+         \x20 for (unsigned i = 0; i < 8; i++)\n\
+         \x20   for (unsigned j = 0; j < 8; j++)\n\
+         \x20     if (((a >> i) & (b >> j)) & 1u) t += 1; else t -= 1;\n\
+         \x20 return t;\n\
+         }\n",
+    );
+    let started = std::time::Instant::now();
+    let r = run(&[
+        "find-bugs",
+        p.to_str().expect("utf-8 path"),
+        "--entry",
+        "f",
+        "--time-budget",
+        "0.05",
+        "--json",
+    ]);
+    let took = started.elapsed();
+    assert_eq!(r.code, 0, "it ends by its own decision:\n{}", r.err);
+    let v = json(&r);
+
+    // The envelope is whole, not a fragment of one — the point is that a cut run is still an
+    // answer with every qualification a complete one carries.
+    for key in ["result", "fidelity", "proven", "assumptions", "blind_spots"] {
+        assert!(!v[key].is_null(), "the envelope is missing `{key}`: {v}");
+    }
+    assert_eq!(v["proven"], false, "a cut search proves nothing: {v}");
+    assert!(
+        v["result"]["budgets"]["hit"]
+            .as_array()
+            .expect("budgets.hit")
+            .iter()
+            .any(|h| h.as_str().is_some_and(|s| s.contains("wall_clock"))),
+        "and names the bound that cut it: {v}"
+    );
+    assert_eq!(
+        v["nondeterministic_abort"], true,
+        "the one answer here that is a measurement rather than a computation: {v}"
+    );
+    // A generous multiple of the budget: the assertion is that the clock is what ended it, not
+    // that the process is fast. Without it the test passes on a build where `--time-budget` is
+    // parsed and ignored and the run merely happens to finish.
+    assert!(
+        took < std::time::Duration::from_secs(20),
+        "it stopped at the clock rather than at the state cap: {took:?}"
+    );
+}
+
+/// **No clock is the default at the library, and the CLI's own default does not change an
+/// answer that fits inside it.** 001 §5 wants byte-identical output for identical input; a
+/// wall clock is the one thing that can break that, so a run that finishes well within it must
+/// be indistinguishable from a run with none, `nondeterministic_abort` included.
+#[test]
+fn a_run_that_finishes_inside_its_clock_is_an_ordinary_answer() {
+    let p = write("quick.c", "int f (int x) { return x / 0; }\n");
+    let with = run(&[
+        "find-bugs",
+        p.to_str().expect("utf-8 path"),
+        "--entry",
+        "f",
+        "--time-budget",
+        "600",
+        "--json",
+    ]);
+    let without = run(&[
+        "find-bugs",
+        p.to_str().expect("utf-8 path"),
+        "--entry",
+        "f",
+        "--time-budget",
+        "0", // 0 is no limit, as `timeout(1)` has it
+        "--json",
+    ]);
+    assert_eq!(with.code, 0, "{}", with.err);
+    assert_eq!(without.code, 0, "{}", without.err);
+    assert_eq!(
+        with.out, without.out,
+        "a clock nothing ran into leaves no trace in the answer"
+    );
+    assert_eq!(
+        json(&with)["nondeterministic_abort"],
+        false,
+        "it was never hit, so nothing here is a measurement"
+    );
+}

@@ -398,9 +398,18 @@ pub enum TermReason {
     Unsupported,
 }
 
-/// 023 §8. Only the deterministic budgets are here; `wall_clock` is a non-deterministic
-/// abort that §8.1 keeps out of anything that gates output, because 001 §5 requires
-/// byte-identical results and a timeout is not reproducible.
+/// 023 §8. Every field but the last is a **count**, and counts are why a run is reproducible:
+/// 001 §5 requires byte-identical output for identical input, and only a bound that does not
+/// consult a clock can gate one.
+///
+/// **`wall_clock` is the exception, and it earns it.** This type once said the wall clock was
+/// "kept out of anything that gates output" and did not have the field at all — which read as
+/// caution and behaved as silence: a run nobody was willing to wait for was killed from
+/// outside, and a killed process prints nothing. "No findings" and "no answer" then arrive as
+/// the same empty output, which is the collapse [050 §2](../../../docs/specs/050-tool-interface.md)
+/// exists to prevent. §8.1's own text is the settlement: the clock aborts, the abort is
+/// reported as a budget hit like any other, and the result is *flagged* as the one thing chiero
+/// produces that is a measurement rather than a computation.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Budget {
     pub max_depth: u32,
@@ -416,6 +425,9 @@ pub struct Budget {
     /// concretizes instead of forking. Past it the run is `Approximated`, which is a
     /// different statement from the `Unknown` an *unconstrained* pointer gets.
     pub max_resolutions: u32,
+    /// 023 §8.1's non-deterministic backstop. `None` — the default — is what the determinism
+    /// contracts run under; a surface where somebody is waiting sets one.
+    pub wall_clock: Option<std::time::Duration>,
 }
 
 impl Default for Budget {
@@ -428,6 +440,12 @@ impl Default for Budget {
             max_forks: 10_000,
             max_indirect: 16,
             max_resolutions: 8,
+            // **`None`, where 023 §8 says 60 seconds.** The spec's default is written for the
+            // surface a human waits at; this is the library default, and it is also the value
+            // §8.1 requires the determinism contracts to run under. A default that made every
+            // one of this workspace's runs abortable would make contract 6 untestable by
+            // construction — so the CLI sets 60 s and the library sets nothing.
+            wall_clock: None,
         }
     }
 }

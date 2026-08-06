@@ -2405,6 +2405,7 @@ fn every_deterministic_budget_is_present_and_reported() {
         max_forks: 13,
         max_indirect: 2,
         max_resolutions: 4,
+        wall_clock: None,
     };
     let mut a = TermArena::new();
     let r = Engine::new(&m).with_budget(used).run(&mut a);
@@ -10156,6 +10157,163 @@ fn exceeding_max_states_keeps_the_findings_it_already_had() {
             .any(|x| x.detail.contains("max_states"))),
         "and the bound it names is that one: {:#?}",
         r.states()[0].assumptions()
+    );
+}
+
+/// **023 §8.1's wall clock, which is the only budget that can bound a run nobody is willing
+/// to wait for.** A budget of zero is past before the first instruction, so the run stops
+/// immediately, `Bounded`, naming the bound that stopped it.
+///
+/// **Why zero rather than a short duration**: every other budget here is a count, and a count
+/// makes the test deterministic. A duration cannot, so the one case that *is* deterministic —
+/// a limit already exceeded when the run starts — is what pins the mechanism, and the test
+/// below pins that it actually cuts a long run.
+#[test]
+fn a_wall_clock_of_zero_stops_the_run_before_it_starts() {
+    let m = func(
+        vec![block(0, vec![], Terminator::Return(Some(i32c(0))))],
+        CTy::Int(32),
+    );
+    let mut a = TermArena::new();
+    let r = Engine::new(&m)
+        .with_budget(Budget {
+            wall_clock: Some(std::time::Duration::ZERO),
+            ..Budget::default()
+        })
+        .run(&mut a);
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Bounded,
+        "a run cut by the clock is bounded, not exact: {:#?}",
+        degradations(&r)
+    );
+    assert!(
+        r.states()
+            .iter()
+            .any(|s| matches!(s.status, Status::Terminated(TermReason::Budget))),
+        "it ends by its own decision: {:#?}",
+        r.states().iter().map(|s| &s.status).collect::<Vec<_>>()
+    );
+    // **The bound is named**, as `max_states` and `max_forks` are — a reader who cannot tell
+    // which knob was reached cannot decide whether re-running with more of it would help.
+    assert!(
+        degradations(&r).iter().any(|d| d.contains("wall_clock")),
+        "and it says which bound: {:#?}",
+        degradations(&r)
+    );
+}
+
+/// **The default is `None`, and that is 001 §5, not an oversight.**
+///
+/// Byte-identical output for identical input is a hard requirement, and a wall clock is a
+/// measurement rather than a computation: the same program cut at a different instruction on a
+/// loaded machine produces different findings. So the library default cannot carry one — the
+/// surfaces where a human is waiting set it, and 023 §8.1's determinism contracts run without.
+#[test]
+fn the_wall_clock_is_off_unless_a_caller_asks_for_one() {
+    assert_eq!(Budget::default().wall_clock, None);
+}
+
+/// **A run that cannot finish still produces an answer** — which is the whole reason this
+/// budget exists. Six VPP entry points were killed by an external `timeout` while measuring
+/// `find-bugs`, and a process that is killed emits nothing at all: no findings, no fidelity, no
+/// envelope naming what was not searched. "Nothing there" and "did not look" became the same
+/// output, which is the one thing this project does not allow itself.
+///
+/// The fixture is a **chain** of 20 branches on 20 fresh symbols — a million paths, so the
+/// state cap is what ends it and it takes as long as ending there costs. A self-loop would not
+/// do: `max_loop_iters` bounds a back edge at 8 and the run is over in a millisecond, which is
+/// how the first draft of this test passed its first two assertions while proving nothing.
+/// With a wall clock it ends at the clock, keeps the finding it already had, and says how much
+/// it left.
+#[test]
+fn the_wall_clock_cuts_a_run_that_would_not_finish_and_keeps_what_it_found() {
+    const FORKS: u32 = 20;
+    let mut blocks = vec![block(
+        0,
+        vec![
+            inst(InstKind::Assign {
+                dst: ValueId(0),
+                rv: RValue::AddrOfLocal {
+                    alloca: AllocaId(0),
+                },
+            }),
+            // A real bug, found in the first few instructions — long before any plausible
+            // clock fires.
+            inst(InstKind::Call {
+                dst: None,
+                callee: Callee::Direct(FuncId(1)),
+                args: vec![Operand::Value(ValueId(0))],
+            }),
+        ],
+        Terminator::Goto(BlockId(1)),
+    )];
+    for i in 1..=FORKS {
+        // Both edges lead to the same successor: the point is the fork, not where it goes.
+        blocks.push(block(
+            i,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(2 * i),
+                    rv: RValue::Fresh { ty: CTy::Int(32) },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(2 * i + 1),
+                    rv: RValue::Cmp {
+                        op: CmpOp::Eq,
+                        ty: CTy::Int(32),
+                        a: Operand::Value(ValueId(2 * i)),
+                        b: i32c(7),
+                    },
+                }),
+            ],
+            Terminator::Br {
+                cond: Operand::Value(ValueId(2 * i + 1)),
+                t: BlockId(i + 1),
+                f: BlockId(i + 1),
+            },
+        ));
+    }
+    blocks.push(block(FORKS + 1, vec![], Terminator::Return(Some(i32c(0)))));
+    let mut caller = defined(0, "main", blocks, CTy::Int(32));
+    caller.allocas = vec![alloca(0, CTy::Int(8), 8)];
+    let m = Module {
+        funcs: vec![caller, extern_fn(1, "free", vec![CTy::Ptr], CTy::Void)],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let started = std::time::Instant::now();
+    let r = Engine::new(&m)
+        .with_budget(Budget {
+            // 100 ms is three orders of magnitude more than reaching the `free` in block 0
+            // costs, and three orders less than exploring 10 000 states — so which of the two
+            // bounds bites is not a race.
+            wall_clock: Some(std::time::Duration::from_millis(100)),
+            ..Budget::default()
+        })
+        .run(&mut a);
+    let took = started.elapsed();
+
+    assert!(
+        r.states().len() < Budget::default().max_states as usize,
+        "the clock stopped it, not the state cap: {} states in {took:?}",
+        r.states().len()
+    );
+    assert!(
+        r.findings().iter().any(|f| f.contains("bad-free")),
+        "and what it found before the clock survives it: {:#?}",
+        r.findings()
+    );
+    assert_eq!(r.fidelity(), Fidelity::Bounded);
+    // **How much was left, not merely that something was.** A reader deciding whether to
+    // re-run with a longer clock needs the size of what went unexplored; "a budget was hit"
+    // is true of every bound and actionable for none.
+    assert!(
+        degradations(&r)
+            .iter()
+            .any(|d| d.contains("wall_clock") && d.contains("unexplored")),
+        "the bound and what it left: {:#?}",
+        degradations(&r)
     );
 }
 
