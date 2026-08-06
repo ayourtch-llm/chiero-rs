@@ -306,3 +306,81 @@ entry:
         "the store between them is exactly what makes the second load necessary: {props:?}"
     );
 }
+
+/// **The shape real C lowers to.**
+///
+/// `int a = *p; quiet(a); int b = *p;` becomes an alloca, a load, a *store into the stack
+/// slot*, a call, and a second load. Every store was a barrier, so the stack traffic between
+/// two source-level loads suppressed the proposal and the detector fired on hand-written CIR
+/// and nothing else.
+///
+/// **The fix is an escape check, not a cleverer aliasing rule.** A store through the address of
+/// a local whose address never leaves the function cannot touch what a pointer parameter points
+/// at. That is a fact about the *local*, checkable without deciding which addresses might be
+/// equal — which stays 021's question.
+const LOWERED_SHAPE: &str = "\
+func @quiet(%0: i32) -> i32 {
+entry:
+  .line 1
+  ret %0
+}
+
+func @f(%0: ptr) -> i32 {
+  alloca %0 : i32 x 1 align 4 scope 0 lifetime scope \"a\"
+entry:
+  .line 4
+  .scope enter 0
+  %1 = addrlocal %0
+  %2 = load i32, %0 align 4
+  store i32 %2 -> %1 align 4
+  %3 = call @quiet(%2)
+  %4 = load i32, %0 align 4
+  %5 = add i32 %2, %4
+  .scope exit 0
+  ret %5
+}";
+
+#[test]
+fn a_store_into_a_local_that_never_escapes_is_not_a_barrier() {
+    let props = detect(&m(LOWERED_SHAPE), &cfg("f"));
+    assert!(
+        props
+            .iter()
+            .any(|p| matches!(p.kind, OppKind::RedundantLoad { .. })),
+        "the store is into a local whose address never leaves `f`: {props:?}"
+    );
+}
+
+/// **And a local whose address *does* escape is still a barrier.**
+///
+/// Without this, the escape check is "ignore stores to locals", which is unsound the moment the
+/// callee is handed the address.
+#[test]
+fn a_store_into_a_local_whose_address_escapes_is_still_a_barrier() {
+    let escapes = "\
+func @takes(%0: ptr) -> i32
+
+func @f(%0: ptr) -> i32 {
+  alloca %0 : i32 x 1 align 4 scope 0 lifetime scope \"a\"
+entry:
+  .line 4
+  .scope enter 0
+  %1 = addrlocal %0
+  %2 = call @takes(%1)
+  %3 = load i32, %0 align 4
+  store i32 %3 -> %1 align 4
+  %4 = load i32, %0 align 4
+  %5 = add i32 %3, %4
+  .scope exit 0
+  ret %5
+}";
+    let props = detect(&m(escapes), &cfg("f"));
+    for p in &props {
+        if matches!(p.kind, OppKind::RedundantLoad { .. }) {
+            assert!(
+                p.advisory,
+                "`takes` was handed the local's address, so nothing here is proved: {p:?}"
+            );
+        }
+    }
+}
