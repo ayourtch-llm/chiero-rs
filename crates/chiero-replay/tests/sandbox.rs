@@ -269,3 +269,48 @@ fn a_scratch_path_the_launcher_cannot_use_is_refused_by_name() {
         other => panic!("a relative scratch directory must be refused: {other:?}"),
     }
 }
+
+/// **A process the harness forked must not outlive the timeout.**
+///
+/// The kill reaches the harness — `unshare -rn` execs in place, so our child *is* it — but a
+/// process it forked survives, reparents to init, and keeps running after the runner has
+/// returned. On a machine doing an analysis that is a leak per non-terminating witness, and a
+/// termination witness is exactly an input chosen to not terminate.
+#[test]
+fn a_forked_child_does_not_outlive_the_timeout() {
+    let Some(cc) = chiero_replay::compiler() else {
+        return;
+    };
+    if sandbox().memory_bytes.is_none() {
+        return; // no shell, so no launcher and nothing to leak through
+    }
+    let d = dir("leak");
+    let body = "#include <unistd.h>\n\
+                static long long chiero_fixture (void)\n{\n  \
+                if (fork () == 0) { for (;;) sleep (1); }\n  \
+                for (;;) sleep (1);\n  \
+                return 0;\n}";
+    let r = two_programs(body);
+    let started = std::time::Instant::now();
+    let outcome = run_with(&r, &cc, &d, &[]);
+    assert!(
+        matches!(outcome, Outcome::DidNotRun { .. }),
+        "the fixture never finishes: {outcome:?}"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(40),
+        "the timeout must fire"
+    );
+
+    // Give the kill a moment, then look for anything still running our unique binary.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let survivors = std::process::Command::new("pgrep")
+        .args(["-f", "chiero_unit_"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).lines().count())
+        .unwrap_or(0);
+    assert_eq!(
+        survivors, 0,
+        "a process the harness forked is still running after the timeout"
+    );
+}
