@@ -221,3 +221,88 @@ entry:
         "the reason must name what went undecided: {v:?}"
     );
 }
+
+/// **050 contract 8, the other half: the harness.**
+///
+/// > `prove_equivalent` on an LLM-style rewrite that differs at `INT_MIN` returns the
+/// > distinguishing input **and a harness that compiles**.
+///
+/// The blind spot asserted above was the honest report of a missing feature. Now that
+/// `chiero-replay` exists, the same response must carry the program — and, when execution is
+/// allowed, what running it established.
+#[test]
+fn the_response_carries_a_harness_that_compiles() {
+    let Some(cfg) = cfg() else { return };
+    let sources = write_pair();
+    let env = chiero_tool::prove_equivalent_with_replay(
+        &m(BEFORE),
+        &m(AFTER),
+        &cfg,
+        Some(&sources),
+        chiero_tool::ReplayPolicy::EmitOnly,
+    );
+    let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
+    let replay = &v["result"]["replay"];
+    assert!(
+        replay["source"].as_str().is_some_and(|s| s.contains("int main")),
+        "the response must carry the program: {v}"
+    );
+    // **050 contract 11**: with execution off, text and *no* verdict.
+    assert!(
+        replay["outcome"].is_null(),
+        "nobody ran it, and that is different from it having said nothing: {v}"
+    );
+    assert!(
+        env.blind_spots.iter().any(|b| b.contains("not been run")),
+        "and the envelope says so: {:?}",
+        env.blind_spots
+    );
+}
+
+/// **With execution allowed, the divergence is confirmed by a compiler.**
+///
+/// This is the first claim in the system that does not rest on chiero's own semantics.
+#[test]
+fn running_the_harness_confirms_the_divergence() {
+    let Some(cfg) = cfg() else { return };
+    if chiero_replay::compiler().is_none() {
+        return;
+    }
+    let sources = write_pair();
+    let env = chiero_tool::prove_equivalent_with_replay(
+        &m(BEFORE),
+        &m(AFTER),
+        &cfg,
+        Some(&sources),
+        chiero_tool::ReplayPolicy::Run,
+    );
+    let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
+    assert_eq!(v["result"]["replay"]["outcome"], "demonstrated", "{v}");
+    assert_eq!(v["result"]["replay"]["before"], "-2147483648");
+    assert_eq!(v["result"]["replay"]["after"], "2147483647");
+    assert!(
+        !env.blind_spots.iter().any(|b| b.contains("replay harness")),
+        "the caveat about no harness must be gone once one ran: {:?}",
+        env.blind_spots
+    );
+}
+
+/// The C the CIR fixtures above correspond to, on disk, for the harness to include.
+fn write_pair() -> chiero_tool::ReplaySources {
+    let d = std::env::temp_dir().join(format!("chiero-pe-replay-{}", std::process::id()));
+    std::fs::create_dir_all(&d).expect("scratch");
+    let before = d.join("abs_before.c");
+    let after = d.join("abs_after.c");
+    std::fs::write(&before, "int f (int x) { return x < 0 ? -x : x; }\n").expect("write");
+    std::fs::write(
+        &after,
+        "int f (int x)\n{\n  if (x < 0)\n    return x == (-2147483647 - 1) ? 2147483647 : -x;\n  return x;\n}\n",
+    )
+    .expect("write");
+    chiero_tool::ReplaySources {
+        before,
+        after,
+        entry: "f".into(),
+        scratch: d,
+    }
+}
