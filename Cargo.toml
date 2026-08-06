@@ -6,8 +6,12 @@ members = ["crates/*", "xtask"]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
-license = "Apache-2.0"
-repository = "https://github.com/ayourtch/chiero-rs"
+# Dual, as the Rust ecosystem is: a consumer may take either. Apache-2.0 alone excludes
+# projects that cannot accept its patent and notice terms; MIT alone gives users no patent
+# grant. Offering both is what makes this usable as a *library*, which is the whole point of
+# 001 §1's crate-per-capability shape.
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ayourtch-llm/chiero-rs"
 
 # Versions are unified across the workspace and bumped together (001 §6).
 [workspace.dependencies]

@@ -3,6 +3,9 @@ name = "xtask"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+# `publish = false` keeps it off crates.io; the licence still has to be stated, because it
+# ships in the repository tarball like everything else here.
+license.workspace = true
 publish = false
 
 [dependencies]

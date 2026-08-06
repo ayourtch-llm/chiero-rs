@@ -206,4 +206,16 @@ thing you are using:
 
 ## Licence
 
-Apache-2.0.
+Dual, as the Rust ecosystem is: **MIT OR Apache-2.0**, at your option.
+
+- [LICENSE-APACHE](LICENSE-APACHE) — Apache License 2.0
+- [LICENSE-MIT](LICENSE-MIT) — MIT License
+
+Either one alone would be a worse fit for something meant to be *embedded*: Apache-2.0 by
+itself shuts out projects that cannot take its patent and notice terms, and MIT by itself
+gives a user no patent grant at all. Offering both leaves the choice with whoever is doing
+the embedding.
+
+Unless you state otherwise, any contribution you intentionally submit for inclusion in this
+work, as defined in the Apache-2.0 licence, is dual licensed as above, with no additional
+terms or conditions.
