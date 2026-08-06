@@ -1041,3 +1041,178 @@ pub fn find_bugs(module: &chiero_cir::Module, cfg: &BugCfg) -> Envelope {
         chiero_check::default_checkers().len()
     ))
 }
+
+/// **Is this line reachable?** — 050 contract 5.
+///
+/// The operation this project's whole discipline is about, in one function. Three answers, and
+/// the two negative ones are the point:
+///
+/// | verdict | means | `proven` |
+/// |---|---|---|
+/// | `reachable` | here is an input that gets there | ✅ |
+/// | `unreachable` | the search was exhaustive and nothing arrived | ✅ |
+/// | `not_shown_reachable` | chiero did not get there, and cannot say nothing does | ❌ |
+/// | `no_such_line` | the function has no code on that line | ❌ |
+///
+/// `unreachable` and `not_shown_reachable` are the same *observation* — no state arrived — and
+/// opposite *claims*. Collapsing them is how a tool tells somebody to delete live code, so they
+/// are separate verdicts rather than one verdict with a caveat: a consumer matching on the
+/// string cannot conflate what it never sees.
+///
+/// **`no_such_line` is the fourth because three would have been a trap.** A line the function
+/// does not have would otherwise answer `unreachable` — technically true of a line with no
+/// code, and read by anybody as a statement about the code they were asking about.
+pub fn check_reachable(module: &chiero_cir::Module, cfg: &BugCfg, line: u32) -> Envelope {
+    let Some(f) = module.funcs.iter().find(|f| *f.name == cfg.entry) else {
+        return Envelope::new(
+            serde_json::json!({
+                "verdict": "no_such_line",
+                "line": line,
+                "why": format!("no function named `{}` in this module", cfg.entry),
+            }),
+            Fidelity::Unknown,
+        )
+        .with_blind_spot("nothing was analysed, so this is not a statement about your code");
+    };
+
+    // **Which blocks carry this line**, from lowering's own `gcov_lines` (015 §5) rather than
+    // from a span comparison here — a second answer to "what is on this line" would drift from
+    // the one 030 correlates coverage by.
+    let blocks: Vec<chiero_cir::BlockId> = f
+        .blocks
+        .iter()
+        .filter(|b| b.gcov_lines.contains(&line))
+        .map(|b| b.id)
+        .collect();
+    if blocks.is_empty() {
+        return Envelope::new(
+            serde_json::json!({
+                "verdict": "no_such_line",
+                "line": line,
+                "why": format!("`{}` has no code on line {line}", cfg.entry),
+            }),
+            Fidelity::Unknown,
+        )
+        .with_blind_spot(
+            "no block carries this line, so nothing was asked — this is not a claim that \
+             the line is dead",
+        );
+    }
+
+    let mut arena = chiero_solver::TermArena::new();
+    let mut engine = chiero_exec::Engine::new(module)
+        .with_entry(&cfg.entry)
+        .with_budget(cfg.budget);
+    engine = match cfg.backend.clone() {
+        Some(b) => engine.with_backend(b),
+        None => engine.with_solver(chiero_exec::SolverTier::LiteOnly),
+    };
+    let run = engine.run(&mut arena);
+
+    // A state whose trace passes through one of those blocks got there.
+    let arrived = run.states().iter().find(|s| {
+        s.trace()
+            .iter()
+            .any(|(fid, bid)| *fid == f.id && blocks.contains(bid))
+    });
+
+    if let Some(s) = arrived {
+        // **The witness is the whole answer.** "Reachable" with nothing to show is a guess,
+        // and 023 §9's witness is what separates a chiero finding from one.
+        //
+        // The engine attaches a witness to a state that carries a *finding*; a state that
+        // merely arrived somewhere has none, so the path condition is solved here. 022 §3.1
+        // makes `Sat` self-certifying, which is exactly what "here is an input that gets
+        // there" needs.
+        let witness = witness_for_path(s, &mut arena, cfg.backend.clone());
+        return Envelope::new(
+            serde_json::json!({
+                "verdict": "reachable",
+                "line": line,
+                "witness": witness,
+                "why": serde_json::Value::Null,
+            }),
+            // A path that arrived is a fact about this program, whatever else the run had to
+            // approximate: the state is *there*.
+            Fidelity::Exact,
+        );
+    }
+
+    // Nothing arrived. Whether that is a proof depends entirely on whether the search was
+    // complete — which is the whole contract.
+    let mut cut: Vec<String> = Vec::new();
+    for st in run.states() {
+        for a in st.assumptions() {
+            if !cut.contains(&a.detail) {
+                cut.push(a.detail.clone());
+            }
+        }
+    }
+    let fidelity = exec_fidelity(run.fidelity());
+    if fidelity == Fidelity::Exact && cut.is_empty() {
+        return Envelope::new(
+            serde_json::json!({
+                "verdict": "unreachable",
+                "line": line,
+                "witness": serde_json::Value::Null,
+                "why": serde_json::Value::Null,
+            }),
+            Fidelity::Exact,
+        );
+    }
+    Envelope::new(
+        serde_json::json!({
+            "verdict": "not_shown_reachable",
+            "line": line,
+            "witness": serde_json::Value::Null,
+            "why": cut.join("; "),
+        }),
+        fidelity,
+    )
+    .with_blind_spot(
+        "no path chiero explored reached this line, and the search was not complete — the \
+         line may still be reachable",
+    )
+}
+
+/// A concrete input that follows this state's path.
+///
+/// **Solved rather than guessed.** The alternative — reporting the path as reachable with no
+/// binding, or with inputs left at zero — is the shape 023 §9's `Witness` exists to rule out:
+/// *"it does not guess: an input the model leaves free is marked `pinned: false` rather than
+/// quietly bound to zero and presented as the solver's answer."*
+fn witness_for_path(
+    s: &chiero_exec::State,
+    arena: &mut chiero_solver::TermArena,
+    backend: Option<chiero_solver::SmtLib>,
+) -> Vec<serde_json::Value> {
+    use chiero_solver::CheckResult;
+    let mut solver = match backend {
+        Some(b) => chiero_solver::TieredSolver::with_backend(b),
+        None => chiero_solver::TieredSolver::new(),
+    };
+    let mut pc =
+        chiero_solver::PathCondition::from_parts(s.path.clone(), s.path_possibly_infeasible());
+    let model = match solver.check_path(arena, &mut pc, &[]) {
+        CheckResult::Sat(m) => m,
+        // The state exists, so the path was walked; a solver that cannot re-derive it is a
+        // fact about the solver. Report the inputs unpinned rather than inventing values.
+        _ => chiero_solver::Model::new(),
+    };
+    s.inputs()
+        .iter()
+        .map(|(t, o)| {
+            let width = arena.width(*t);
+            let (value, pinned) = match arena.eval(&model, *t) {
+                Ok(c) => (c.bits(), true),
+                Err(_) => (0, false),
+            };
+            binding_json(&chiero_exec::Binding {
+                origin: o.clone(),
+                width,
+                value,
+                pinned,
+            })
+        })
+        .collect()
+}

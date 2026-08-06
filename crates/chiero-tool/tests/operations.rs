@@ -66,6 +66,11 @@ const OPS: &[Op] = &[
         never_exact: None,
     },
     Op {
+        name: "check_reachable",
+        samples: check_reachable_samples,
+        never_exact: None,
+    },
+    Op {
         name: "find_bugs",
         samples: find_bugs_samples,
         never_exact: None,
@@ -170,6 +175,19 @@ entry:
   %1 = mul i32 %0, 3i32
   ret %1
 }";
+
+fn check_reachable_samples() -> Vec<Envelope> {
+    let branch = "func @f(%0: i32) -> i32 {\nentry:\n  .line 1\n  %1 = cmp eq i32 %0, 0i32\n                    br %1, bb1, bb2\nbb1:\n  .line 3\n  ret 1i32\nbb2:\n  .line 5\n  ret 2i32\n}";
+    let dead = "func @f(%0: i32) -> i32 {\nentry:\n  .line 1\n  %1 = cmp ne i32 %0, %0\n                  br %1, bb1, bb2\nbb1:\n  .line 3\n  ret 1i32\nbb2:\n  .line 5\n  ret 2i32\n}";
+    vec![
+        // Reachable, with the input that gets there.
+        chiero_tool::check_reachable(&m(branch), &chiero_tool::BugCfg::new("f"), 3),
+        // Proven unreachable — the exhaustive case.
+        chiero_tool::check_reachable(&m(dead), &chiero_tool::BugCfg::new("f"), 3),
+        // Nothing was asked: no code on that line.
+        chiero_tool::check_reachable(&m(branch), &chiero_tool::BugCfg::new("f"), 4242),
+    ]
+}
 
 fn find_bugs_samples() -> Vec<Envelope> {
     let clean =

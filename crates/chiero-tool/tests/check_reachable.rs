@@ -61,7 +61,9 @@ fn a_reachable_line_comes_with_an_input_that_reaches_it() {
     assert_eq!(v["result"]["verdict"], "reachable");
     assert!(env.proven, "a witness is a proof of reachability: {v}");
     assert!(
-        v["result"]["witness"].as_array().is_some_and(|w| !w.is_empty()),
+        v["result"]["witness"]
+            .as_array()
+            .is_some_and(|w| !w.is_empty()),
         "the input that gets there: {v}"
     );
 }
@@ -111,7 +113,9 @@ fn a_line_past_the_loop_bound_is_not_shown_reachable_and_says_so() {
     );
     assert!(!env.proven, "{v}");
     assert!(
-        v["result"]["why"].as_str().is_some_and(|s| s.contains("max_loop_iters")),
+        v["result"]["why"]
+            .as_str()
+            .is_some_and(|s| s.contains("max_loop_iters")),
         "and it names what stopped the search: {v}"
     );
 }

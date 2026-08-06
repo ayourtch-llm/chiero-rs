@@ -30,6 +30,10 @@ OPERATIONS:
             Run 040's defect checkers from a function. An empty list is an
             answer only when the envelope says the search finished.  (050 §3)
 
+    check-reachable <file.c> --entry <fn> --line <n>
+            Can execution get to that line? Proved-nothing-does and
+            chiero-did-not are different answers, and it says which.  (050 §3)
+
     impact <before.c> <after.c>
             What a source change reaches — through calls, types, globals and
             macro expansions.  (031)
@@ -94,6 +98,7 @@ fn run(args: &[String]) -> Result<String, Fault> {
     let env = match args[0].as_str() {
         "prove-equivalent" => prove_equivalent(&opts)?,
         "find-bugs" => find_bugs(&opts)?,
+        "check-reachable" => check_reachable(&opts)?,
         "impact" => impact(&opts)?,
         "select-tests" => select_tests(&opts)?,
         "expansion-sites" => expansion_sites(&opts)?,
@@ -273,6 +278,23 @@ fn find_bugs(o: &Options) -> Result<chiero_tool::Envelope, Fault> {
         .ok_or_else(|| Fault::Usage("find-bugs needs --entry <fn>".into()))?;
     let m = lower(&f[0], &read(&f[0])?, o.frontend()).map_err(Fault::Failed)?;
     Ok(chiero_tool::find_bugs(&m, &chiero_tool::BugCfg::new(entry)))
+}
+
+fn check_reachable(o: &Options) -> Result<chiero_tool::Envelope, Fault> {
+    let f = o.files(1, "check-reachable")?;
+    let entry = o
+        .entry
+        .clone()
+        .ok_or_else(|| Fault::Usage("check-reachable needs --entry <fn>".into()))?;
+    let line = o
+        .line
+        .ok_or_else(|| Fault::Usage("check-reachable needs --line <n>".into()))?;
+    let m = lower(&f[0], &read(&f[0])?, o.frontend()).map_err(Fault::Failed)?;
+    Ok(chiero_tool::check_reachable(
+        &m,
+        &chiero_tool::BugCfg::new(entry),
+        line,
+    ))
 }
 
 fn impact(o: &Options) -> Result<chiero_tool::Envelope, Fault> {
