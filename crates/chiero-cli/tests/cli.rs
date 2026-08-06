@@ -444,3 +444,52 @@ fn chieros_own_limits_are_not_reported_as_defects_in_your_code() {
         "the run could not read those bytes and must say so: {v}"
     );
 }
+
+/// **A lazy object stays initialized when it promotes to array theory.**
+///
+/// The seventh place in this wave where chiero's own ignorance was reported as the program's
+/// defect, found in the 220-entry `vnet/` sweep:
+///
+/// ```text
+/// maybe-uninitialized-read: read at offset 0 of the 4096-byte object reached through an
+///                           unconstrained pointer touches bit 0, which was written only
+///                           under a condition that may not hold here
+/// ```
+///
+/// 021 §6 gives the object behind an entry pointer "fully symbolic and fully initialized"
+/// bytes, because the caller filled it and chiero does not know what with. A write at a
+/// symbolic offset promotes the object to array theory, and the initialization *array* is
+/// built from scratch — so everything §6 established is lost at the moment of promotion, and
+/// every subsequent read of caller memory is a report.
+///
+/// `struct s { int a[64]; }; p->a[i & 63] = 1; return p->a[(i >> 8) & 63];` is enough: one
+/// symbolic-offset write to promote, one read to report.
+#[test]
+fn promotion_does_not_lose_what_021_6_established() {
+    let p = write(
+        "lazy_promote.c",
+        "struct s { int a[64]; };\n\
+         int f (struct s *p, unsigned i)\n\
+         {\n\
+         \x20 p->a[i & 63] = 1;          /* a symbolic offset: the object promotes */\n\
+         \x20 return p->a[(i >> 8) & 63];\n\
+         }\n",
+    );
+    let r = run(&[
+        "find-bugs",
+        p.to_str().expect("utf-8 path"),
+        "--entry",
+        "f",
+        "--entry-ptr-nonnull",
+        "--json",
+    ]);
+    let v = json(&r);
+    for f in v["result"]["findings"].as_array().expect("array") {
+        let m = f["message"].as_str().unwrap_or_default();
+        assert!(
+            !m.contains("uninitialized"),
+            "the caller filled this object; chiero does not know what with, and promoting \
+             its representation does not change that: {m}"
+        );
+    }
+}
