@@ -219,3 +219,57 @@ fn identical_findings_are_one_entry_that_says_how_many_paths_reached_it() {
         "and the paths that reached it are counted, not discarded: {v}"
     );
 }
+
+/// **A caller must be able to say the entry's pointers are not null.**
+///
+/// Measured over 40 VPP functions: 36 analysed, **178 findings, none of them `Exact`**. Every
+/// one rested on an unconstrained entry — "`%N` is a pointer parameter assumed to be possibly
+/// null" — which is a statement about the *caller contract*, not about the function. A reader
+/// cannot act on any of them, and there is no way to say otherwise.
+///
+/// The engine has the knob and its own documentation says why:
+///
+/// > For a caller that is known to check — an internal helper reached only through a guarded
+/// > path — the null state is a path the program does not have, and every dereference in it is
+/// > a finding nobody can act on.
+///
+/// **It is an assumption, so the envelope must carry it.** Turning off a real path to get a
+/// quieter answer is exactly the trade 050 §2 exists to make visible.
+#[test]
+fn entry_pointers_can_be_assumed_non_null_and_the_envelope_says_so() {
+    let deref = "\
+func @f(%0: ptr) -> i32 {
+entry:
+  .line 1
+  %1 = load i32, %0 align 4
+  ret %1
+}";
+    // The default: a null pointer parameter is a path, and the finding is real for a caller
+    // that does not check.
+    let loose = find_bugs(&m(deref), &cfg("f"));
+    let lv: serde_json::Value = serde_json::from_str(&loose.to_json()).expect("valid JSON");
+    assert!(
+        lv["result"]["findings"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty()),
+        "an unconstrained pointer parameter may be null: {lv}"
+    );
+
+    // Told the caller checks, that path is gone.
+    let mut tight = cfg("f");
+    tight.entry_ptr_nonnull = true;
+    let env = find_bugs(&m(deref), &tight);
+    let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
+    assert_eq!(
+        v["result"]["findings"].as_array().map(Vec::len),
+        Some(0),
+        "the null path was assumed away: {v}"
+    );
+    assert!(
+        env.assumptions
+            .iter()
+            .any(|(k, _)| k == "entry_ptr_nonnull"),
+        "and an assumption that removes a real path must be in the envelope: {:?}",
+        env.assumptions
+    );
+}
