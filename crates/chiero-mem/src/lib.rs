@@ -3590,6 +3590,51 @@ impl Memory {
                 at: Span::DUMMY,
             });
         };
+        // **A lazy object is fully initialized (021 §6), and promotion must not forget it.**
+        //
+        // Laziness is discharged *on read* — a byte becomes a symbol nobody has claimed when
+        // it is first touched — so an untouched byte is still `No` in the mask this copies
+        // from. Everything §6 established about the caller's buffer was therefore discarded by
+        // the first symbolic-offset write, and every later read of it reported
+        // `maybe-uninitialized-read` on memory the caller certainly filled. Found on the
+        // 220-entry `vnet/` sweep; `p->a[i & 63] = 1;` is enough to reach it.
+        //
+        // Done here rather than by widening the read path, because promotion is where the
+        // information is lost. §6's own note about cost does not apply: it argued against
+        // filling *every entry object in every state*, and this is one object at the one
+        // moment its representation changes.
+        //
+        // **Only the `No` bytes are marked**, which is `materialize_fresh`'s own rule: a
+        // `Cond` byte has a live guard, and marking it initialized would discharge that guard
+        // in chiero's favour.
+        if self.entry(id).is_some_and(|e| e.lazy) {
+            let unwritten: Vec<u64> = self
+                .entry(id)
+                .and_then(|e| e.obj.as_ref())
+                .map(|o| {
+                    (0..size)
+                        .filter(|b| o.init.first_no(b * 8, 8).is_some() && o.sym_at(*b).is_none())
+                        .collect()
+                })
+                .unwrap_or_default();
+            self.materialize_fresh(a, id, 0, size);
+            for b in unwritten {
+                self.memoize(id, b * 8, 8);
+            }
+        }
+        let Some(e) = self.entry(id) else {
+            return AccessResult::fault(MemFault::WildPointer {
+                off: 0,
+                at: Span::DUMMY,
+            });
+        };
+        let Some(o) = e.obj.as_ref() else {
+            return AccessResult::fault(MemFault::AllocationTooLarge {
+                obj: id,
+                size,
+                at: Span::DUMMY,
+            });
+        };
         let idx_bits = 64u32;
         let mut data = a.array_const(idx_bits, 8, 0);
         let (bytes, syms, bits): (Vec<_>, Vec<_>, Vec<_>) = (
