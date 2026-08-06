@@ -129,13 +129,48 @@ satisfying models, so the distinguishing input is minimized to the numerically s
 That makes the answer canonical (`prove_equivalent(a, b)` and `prove_equivalent(b, a)` agree),
 reproducible across runs, and more useful to read.
 
-## What is missing
+## Checking chiero against a real compiler
 
-041 §1.3 wants a **replay harness** that compiles both versions and demonstrates the
-divergence. It is not built. The response says so, in `blind_spots`, every time:
+Everything above rests on chiero's C semantics being right. `--allow-replay-exec` is the one
+thing that does not:
 
-> `no replay harness was compiled (041 §1.3), so the divergence is chiero's semantics and has
-> not been demonstrated against a compiler`
+```console
+$ chiero prove-equivalent before.c after.c --entry f --allow-replay-exec
+...
+  outcome: demonstrated
+  before: -2147483648
+  after: 2147483647
+proven — this holds for all inputs (Exact)
+```
+
+chiero emits a self-contained C program that includes both versions with the entry renamed,
+calls each at the witness, and **exits 0 only when they disagree** — so "it ran and said
+nothing" cannot be mistaken for success. `gcc` built it, ran it, and produced the two numbers.
+The blind spot about the divergence being unconfirmed is gone from that output, because it is
+no longer true.
+
+`--replay` alone emits the program without running it: compiling and executing code is
+something a caller has to ask for (050 §6). With it, the response carries the source and a
+**null** outcome, and the envelope says nobody ran it — "not run" and "ran and said nothing"
+are different facts.
+
+### The outcome that matters most is the one that disagrees
+
+| outcome | what it means |
+|---|---|
+| `demonstrated` | a compiler agrees. The only one that confirms anything. |
+| `not_demonstrated` | it built, it ran, and the two versions **agreed**. chiero and the compiler disagree; the finding is downgraded to `Approximated` and both claims are shown. |
+| `did_not_build` | about the harness, not about chiero — most often two versions sharing a definition, since including both puts it in one translation unit twice. |
+| `did_not_run` | the program faulted, which is not the same news as the versions agreeing. |
+
+### What the harness cannot do yet
+
+Scalar parameters only. 040 §3's construction rules want memory objects materialized as
+initialized byte arrays with the engine's own pointer layout, unmodeled extern calls stubbed
+to return the values the engine chose in call order, and the translation unit's own
+`compile_commands.json` flags. A function taking a pointer is refused by `prove-equivalent`
+before it gets this far, so the gap is a limit on what can be adjudicated at all rather than a
+harness that quietly skips something.
 
 ## Next
 

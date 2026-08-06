@@ -98,7 +98,7 @@ fn transcripts(md: &str) -> Vec<(String, String)> {
 #[test]
 fn every_tutorial_transcript_reproduces() {
     let dir = fixtures();
-    let mut checked = 0;
+    let (mut checked, mut elided) = (0, 0);
     let mut files: Vec<PathBuf> = std::fs::read_dir(tutorials())
         .expect("tutorials")
         .filter_map(Result::ok)
@@ -123,12 +123,40 @@ fn every_tutorial_transcript_reproduces() {
                 .output()
                 .expect("spawn");
             let got = String::from_utf8_lossy(&o.stdout).trim_end().to_string();
+            let name = f.file_name().unwrap().to_string_lossy().to_string();
+
+            // **An elided block is checked as a subsequence, not skipped.**
+            //
+            // Some output is too long to print whole — the replay harness is an entire C
+            // program — so a page may show the lines that matter with `...` between them.
+            // Skipping those blocks would leave the most interesting output in the tutorials
+            // unchecked, which is where it would rot first. Instead every line the page does
+            // show must appear in the real output, in order.
+            if expected.lines().any(|l| l.trim() == "...") {
+                elided += 1;
+                let mut want = expected.lines().filter(|l| l.trim() != "...");
+                let mut cur = want.next();
+                for line in got.lines() {
+                    if Some(line) == cur {
+                        cur = want.next();
+                    }
+                }
+                assert!(
+                    cur.is_none(),
+                    "\n{name}: `chiero {cmd}` no longer prints {:?}, which the page shows.\n\
+                     --- the command ---\n{got}\n--- stderr ---\n{}",
+                    cur.unwrap_or(""),
+                    String::from_utf8_lossy(&o.stderr)
+                );
+                checked += 1;
+                continue;
+            }
+
             assert_eq!(
                 got,
                 expected,
-                "\n{}: `chiero {cmd}` no longer prints what the page says.\n\
+                "\n{name}: `chiero {cmd}` no longer prints what the page says.\n\
                  --- the page ---\n{expected}\n--- the command ---\n{got}\n--- stderr ---\n{}",
-                f.file_name().unwrap().to_string_lossy(),
                 String::from_utf8_lossy(&o.stderr)
             );
             checked += 1;
@@ -139,4 +167,5 @@ fn every_tutorial_transcript_reproduces() {
         "only {checked} transcripts were checked, which means the scan is broken rather than \
          that the tutorials have none"
     );
+    println!("{checked} transcripts reproduce ({elided} checked as a subsequence)");
 }
