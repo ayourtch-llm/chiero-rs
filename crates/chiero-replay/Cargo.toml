@@ -10,5 +10,8 @@ repository.workspace = true
 chiero-span.workspace = true
 chiero-exec.workspace = true
 
+[dev-dependencies]
+chiero-span.workspace = true
+
 [lints]
 workspace = true
