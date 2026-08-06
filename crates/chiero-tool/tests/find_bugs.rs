@@ -634,3 +634,29 @@ entry:
         "but the answer really is weaker for it, and that is what fidelity is for: {v}"
     );
 }
+
+/// **025 §4, and the blind spot 050 §2's own envelope example lists: `single-threaded
+/// execution`.**
+///
+/// Nothing emitted it. VPP is a worker-thread architecture — 467 files index by
+/// `thread_index` — and every answer chiero gives about one is the answer for a single thread:
+/// a race is not explored, an interleaving is not considered, and a finding that depends on one
+/// is not reported. 025 exists precisely so a reader is not left "guessing which of chiero's
+/// answers survive contact with a multi-threaded run", and then the blind spot it turns on was
+/// never attached.
+///
+/// It belongs on **every** run rather than on runs that touch a lock, for the reason the
+/// checker-count blind spot is unconditional: a reader cannot tell from an absence that
+/// something was not looked for. This is the same rule as "only the 2 checkers of 040 ran",
+/// one layer out.
+#[test]
+fn every_run_says_it_looked_at_one_thread() {
+    let env = find_bugs(&m(CLEAN), &cfg("f"));
+    assert!(
+        env.blind_spots.iter().any(|b| b.contains("thread")),
+        "a single-threaded answer about a threaded program says so: {:#?}",
+        env.blind_spots
+    );
+    // And it does not cost the proof: this function *is* proven for all inputs on one thread.
+    assert!(env.proven, "{env:#?}");
+}

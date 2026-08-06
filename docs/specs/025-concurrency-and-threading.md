@@ -8,6 +8,14 @@ contact with a multi-threaded run.
 This document says exactly what v1 does, what it refuses to do, what it *reports* about
 the gap, and which architectural hooks keep v2 from being a rewrite.
 
+> **What is built, 2026-08-06.** The engine is single-threaded, which is §2's position and not
+> a gap, and **`find_bugs` now says so on every run** — the blind spot this document requires
+> was missing until the documentation sweep that added this note went looking for it. The
+> **discipline checker** of §3, the `Sharing` classification and the lock-order graph are
+> unwritten; [080](080-roadmap.md)'s M5 records that. So today a reader analysing VPP
+> worker-thread code gets a correct single-threaded answer that admits it is one — which is
+> the minimum this document was written to guarantee, and less than what §3 promises.
+
 ## 1. VPP's threading discipline (measured)
 
 Counted by file over `/home/ubuntu/vpp/src` @ `7fe9c26`:

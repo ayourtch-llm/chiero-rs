@@ -1,5 +1,13 @@
 # 042 — Conformance recipes
 
+> **What is built, 2026-08-06.** `chiero-recipe` loads recipes, validates them against their
+> own fixtures, resolves scopes and computes **tier-1** structural candidates; two recipes ship
+> under `tests/corpus/recipes/` and `cargo xtask recipe-sweep --tree <dir> --recipes <dir>`
+> runs them over a tree. **Tier 2 — the typestate DSL — is unbuilt**, which is the cut
+> [080](080-roadmap.md) named first and for the reason it gave. `validate_recipe` and
+> `apply_recipe` are not yet operations on the tool surface ([050 §3](050-tool-interface.md)),
+> so a recipe is reachable from Rust and from `xtask`, not from an LLM.
+
 `chiero-recipe` checks that code **follows a prescribed usage pattern**, from declarative
 rules supplied as data. Not "is this code buggy" ([040](040-defect-checkers.md)) but
 "does this code perform the ritual the way this codebase requires".

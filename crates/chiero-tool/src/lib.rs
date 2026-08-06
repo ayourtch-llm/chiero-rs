@@ -1182,10 +1182,23 @@ pub fn find_bugs(module: &chiero_cir::Module, cfg: &BugCfg) -> Envelope {
              absent defect",
         );
     }
-    let mut env = env.with_blind_spot(&format!(
-        "only the {} checkers of 040 ran; a defect no checker looks for is not reported",
-        chiero_check::default_checkers().len()
-    ));
+    let mut env = env
+        .with_blind_spot(&format!(
+            "only the {} checkers of 040 ran; a defect no checker looks for is not reported",
+            chiero_check::default_checkers().len()
+        ))
+        // **025 §4, and 050 §2's own envelope example listed it before anything emitted it.**
+        //
+        // Unconditional, like the checker count above and for the same reason: a reader cannot
+        // tell from an absence that something was never looked for. VPP indexes by
+        // `thread_index` in 467 files, so "this answer is about one thread" is a qualification
+        // most of its readers need — and 025 exists precisely so nobody has to guess which of
+        // chiero's answers survive contact with a multi-threaded run.
+        .with_blind_spot(
+            "execution is single-threaded (025 §2): no interleaving was explored, so a \
+             defect that needs one — a data race, a check-then-act across threads — is not \
+             reported",
+        );
     // **Never a silent suppression.** The sentence names the number and the way back, so a
     // reader who does know the caller's objects can see what was held back in one step.
     if suppressed > 0 {

@@ -57,6 +57,7 @@ budgets:
 not proven — within this run's bounds (Unknown)
   blind spot: the search did not cover the whole program, so an absent finding is not an absent defect
   blind spot: only the 2 checkers of 040 ran; a defect no checker looks for is not reported
+  blind spot: execution is single-threaded (025 §2): no interleaving was explored, so a defect that needs one — a data race, a check-then-act across threads — is not reported
   blind spot: no source was given, so no finding carries a replay harness and nothing has checked these against a compiler (040 contract 4)
   assumed: BudgetHit (max_loop_iters (8) reached on the back edge BlockId(3) -> BlockId(1) in `average`)
   assumed: NoInformation (a load produced no value, so its result is invented)
@@ -82,11 +83,15 @@ between `max_loop_iters` and `max_states` is which knob to turn.
 solver decided completely. `Unknown` on the null dereference: it rests on a load chiero could
 not give a value. A definite fault stays actionable in a run some other path degraded.
 
-**The blind spots.** Two, always worth reading:
+**The blind spots.** Three, always worth reading:
 
 - *the search did not cover the whole program* — the loop bound again, from the other side
 - *only the 2 checkers of 040 ran* — a defect no checker looks for is not reported, and never
   will be by this operation
+- *execution is single-threaded* — no interleaving was explored, so a data race or a
+  check-then-act across threads is not reported either. It is on **every** run, including the
+  clean ones, for the same reason as the line above it: you cannot tell from an absence that
+  something was never looked for.
 
 ## The clean case
 
@@ -106,6 +111,7 @@ budgets:
   hit: (empty)
 proven — this holds for all inputs (Exact)
   blind spot: only the 2 checkers of 040 ran; a defect no checker looks for is not reported
+  blind spot: execution is single-threaded (025 §2): no interleaving was explored, so a defect that needs one — a data race, a check-then-act across threads — is not reported
   blind spot: no source was given, so no finding carries a replay harness and nothing has checked these against a compiler (040 contract 4)
 ```
 
