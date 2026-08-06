@@ -695,3 +695,68 @@ fn builtin_expect_is_its_first_argument() {
         "nothing here is beyond chiero"
     );
 }
+
+/// **A struct passed by value was filled in by the caller too.**
+///
+/// The eighth instance of one confusion in this wave, and §9 had written down what to look for:
+/// *chiero not knowing a value is not the program failing to write one.* Found on the ACL
+/// plugin, `prefetch_session_entry (acl_main_t *am, fa_full_session_id_t f_sess_id)`:
+///
+/// ```text
+/// uninitialized-read: read at offset 4 of f_sess_id touches bit 32, which was never
+///                     written through f_sess_id.thread_index
+/// ```
+///
+/// 021 §6 gives a *pointer* parameter's pointee "fully symbolic and fully initialized" bytes,
+/// for exactly this reason — the caller filled it and chiero does not know what with. An
+/// aggregate parameter is the same argument with the copy on this side of the call: the
+/// caller evaluated every member, and C has no way to pass an indeterminate struct that was
+/// never assigned.
+#[test]
+fn an_aggregate_parameter_arrives_filled_in() {
+    let p = write(
+        "byval.c",
+        "struct id { unsigned thread_index; unsigned session_index; };\n\
+         unsigned f (struct id s) { return s.thread_index + s.session_index; }\n",
+    );
+    let r = run(&[
+        "find-bugs",
+        p.to_str().expect("utf-8 path"),
+        "--entry",
+        "f",
+        "--json",
+    ]);
+    let v = json(&r);
+    for f in v["result"]["findings"].as_array().expect("array") {
+        let m = f["message"].as_str().unwrap_or_default();
+        assert!(
+            !m.contains("uninitialized"),
+            "the caller built this struct member by member: {m}"
+        );
+    }
+    // **A local aggregate is the opposite case and must still report.** Without this, the rule
+    // could be "aggregates are never uninitialized", which would lose a real class.
+    let local = write(
+        "byval_local.c",
+        "struct id { unsigned a; unsigned b; };\n\
+         unsigned g (void) { struct id s; return s.a; }\n",
+    );
+    let r = run(&[
+        "find-bugs",
+        local.to_str().expect("utf-8 path"),
+        "--entry",
+        "g",
+        "--json",
+    ]);
+    let v = json(&r);
+    assert!(
+        v["result"]["findings"]
+            .as_array()
+            .expect("array")
+            .iter()
+            .any(|f| f["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("uninitialized"))),
+        "nobody wrote this one: {v}"
+    );
+}
