@@ -3701,18 +3701,35 @@ impl<'m> Engine<'m> {
                 let t = match u64::from(a.width(t)).cmp(&(size * 8)) {
                     std::cmp::Ordering::Less => a.zext(t, (size * 8) as u32),
                     std::cmp::Ordering::Equal => t,
-                    // **Wider is not narrowed.** A value bigger than the object it is stored
-                    // into is not a C conversion this layer can name — it means the type and
-                    // the term disagree, and truncating would answer at full confidence about
-                    // which bits the program meant to keep.
+                    // **Wider is not narrowed — but the bytes are still written.** A value
+                    // bigger than the object it goes into is not a C conversion this layer can
+                    // name (it means the CIR's type and the term disagree), and truncating
+                    // would answer at full confidence about which bits the program meant to
+                    // keep. So the value is refused and the destination is **havoc'd**:
+                    // 021 §6's "fully symbolic and fully initialized".
+                    //
+                    // **Dropping the store instead cost 108 false findings**, measured. The
+                    // first version of this guard simply returned, and the next read of those
+                    // bytes was reported as `uninitialized-read` — the eighth instance of the
+                    // one confusion this project keeps meeting: *chiero not knowing a value is
+                    // not the program failing to write one.* The program did write here; what
+                    // chiero lost is only *what*.
                     std::cmp::Ordering::Greater => {
+                        let w = a.width(t);
+                        let r = s.mem.havoc_range_reporting(
+                            a,
+                            p,
+                            size,
+                            chiero_mem::HavocFill::Symbolic,
+                            i.span,
+                        );
+                        self.report_faults(a, s, &r.faults, i.span);
                         self.lowering_gap(
                             s,
                             i.span,
                             &format!(
-                                "a store of a {}-bit value into {size} byte(s) — the value and \
-                                 the type disagree, so this store",
-                                a.width(t)
+                                "a store of a {w}-bit value into {size} byte(s) — the value and \
+                                 the type disagree, so the bytes are symbolic and this store"
                             ),
                         );
                         return;
@@ -8043,6 +8060,9 @@ impl<'m> Engine<'m> {
         // A **variadic** callee matches any arity at or above its named parameters, because
         // that is what calling one means.
         let wants_value = dst.is_some();
+        // Evaluated once, before the candidate scan: `operand` needs the state, and the scan
+        // borrows the module out of `self`.
+        let arg_vals: Vec<Option<Value>> = args.iter().map(|o| self.operand(a, s, o)).collect();
         let all: Vec<FuncId> = self
             .module
             .funcs
@@ -8058,6 +8078,37 @@ impl<'m> Engine<'m> {
             // A site that uses the result cannot be calling a `void` function, and a site
             // that discards one may call anything — C lets a value be ignored.
             .filter(|f| !(wants_value && f.ret == CTy::Void))
+            // **And an argument that cannot be this parameter rules the candidate out.**
+            //
+            // Lowering has already converted each argument to the type the *function
+            // pointer* declares, so the argument's shape at the site is the intended
+            // signature's. Comparing it with a candidate's declared parameters is therefore
+            // comparing two signatures, which is what 023 §5 asks for.
+            //
+            // Measured on `plugins/dhcp/dhcp_api.c`: `elt->fp (data)` — one pointer argument
+            // — entered `__bsfd (int __X)` from `ia32intrin.h`, because a one-parameter
+            // function is a one-parameter function. Nothing in that path is a call the
+            // program can make.
+            .filter(|f| {
+                f.params.iter().zip(arg_vals.iter()).all(|(p, v)| {
+                    match (&p.ty, v) {
+                        // A pointer is 8 bytes, and C's integer/pointer casts are ubiquitous
+                        // enough — `uword` in VPP is one — that a 64-bit integer parameter
+                        // stays a plausible target for a pointer argument.
+                        (CTy::Ptr, Some(Value::Ptr(_) | Value::SymPtr { .. })) => true,
+                        (CTy::Int(64), Some(Value::Ptr(_) | Value::SymPtr { .. })) => true,
+                        (_, Some(Value::Ptr(_) | Value::SymPtr { .. })) => false,
+                        // A scalar binds to a parameter of its own width; a pointer parameter
+                        // takes one 8 bytes wide, which is the same rule from the other side.
+                        (CTy::Ptr, Some(Value::Scalar(t))) => a.width(*t) == 64,
+                        (ty, Some(Value::Scalar(t))) => {
+                            bits_of_cty(ty).is_none_or(|w| w == a.width(*t))
+                        }
+                        // No value to judge by: not a reason to exclude a candidate.
+                        (_, Some(Value::Undef) | None) => true,
+                    }
+                })
+            })
             .map(|f| f.id)
             .collect();
         let cap = self.budget.max_indirect as usize;

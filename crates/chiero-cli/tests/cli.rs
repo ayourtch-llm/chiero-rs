@@ -987,3 +987,60 @@ fn storing_a_bool_into_a_promoted_object_is_a_write_and_not_a_crash() {
         );
     }
 }
+
+/// **The eighth instance of the one confusion — and this time I introduced it.**
+///
+/// `elt->fp (data)` is VPP's callback-list idiom; `dhcp_api.c` has one. With an unresolvable
+/// function pointer the engine forks over candidates, and a one-parameter candidate with an
+/// `int` parameter — `__bsfd (int __X)` out of gcc's `ia32intrin.h`, which every VPP
+/// translation unit includes — took a *pointer* argument. The 64-bit value did not fit the
+/// 4-byte slot, so the store was refused, and the read after it was reported as
+/// `uninitialized-read`.
+///
+/// **108 of the 133 findings on a 477-entry plugin sweep were that**, all naming `__X`. Two
+/// separate mistakes, each worth its own sentence:
+///
+/// - a candidate whose parameter cannot hold the argument is not a call the program can make,
+///   so it is not a candidate — arity was never the whole signature; and
+/// - a store chiero cannot represent still *happened*. Refusing the value is right; leaving
+///   the destination readable as never-written is 021 §6's false-positive storm, and it is the
+///   same confusion §7.6 records seven times over: **chiero not knowing a value is not the
+///   program failing to write one.** The bytes are havoc'd — symbolic and initialized — and
+///   the envelope names the refusal.
+#[test]
+fn a_callback_list_does_not_report_an_intrinsics_parameter_as_uninitialized() {
+    let p = write(
+        "callback_list.c",
+        // Verbatim from `ia32intrin.h`, because the point is that this is in every VPP TU.
+        "extern __inline int\n\
+         __attribute__((__gnu_inline__, __always_inline__, __artificial__))\n\
+         __bsfd (int __X)\n\
+         {\n\
+         \x20 return __builtin_ctz (__X);\n\
+         }\n\
+         \n\
+         typedef struct e { void *(*fp) (void *); struct e *next; } e_t;\n\
+         void *f (void *data, e_t *elt)\n\
+         {\n\
+         \x20 void *r = 0;\n\
+         \x20 while (elt) { r = elt->fp (data); if (r) return r; elt = elt->next; }\n\
+         \x20 return r;\n\
+         }\n",
+    );
+    let r = run(&[
+        "find-bugs",
+        p.to_str().expect("utf-8 path"),
+        "--entry",
+        "f",
+        "--entry-ptr-nonnull",
+        "--json",
+    ]);
+    let v = json(&r);
+    for f in v["result"]["findings"].as_array().expect("array") {
+        let m = f["message"].as_str().unwrap_or_default();
+        assert!(
+            !m.contains("uninitialized"),
+            "nobody in this program passed a pointer to `__bsfd`: {m}"
+        );
+    }
+}
