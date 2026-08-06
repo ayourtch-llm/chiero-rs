@@ -57,6 +57,26 @@ fn fixtures() -> PathBuf {
         "int clamp (int x)\n{\n  if (x < 0)\n    return 0;\n  return x;\n}\n",
     );
     w(
+        "sess.c",
+        "struct session {\n  char active;\n  long bytes;\n  char flags;\n};\n\
+         struct session s;\n",
+    );
+    w(
+        "wire.c",
+        "struct pkt_hdr {\n  char pad[60];\n  long seq;\n} __attribute__((packed));\n\
+         struct pkt_hdr h;\n",
+    );
+    w(
+        "classify.c",
+        "int classify (int x)\n{\n  if (x > 0) {\n    if (x > 0)\n      return 1;\n    \
+         return 2;\n  }\n  return 3;\n}\n",
+    );
+    w(
+        "loopy.c",
+        "int loop_then (int n)\n{\n  int t = 0;\n  for (int i = 0; i < n; i++)\n    \
+         t += i;\n  if (t > 1000000)\n    return 1;\n  return 0;\n}\n",
+    );
+    w(
         "geom-after.c",
         "#define SCALE(x) ((x) * 3)\nint area (int w) { return SCALE (w) * w; }\n\
          int volume (int w) { return area (w) * w; }\n",

@@ -324,6 +324,146 @@ bb2:
 }
 
 // ---------------------------------------------------------------------------------------
+// 07 — What the code can and cannot reach
+// ---------------------------------------------------------------------------------------
+
+#[test]
+fn tutorial_07_reachability() {
+    // `if (x > 0) { if (x > 0) return 1; return 2; } return 3;`
+    let classify = "\
+func @classify(%0: i32) -> i32 {
+entry:
+  .line 3
+  %1 = cmp sgt i32 %0, 0i32
+  br %1, bb1, bb4
+bb1:
+  .line 4
+  %2 = cmp sgt i32 %0, 0i32
+  br %2, bb2, bb3
+bb2:
+  .line 5
+  ret 1i32
+bb3:
+  .line 6
+  ret 2i32
+bb4:
+  .line 8
+  ret 3i32
+}";
+    let cfg = chiero_tool::BugCfg::new("classify");
+
+    // The two operations agree from opposite directions.
+    let dead = chiero_tool::find_optimizations(
+        &m(classify),
+        &chiero_opt::opportunity::OppCfg::new("classify"),
+    );
+    let dv: serde_json::Value = serde_json::from_str(&dead.to_json()).expect("valid JSON");
+    assert!(
+        dv["result"]["count"].as_u64().is_some_and(|n| n > 0),
+        "the inner test is decided by the outer: {dv}"
+    );
+
+    let unreachable = chiero_tool::check_reachable(&m(classify), &cfg, 6);
+    let uv: serde_json::Value = serde_json::from_str(&unreachable.to_json()).expect("valid JSON");
+    assert_eq!(uv["result"]["verdict"], "unreachable");
+    assert!(
+        unreachable.proven,
+        "an exhaustive search is what makes it a proof"
+    );
+
+    // And the side that can happen comes with the input that gets there.
+    let reachable = chiero_tool::check_reachable(&m(classify), &cfg, 5);
+    let rv: serde_json::Value = serde_json::from_str(&reachable.to_json()).expect("valid JSON");
+    assert_eq!(rv["result"]["verdict"], "reachable");
+    assert!(
+        rv["result"]["witness"]
+            .as_array()
+            .is_some_and(|w| !w.is_empty()),
+        "a `yes` that cannot say how is a guess: {rv}"
+    );
+
+    // A line with no code is its own answer, not `unreachable`.
+    let none = chiero_tool::check_reachable(&m(classify), &cfg, 7);
+    let nv: serde_json::Value = serde_json::from_str(&none.to_json()).expect("valid JSON");
+    assert_eq!(nv["result"]["verdict"], "no_such_line");
+    assert!(!none.proven);
+}
+
+// ---------------------------------------------------------------------------------------
+// 08 — Struct layout
+// ---------------------------------------------------------------------------------------
+
+#[test]
+fn tutorial_08_layout() {
+    use chiero_opt::locality::{Field, LocalityCfg, Record};
+    // `char; long; char;` — 24 bytes that would be 16.
+    let session = Record {
+        tag: "session".into(),
+        size: 24,
+        align: 8,
+        packed: false,
+        externally_visible: false,
+        fields: vec![
+            Field {
+                name: "active".into(),
+                offset: 0,
+                size: 1,
+            },
+            Field {
+                name: "bytes".into(),
+                offset: 8,
+                size: 8,
+            },
+            Field {
+                name: "flags".into(),
+                offset: 16,
+                size: 1,
+            },
+        ],
+    };
+    let env = chiero_tool::layout_envelope(std::slice::from_ref(&session), &LocalityCfg::default());
+    let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
+    let p = &v["result"]["records"][0]["proposals"][0];
+    assert_eq!(p["kind"], "padding_waste");
+    assert_eq!(
+        p["recoverable"].as_u64(),
+        Some(8),
+        "the delta, not just the fact"
+    );
+    assert_eq!(
+        p["advisory"].as_bool(),
+        Some(false),
+        "this layout is internal"
+    );
+    assert_eq!(p["benefit"], "Unquantified", "no run, no number");
+
+    // A wire format: the finding is true and acting on it is a protocol change.
+    let wire = Record {
+        tag: "pkt_hdr".into(),
+        size: 68,
+        align: 1,
+        packed: true,
+        externally_visible: false,
+        fields: vec![Field {
+            name: "seq".into(),
+            offset: 60,
+            size: 8,
+        }],
+    };
+    let env = chiero_tool::layout_envelope(std::slice::from_ref(&wire), &LocalityCfg::default());
+    let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
+    let p = &v["result"]["records"][0]["proposals"][0];
+    assert_eq!(p["kind"], "line_straddle");
+    assert_eq!(p["advisory"].as_bool(), Some(true));
+    assert!(
+        p["rationale"]
+            .as_str()
+            .is_some_and(|r| r.contains("observable")),
+        "in words, not just a flag: {p}"
+    );
+}
+
+// ---------------------------------------------------------------------------------------
 
 /// **A tutorial with no test is a tutorial that has already rotted.**
 #[test]

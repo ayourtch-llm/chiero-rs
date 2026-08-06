@@ -87,6 +87,10 @@ The tutorials are the fastest way in. Each is a complete worked example you can 
    guess, which is the only tutorial that is really required reading.
 6. **[Finding defects](docs/tutorials/06-find-bugs.md)** — the checkers, the input that
    reaches each defect, and why the part of the answer that is not a finding matters more.
+7. **[What the code can and cannot reach](docs/tutorials/07-reachability.md)** — dead branches
+   and unreachable lines, and the difference between "nothing gets here" and "I did not".
+8. **[Struct layout](docs/tutorials/08-layout.md)** — padding and cache lines, and why every
+   proposal says whether reordering that struct is allowed at all.
 
 ## The one rule worth knowing first
 
