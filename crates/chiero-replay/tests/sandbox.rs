@@ -176,3 +176,88 @@ fn the_sandbox_describes_itself() {
         assert!(d.contains(want), "`{want}` missing from: {d}");
     }
 }
+
+/// **050 §6 covers compilation, not only execution.**
+///
+/// > "**Compilation** and replay execution ... run in a sandbox with ... a wall-clock limit,
+/// > and a memory cap"
+///
+/// The limit wrapped the produced binary and not the compiler, so a source whose `#include`
+/// names a FIFO hung the tool — the same consequence as the unbounded execution that limit was
+/// added for, through the neighbouring door.
+#[test]
+fn a_compile_that_never_finishes_is_bounded_too() {
+    let Some(cc) = chiero_replay::compiler() else {
+        return;
+    };
+    let d = dir("fifo");
+    let fifo = d.join("blocks.h");
+    let _ = std::fs::remove_file(&fifo);
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !made {
+        return; // no mkfifo here; the property is untestable rather than untrue
+    }
+    let body = format!(
+        "#include \"{}\"\nstatic long long chiero_fixture (void) {{ return 0; }}",
+        fifo.display()
+    );
+    let start = std::time::Instant::now();
+    let outcome = run_with(&two_programs(&body), &cc, &d, &[]);
+    let _ = std::fs::remove_file(&fifo);
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(60),
+        "the compile was never bounded; it took {:?}",
+        start.elapsed()
+    );
+    assert!(
+        matches!(outcome, Outcome::DidNotBuild { .. } | Outcome::DidNotRun { .. }),
+        "a compile that could not finish is not a verdict: {outcome:?}"
+    );
+}
+
+/// **A flag that merges the two programs is refused.**
+///
+/// `ReplaySources::flags` carries the translation unit's real `compile_commands.json` flags,
+/// which is 040 §3's requirement — and `-fcommon` merges tentative definitions across the two
+/// programs, re-opening the shared-global route the separation exists to close. Passing the
+/// TU's flags is right; passing one that undoes the separation is not.
+#[test]
+fn a_flag_that_undoes_the_separation_is_refused() {
+    let Some(cc) = chiero_replay::compiler() else {
+        return;
+    };
+    let d = dir("fcommon");
+    let body = "int g;\nstatic long long chiero_fixture (void) { return ++g; }";
+    match run_with(&two_programs(body), &cc, &d, &["-fcommon".to_string()]) {
+        Outcome::DidNotRun { detail } => assert!(
+            detail.contains("-fcommon"),
+            "the refusal must name the flag: {detail}"
+        ),
+        other => panic!("a flag that merges the two programs must be refused: {other:?}"),
+    }
+}
+
+/// **A scratch path the launcher cannot use is refused, not silently mishandled.**
+///
+/// The binary's path is interpolated into `sh -c "... exec '{}'"`, so a relative one becomes a
+/// bare word searched on a PATH that does not contain it, and a quote ends the string early.
+/// Both produced `DidNotRun: the harness wrote no result`, which points a reader at the
+/// harness rather than at the argument they passed.
+#[test]
+fn a_scratch_path_the_launcher_cannot_use_is_refused_by_name() {
+    let Some(cc) = chiero_replay::compiler() else {
+        return;
+    };
+    let body = "static long long chiero_fixture (void) { return 1; }";
+    match run_with(&two_programs(body), &cc, std::path::Path::new("relative/dir"), &[]) {
+        Outcome::DidNotRun { detail } => assert!(
+            detail.contains("absolute"),
+            "the refusal must say what is wrong with the path: {detail}"
+        ),
+        other => panic!("a relative scratch directory must be refused: {other:?}"),
+    }
+}
