@@ -669,9 +669,15 @@ does not exist while the doc comments cite contract 12 as though it did.
   and a test asserts that report against what a fixture harness actually manages, in whichever
   direction. **A limit claimed and not enforced is worse than one honestly absent**, and the
   test fails on exactly that. Every confirmation carries the report as an assumption.
-- **D9, the two-include trick.** Two versions of a real file share definitions, so including
-  both puts each `static` helper in one TU twice → `DidNotBuild`. Fails closed, and makes
-  contract 10 ("for every case in the corpus") true only of a toy corpus.
+- ~~**D9, the two-include trick.**~~ **Fixed 2026-08-06 — three translation units.** Each
+  version compiles alone (so a shared `static` helper stays file-local) with a non-static
+  wrapper appended *inside* it (so a `static` entry is still reachable, which is what the
+  single-TU trick existed for). The entry is renamed per unit, since two units defining a
+  non-static `f` collide at link time. Verified end to end on two versions of an `abs()` that
+  share two static helpers: `differs` at `INT_MIN`, `outcome: demonstrated`.
+
+  *Still open:* a **non-static** helper the two versions share collides the same way. Renaming
+  every shared symbol needs the file parsed, which is more than a harness should do.
 - **D2's remaining route.** `Demonstrated` could in principle be fabricated by state the two
   includes merge — a `__attribute__((constructor))`, which 040 §3.1 says must be *recorded*
   and is not. The other two routes are closed: a pointer return cannot produce a
