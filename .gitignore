@@ -23,3 +23,8 @@ Cargo.lock.bak
 
 # scratch downloads (gcc sources for reading, never committed)
 /tmp/
+
+# **The push credential — a private key with write access to this repository.**
+# The whole directory, not just the key: a stray `config`, `known_hosts` or second key
+# dropped in there must not become committable by accident either. See .deploy/README.md.
+/.deploy/
