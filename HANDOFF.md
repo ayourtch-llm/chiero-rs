@@ -895,10 +895,59 @@ global is the same storm through a header; a bitfield is the same storm through 
 that went around the rule. If a fifth turns up, look for a read path that does not end in a
 symbol.
 
-**What is left, and it is the right shape.** One finding: `clib_time_init` divides by a value
-the path allows to be zero. `Unknown`, with inline asm, `__builtin_expect`, an opaque write and
-1496 unreported invented-bound accesses all named in the envelope. A reader can act on that or
-dismiss it in one pass, which is the whole objective.
+**What is left of the 40, and it is the right shape.** One finding: `clib_time_init` divides by
+a value the path allows to be zero. `Unknown`, with inline asm, `__builtin_expect`, an opaque
+write and 1496 unreported invented-bound accesses all named in the envelope. A reader can act on
+that or dismiss it in one pass, which is the whole objective.
+
+#### The wide sweep — 220 entry points across `vnet/`, and three more of the same
+
+Run it with `LIST=<file> tests/corpus/vpp-findings/measure.sh` (the `LIST` variable exists for
+this; `entries.tsv` stays the pinned 40). 220 entries: 4 definitions each from every `.c` under
+`vnet/*/` and `vlib/`, first sweep at 30 s.
+
+| | |
+|---|---|
+| 220 entries | 214 analysed, **6 time out**, 0 refused |
+| findings | 42 → **33** after the promotion fix below, 0 `Exact` |
+| worst function | 3 findings — no artifact dominates any more |
+
+**It found three things the 40 could not.** Breadth beats depth here, and cheaply:
+
+1. **8 entries produced no output at all** — `measure.sh` took the *first* of `build.ninja`'s
+   1969 `INCLUDES` lines, and they differ. Every `*_api.c` in the tree needs a per-target root
+   (`CMakeFiles/vnet`) for the API compiler's generated `<bier/bier.api_enum.h>`. A file that
+   will not preprocess is a file the measurement did not cover, not a file with no defects —
+   and this one had 21 findings behind it.
+2. **`symbolic-byte` and a `{:?}` of an internal Rust enum**, reported as defects in someone's
+   code — `strcpy: source scan gave CapReached { scanned: 0 }`. Fixed at both funnels; see
+   `MemFault::is_chiero_limit`.
+3. **Promotion to array theory discarded 021 §6's initialization** — the seventh instance of
+   the same confusion.
+
+**Two classes remain, and they look like the eighth and ninth.** Of the 42:
+
+```
+  13  unresolvable pointer: the value is unconstrained, so it could refer to any object or none
+  10  a symbolic pointer could not be resolved: the solver did not decide ...
+  10  uninitialized-read
+   5  null-dereference
+   2  pointer-outside-object
+   2  maybe-uninitialized-read
+```
+
+The first two are 23 of 42 and read as statements about chiero, not about a program — but
+unlike `symbolic-byte` they are *not* obviously so: a genuinely arbitrary pointer value is a
+real hazard, and the line between "chiero lost track of this pointer" and "this program has a
+wild pointer" is where the answer is. **Decide that before filtering**, or a real
+`WildPointer` class gets suppressed with them.
+
+⚠️ **`MemFault::BadRange` belongs to the `is_chiero_limit` class and deliberately is not in it.**
+"unsupported-access-width" on a 32-byte AVX load is the same sentence about chiero. It still
+reports because three tests in `chiero-exec/tests/step.rs` use it as their probe for
+`FindingKey`'s `func` and `span` components, and it is the only **objectless non-fatal** fault
+there is — `NullDeref` and `WildPointer` are both fatal, so neither can produce two findings on
+one path. Give those tests a probe first.
 
 `--entry-ptr-nonnull` (`BugCfg::entry_ptr_nonnull`) and `--report-invented-bounds`
 (`BugCfg::report_invented_bounds`) are the two knobs this wave added; both are on `find-bugs`,
@@ -982,19 +1031,35 @@ typing the paths ever would.
 >
 > ### ⏭️ What to do next, in order
 >
-> 1. **Widen the sample.** 40 entry points from 7 files found four engine defects, and the last
->    two were found only because the first two stopped burying them. `pick_entries.py` takes a
->    file list; 200 entry points across `vnet/` would be the next honest measurement, and the
->    cost is minutes.
-> 2. **The 4 timeouts at 60 s are unexplained** — `va_format` and three in `time.c`/`vec.c`.
->    A function chiero cannot finish is a gap in coverage that no envelope currently names,
->    because the run never produces one.
-> 3. **Watch for a fifth "unknown value read as a defect".** Three of this wave's four were that
->    same confusion in a new place (entry pointer, `extern` global, bitfield). If another turns
->    up, look for a read path that does not end in a symbol.
-> 4. 032 contract 18's corpus still has **no `observed` entry** and the gate correctly exits 1
+> 1. **Decide what "unresolvable pointer" and "a symbolic pointer could not be resolved" are.**
+>    23 of the 42 findings on the wide sweep, and they read as statements about chiero — but
+>    unlike `symbolic-byte` they are not obviously so. A genuinely arbitrary pointer value *is*
+>    a hazard. **Decide the line before filtering**, or a real `WildPointer` class gets
+>    suppressed with them. This is the highest-value item and the only one that needs judgement
+>    rather than typing.
+> 2. **The 6 timeouts at 30 s** (and 2 of the 40 at 60 s) are unexplained. A function chiero
+>    cannot finish is a hole in coverage that no envelope names, because the run produces none.
+>    Everything else in this project distinguishes "nothing there" from "did not look"; this
+>    does not yet.
+> 3. **`MemFault::BadRange`** — same class as `is_chiero_limit`, held back because three
+>    `step.rs` tests use it as their only objectless non-fatal probe. Give them one (a new
+>    non-fatal objectless *defect* fault, or a different keying fixture) and move it.
+> 4. **Widen again.** Each widening has paid: 7 files → four defects, 56 files → three more.
+>    `plugins/` and `vnet/ip*` are untouched, and `pick_entries.py` takes a file list.
+> 5. 032 contract 18's corpus still has **no `observed` entry** and the gate correctly exits 1
 >    saying "NOT MEASURED". The method is recorded below: revert a fix's `src/` diff onto HEAD
 >    rather than hunting for a commit whose parent fails.
+>
+> ### 🔁 The pattern this wave is really about
+>
+> Seven of the eight defects were one confusion: **chiero not knowing a value is not the
+> program failing to write one.** 021 §6 settled it for entry pointers in so many words —
+> "fully symbolic and fully initialized", chosen to avoid "an uninitialized-read
+> false-positive storm" — and it was then re-broken in six places that each reached memory a
+> different way: an `extern` global, a bitfield read, a symbolic byte through a model, a
+> promoted object, a `{:?}` bail-out, an invented bound. **When you find the eighth, do not fix
+> the site.** Ask which read path does not end in a symbol, and which funnel a fault can reach
+> the finding list through that you have not filtered.
 >
 > ### ⏭️ (previous) START HERE (wave 480) — M1 268/268 by contract
 >
