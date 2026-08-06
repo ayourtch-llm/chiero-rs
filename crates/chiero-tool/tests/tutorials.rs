@@ -403,6 +403,7 @@ fn tutorial_08_layout() {
         align: 8,
         packed: false,
         externally_visible: false,
+        fields_complete: true,
         fields: vec![
             Field {
                 name: "active".into(),
@@ -444,6 +445,7 @@ fn tutorial_08_layout() {
         align: 1,
         packed: true,
         externally_visible: false,
+        fields_complete: true,
         fields: vec![Field {
             name: "seq".into(),
             offset: 60,

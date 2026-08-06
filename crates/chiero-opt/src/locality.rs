@@ -58,6 +58,21 @@ pub struct Record {
     /// information is not forced to guess in the dangerous direction.
     pub externally_visible: bool,
     pub fields: Vec<Field>,
+    /// Whether `fields` accounts for **every** member of the record.
+    ///
+    /// **False suppresses the padding proposal**, because that proposal is arithmetic over the
+    /// whole field list: lay the members out largest-first and compare with the real size. Do
+    /// that over a list missing a member and the answer is not a smaller number, it is a wrong
+    /// one — measured on VPP's `fib_route_path_t`, whose 56-byte anonymous union was dropped
+    /// by the caller and which was accordingly told a 72-byte struct could be 8.
+    ///
+    /// The straddle finding is unaffected and still runs: it is a statement about *one* field
+    /// chiero can see, and seeing fewer of them loses findings rather than inventing one.
+    ///
+    /// A bit-field is the case that cannot be fixed by looking harder — its extent is bits
+    /// inside a storage unit that its neighbours share, which `(offset, size)` cannot express
+    /// — so this exists rather than a promise that every caller can always fill `fields` in.
+    pub fields_complete: bool,
 }
 
 /// What the analysis was given about the machine and the run.
@@ -327,7 +342,11 @@ fn accesses(f: &Field, cfg: &LocalityCfg) -> Option<u64> {
 /// reorder being proposed — so the delta is what *this* suggestion is worth rather than a
 /// theoretical minimum nothing achieves.
 fn padding(r: &Record, cfg: &LocalityCfg, escapes: Option<&str>) -> Option<Proposal> {
-    if r.fields.is_empty() || r.packed {
+    // **A partial field list yields no number.** See `Record::fields_complete`: this function
+    // sums the members and compares with the record's real size, so a missing member does not
+    // make the answer conservative, it makes it wrong in the flattering direction — the reader
+    // is told to recover bytes that are somebody's data.
+    if r.fields.is_empty() || r.packed || !r.fields_complete {
         return None;
     }
     let mut sizes: Vec<u64> = r.fields.iter().map(|f| f.size).collect();

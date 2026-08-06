@@ -262,24 +262,45 @@ pub(crate) fn records(path: &Path, src: &str, f: Frontend) -> Result<Vec<Record>
             // An anonymous record has no name to report a proposal against.
             continue;
         };
-        let fields: Vec<Field> = l
-            .fields
-            .iter()
-            .filter_map(|fl| {
-                let name = names.0.text(fl.name?)?.to_string();
-                // A bit-field's extent is bits within a byte, which straddling and padding do
-                // not describe; skipping it is narrower than guessing a size for it.
-                if fl.bits.is_some() {
-                    return None;
-                }
-                let size = analysis.size_of(fl.ty)?;
-                Some(Field {
-                    name,
-                    offset: fl.offset,
-                    size,
-                })
-            })
-            .collect();
+        // **Every member that occupies bytes is in the list, named or not**, and anything
+        // left out marks the list partial. 041 §3's padding proposal is arithmetic over the
+        // whole record — lay the members out largest-first, compare with the real size — so a
+        // dropped member does not make the answer conservative, it makes it wrong in the
+        // flattering direction.
+        //
+        // This dropped **anonymous members** for a while, because the name was fetched with
+        // `fl.name?` inside a `filter_map` and C's anonymous union has none. Measured on VPP's
+        // `fib_route_path_t`: a 56-byte anonymous union vanished, the remaining 7 bytes of
+        // fields rounded up to the struct's alignment, and a 72-byte struct was reported as
+        // able to be 8. The size and alignment were right the whole time, which is what made
+        // it read as an answer.
+        let mut fields_complete = true;
+        let mut fields: Vec<Field> = Vec::new();
+        for fl in &l.fields {
+            // A bit-field's extent is bits inside a storage unit its neighbours share, which
+            // `(offset, size)` cannot express — so it stays out, and says so rather than
+            // leaving the sum short by however much it occupied.
+            if fl.bits.is_some() {
+                fields_complete = false;
+                continue;
+            }
+            let Some(size) = analysis.size_of(fl.ty) else {
+                // A member whose size sema could not compute is a hole of unknown width.
+                fields_complete = false;
+                continue;
+            };
+            fields.push(Field {
+                // **An anonymous member is reported by what it is**, since a proposal naming
+                // it has to say something a reader can find in the source. It occupies the
+                // bytes either way, which is what the padding sum needs from it.
+                name: match fl.name.and_then(|n| names.0.text(n)) {
+                    Some(n) => n.to_string(),
+                    None => format!("<anonymous member at offset {}>", fl.offset),
+                },
+                offset: fl.offset,
+                size,
+            });
+        }
         out.push(Record {
             tag: tag.to_string(),
             size: l.size,
@@ -287,6 +308,7 @@ pub(crate) fn records(path: &Path, src: &str, f: Frontend) -> Result<Vec<Record>
             packed: l.packed,
             externally_visible: false,
             fields,
+            fields_complete,
         });
     }
     Ok(out)

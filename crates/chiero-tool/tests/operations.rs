@@ -236,6 +236,7 @@ fn layout_samples() -> Vec<Envelope> {
         align: 8,
         packed: false,
         externally_visible: false,
+        fields_complete: true,
         fields: vec![
             Field {
                 name: "a".into(),

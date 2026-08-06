@@ -33,6 +33,7 @@ fn one_field_at(offset: u64) -> Record {
         align: 8,
         packed: false,
         externally_visible: false,
+        fields_complete: true,
         fields: vec![Field {
             name: "f".into(),
             offset,
@@ -78,6 +79,7 @@ fn padded() -> Record {
         align: 8,
         packed: false,
         externally_visible: false,
+        fields_complete: true,
         fields: vec![
             Field {
                 name: "a".into(),
@@ -138,6 +140,7 @@ fn a_struct_whose_layout_escapes_gets_an_advisory_proposal_that_says_so() {
         align: 8,
         packed: false,
         externally_visible: false,
+        fields_complete: true,
         fields: vec![Field {
             name: "seq".into(),
             offset: 60,
@@ -156,6 +159,7 @@ fn a_struct_whose_layout_escapes_gets_an_advisory_proposal_that_says_so() {
             "externally visible",
             Record {
                 externally_visible: true,
+                fields_complete: true,
                 ..header.clone()
             },
         ),
@@ -252,6 +256,7 @@ fn a_well_packed_struct_yields_no_proposals() {
         align: 8,
         packed: false,
         externally_visible: false,
+        fields_complete: true,
         fields: vec![
             Field {
                 name: "x".into(),
