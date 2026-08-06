@@ -3312,15 +3312,10 @@ impl Lowerer<'_> {
                     // applied, and the verifier caught it: "Ne operand is Int(32), declared
                     // Int(64)". The truth value is the same either way; the *width* is what
                     // CIR is strict about.
-                    // **The *top* type, not `type_of`.** `type_of` walks down through sema's
-                    // conversion chain to the innermost value, and `self.expr` above emits that
-                    // chain — so on a `char` argument it declared the source `Int(8)` for an
-                    // operand lowering had already promoted to `Int(32)`, and the verifier
-                    // refused the whole function ("cast source operand is Int(32), declared
-                    // Int(8)"). `width_of` reads the same top node the emitted operand came
-                    // from. Found on `mem_dlmalloc.c`, which stopped lowering entirely.
-                    let from = CTy::Int(self.width_of(exp));
-                    let to = CTy::Int(self.width_of(e));
+                    // The *top* of sema's conversion chain, which is what `self.expr` emits.
+                    // See `top_cty`.
+                    let from = self.top_cty(exp);
+                    let to = self.top_cty(e);
                     if from == to {
                         return a;
                     }
@@ -5988,6 +5983,21 @@ impl Lowerer<'_> {
     }
 
     /// The bit width an expression's value occupies **after** its conversions.
+    /// **The type of the operand `self.expr` actually emits**, which is the *top* of sema's
+    /// conversion chain.
+    ///
+    /// [`Lowerer::type_of`] walks the other way — down through the chain to the innermost value
+    /// — which is right for a cast's own operand and wrong for anything consuming what `expr`
+    /// produced. Twice in one wave the difference refused a whole function at the verifier and
+    /// left the workspace suite green: `Int(8)` declared for a promoted `char`, then `Int(32)`
+    /// assumed for an `F64`. Guessing `Int` at all was the second mistake; this asks.
+    fn top_cty(&self, e: ExprId) -> CTy {
+        match self.analysis.typed().top(e) {
+            Some(top) => self.cty(self.analysis.typed().ty_of(top)),
+            None => CTy::Int(self.width_of(e)),
+        }
+    }
+
     fn width_of(&self, e: ExprId) -> u32 {
         let Some(top) = self.analysis.typed().top(e) else {
             return 32;

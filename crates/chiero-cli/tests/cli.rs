@@ -640,30 +640,58 @@ fn builtin_expect_is_its_first_argument() {
     // whole function. `mem_dlmalloc.c` stopped lowering, and **the workspace suite stayed
     // green**: nothing in it passed a narrow value through this builtin. Measured instead, by
     // 18 of 40 VPP entry points going from `ok` to `failed`.
-    let narrow = write(
-        "predict_narrow.c",
-        "int f (char c)\n\
-         {\n\
-         \x20 if (__builtin_expect (c, 0))\n\
-         \x20   return 1;\n\
-         \x20 return 0;\n\
-         }\n",
+    // A `char` promotes to `int` before it gets here, and a `double` is not an integer at
+    // all. Both were assumed away — `Int(8)` declared for the promoted `char`, then `Int(32)`
+    // for the `F64` — and each time the verifier refused the whole function while the
+    // workspace suite stayed green.
+    for (name, decl) in [
+        ("predict_narrow.c", "char c"),
+        ("predict_double.c", "double c"),
+        ("predict_long.c", "long c"),
+    ] {
+        let src = write(
+            name,
+            &format!("int f ({decl}) {{ return __builtin_expect (c, 0) ? 1 : 0; }}\n"),
+        );
+        let r = run(&[
+            "find-bugs",
+            src.to_str().expect("utf-8 path"),
+            "--entry",
+            "f",
+            "--json",
+        ]);
+        // **The regression is the function being *skipped*, so that is what is asserted.**
+        // Not `fidelity`: the `double` arm degrades for a reason that has nothing to do with
+        // this builtin — `FpToSi` on a symbolic operand is not modelled — and pinning
+        // `Exact` here would be pinning that gap instead.
+        assert_eq!(
+            r.code, 0,
+            "`{decl}` through the builtin still lowers: {}",
+            r.err
+        );
+        assert!(
+            !r.err.contains("skipped"),
+            "`{decl}`: the verifier rejected the function: {}",
+            r.err
+        );
+        json(&r); // and the run produced an envelope rather than a diagnostic
+    }
+    // The one arm with no unrelated gap, as the control that the runs above are real
+    // analyses and not early exits.
+    let plain = write(
+        "predict_long.c",
+        "int f (long c) { return __builtin_expect (c, 0) ? 1 : 0; }\n",
     );
     let r = run(&[
         "find-bugs",
-        narrow.to_str().expect("utf-8 path"),
+        plain.to_str().expect("utf-8 path"),
         "--entry",
         "f",
         "--json",
     ]);
     assert_eq!(
-        r.code, 0,
-        "a `char` through the builtin still lowers: {}",
-        r.err
-    );
-    let v = json(&r);
-    assert_eq!(
-        v["fidelity"], "Exact",
-        "and the function is analysed rather than skipped: {v}"
+        json(&r)["fidelity"],
+        "Exact",
+        "nothing here is beyond chiero"
     );
 }
