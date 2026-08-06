@@ -559,4 +559,15 @@ entry:
         uninit.is_empty(),
         "021 §6: the caller filled this object; chiero does not know what with: {v}"
     );
+    // **And the byte being symbolic is not a finding either** — it is the whole point of §6.
+    //
+    // Materializing the byte turned `uninitialized-read` into `symbolic-byte: … which a
+    // concrete access cannot answer for`, which is a true statement about `Memory::read_bits`
+    // returning a `u128` and says nothing about the program. Trading one unactionable report
+    // for another is not progress; a bitfield in caller memory has to read as a *term*.
+    assert_eq!(
+        v["result"]["findings"].as_array().map(Vec::len),
+        Some(0),
+        "a bitfield of unknown contents has an unknown value, not a defect: {v}"
+    );
 }
