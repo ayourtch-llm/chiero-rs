@@ -384,3 +384,70 @@ entry:
         }
     }
 }
+
+/// **The shape gcc actually hands over: the pointer itself lives in a stack slot.**
+///
+/// `int f (int *p) { int a = *p; quiet (a); int b = *p; ... }` lowers so that `p` is stored
+/// into an alloca and *reloaded before each dereference*. So the two loads of `*p` are through
+/// two different `ValueId`s, and a criterion of "the same value loaded twice" never holds —
+/// which is why the detector reported nothing for real C however the barrier rule was fixed.
+///
+/// **The engine already knows.** It resolves each address to a `Pointer` — an object and an
+/// offset — and that is the memory model's own answer, not a second one this crate invented.
+/// Keying on it is both sounder and what makes the detector work on the code people write.
+const POINTER_IN_A_SLOT: &str = "\
+func @quiet(%0: i32) -> i32 {
+entry:
+  .line 1
+  ret %0
+}
+
+func @f(%0: ptr) -> i32 {
+  alloca %0 : ptr x 1 align 8 scope 0 lifetime scope \"p\"
+entry:
+  .line 4
+  .scope enter 0
+  %1 = addrlocal %0
+  store ptr %0 -> %1 align 8
+  %2 = load ptr, %1 align 8
+  %3 = load i32, %2 align 4
+  %4 = call @quiet(%3)
+  %5 = load ptr, %1 align 8
+  %6 = load i32, %5 align 4
+  %7 = add i32 %3, %6
+  .scope exit 0
+  ret %7
+}";
+
+#[test]
+fn two_loads_of_one_address_are_redundant_however_the_address_was_spelled() {
+    let props = detect(&m(POINTER_IN_A_SLOT), &cfg("f"));
+    assert!(
+        props
+            .iter()
+            .any(|p| matches!(p.kind, OppKind::RedundantLoad { .. })),
+        "`%2` and `%5` are the same pointer; the engine resolved both: {props:?}"
+    );
+}
+
+/// **And two genuinely different addresses are not.** Without this, keying on the engine's
+/// answer could collapse into "every second load is redundant".
+#[test]
+fn loads_of_two_different_addresses_are_not_redundant() {
+    let two = "\
+func @f(%0: ptr, %1: ptr) -> i32 {
+entry:
+  .line 1
+  %2 = load i32, %0 align 4
+  %3 = load i32, %1 align 4
+  %4 = add i32 %2, %3
+  ret %4
+}";
+    let props = detect(&m(two), &cfg("f"));
+    assert!(
+        !props
+            .iter()
+            .any(|p| matches!(p.kind, OppKind::RedundantLoad { .. })),
+        "`%0` and `%1` are distinct objects: {props:?}"
+    );
+}
