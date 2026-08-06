@@ -5596,18 +5596,15 @@ impl<'m> Engine<'m> {
     /// reporting `Bounded` is the failure §5.1 calls the highest-value instance of
     /// "wrong answer instead of honest unknown".
     fn unresolvable_pointer(&mut self, s: &mut State, span: Span) {
-        self.finding_seq += 1;
-        s.findings.push(StateFinding {
-            id: self.finding_seq,
-            key: None,
-            message: "unresolvable pointer: the value is unconstrained, so it could \
-                      refer to any object or to none"
-                .to_string(),
-            span,
-            requires: Vec::new(),
-            witness: None,
-            related: None,
-        });
+        // **A degradation, and not a finding.** Step 4 is a rule about chiero's honesty — do
+        // not concretize a pointer you cannot pin — not an accusation about the program, and
+        // 23 of 42 findings on the `vnet/` sweep were this sentence and the `SolverUnknown` one
+        // below it.
+        //
+        // The cases where an unconstrained pointer really is a bug are reported by something
+        // that *knows* it: an uninitialized pointer variable is an `uninitialized-read`, and an
+        // address proved to land in no object is a `WildPointer`. Those stay. This is the
+        // absence of knowledge, and the assumption below says so with the right cause attached.
         s.degrade(
             Fidelity::Unknown,
             AssumptionKind::NoInformation,
@@ -6045,18 +6042,9 @@ impl<'m> Engine<'m> {
         // the reason is not, and only the reason tells a reader whether to strengthen the
         // program or the solver.
         if undecided {
-            self.finding_seq += 1;
-            s.findings.push(StateFinding {
-                id: self.finding_seq,
-                key: None,
-                message: "a symbolic pointer could not be resolved: the solver did not \
-                          decide which objects its value can fall in"
-                    .to_string(),
-                span,
-                requires: Vec::new(),
-                witness: None,
-                related: None,
-            });
+            // Degraded and not reported, for the reason this comment already gives: it is a
+            // statement about chiero. `SolverUnknown` is the cause a reader needs, because it
+            // is the one that says to strengthen the solver rather than the program.
             s.degrade(
                 Fidelity::Unknown,
                 AssumptionKind::SolverUnknown,

@@ -541,11 +541,9 @@ fn a_pointer_chiero_cannot_resolve_is_not_a_defect() {
     // **Said, not swallowed.** The path really did end there, and the envelope carries why.
     assert_ne!(v["fidelity"], "Exact", "the path ended unresolved: {v}");
     assert!(
-        v["assumptions"]
-            .as_array()
-            .is_some_and(|a| a.iter().any(|x| x["detail"]
-                .as_str()
-                .is_some_and(|d| d.contains("pointer")))),
+        v["assumptions"].as_array().is_some_and(|a| a
+            .iter()
+            .any(|x| x["detail"].as_str().is_some_and(|d| d.contains("pointer")))),
         "and the assumption names it: {v}"
     );
 }

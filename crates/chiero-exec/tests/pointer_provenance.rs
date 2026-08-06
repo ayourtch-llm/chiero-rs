@@ -230,14 +230,22 @@ fn an_unconstrained_int_to_ptr_is_never_read_as_in_bounds() {
     let mut a = TermArena::new();
     let r = Engine::new(&m).run(&mut a);
     assert_eq!(r.fidelity(), Fidelity::Unknown);
+    // **Recorded once, as an assumption.** Step 4 stopped being a *finding*: "chiero could
+    // not resolve this pointer" is a statement about chiero, and a finding is what chiero says
+    // about the program. The count still matters for the same reason it did before — one path
+    // ends here, and one degradation says why.
     assert_eq!(
-        r.findings()
+        r.states()
             .iter()
-            .filter(|f| f.contains("unresolvable pointer"))
+            .flat_map(|st| st.assumptions())
+            .filter(|a| a.detail.contains("symbolic pointer with no constraint"))
             .count(),
         1,
         "exactly one: {:#?}",
-        r.findings()
+        r.states()
+            .iter()
+            .flat_map(|st| st.assumptions())
+            .collect::<Vec<_>>()
     );
     // **The load never happened.** "No read through it is reported as in-bounds" is
     // satisfied here by there being no read at all — and that is the point: the

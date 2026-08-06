@@ -182,11 +182,18 @@ fn without_an_arena_a_buffer_access_is_an_unresolvable_pointer() {
     let m = buffer_access(128);
     let mut a = TermArena::new();
     let r = Engine::new(&m).run(&mut a);
-    let msgs: Vec<String> = r.reports().iter().map(|f| f.message.clone()).collect();
+    // **Observed through the assumption, which is where step 4 now records itself.** It used
+    // to be a finding, and a finding is what chiero says about *the program* — "chiero could
+    // not resolve this pointer" never was one. The assumption is the stronger instrument for
+    // this test anyway: it names the cause, where the message only had to mention a pointer.
+    let why: Vec<String> = r
+        .states()
+        .iter()
+        .flat_map(|st| st.assumptions().iter().map(|a| a.detail.clone()))
+        .collect();
     assert!(
-        msgs.iter()
-            .any(|m| m.contains("could not be resolved") || m.contains("unresolvable pointer")),
-        "an `IntToPtr` over an unconstrained symbol does not resolve: {msgs:?}"
+        why.iter().any(|d| d.contains("symbolic pointer")),
+        "an `IntToPtr` over an unconstrained symbol does not resolve: {why:?}"
     );
     assert_ne!(
         r.fidelity(),

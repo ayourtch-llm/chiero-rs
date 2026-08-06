@@ -42,6 +42,21 @@ fn inst_at(kind: InstKind, lo: u32) -> Inst {
     }
 }
 
+/// **Every degradation a run recorded, as text.**
+///
+/// 021 §5.1 step 4 and its `SolverUnknown` sibling used to push *findings*, and several tests
+/// here read them from `findings()`. They do not any more: "chiero could not resolve this
+/// pointer" is a statement about chiero, and a finding is what chiero says about the program.
+/// The distinction those tests are about — solver limit versus unconstrained value — is
+/// unchanged and lives in the assumption's `detail`, which names the cause rather than merely
+/// mentioning a pointer.
+fn degradations(r: &RunResult) -> Vec<String> {
+    r.states()
+        .iter()
+        .flat_map(|st| st.assumptions().iter().map(|a| a.detail.clone()))
+        .collect()
+}
+
 fn i32c(v: i128) -> Operand {
     Operand::Const(Const::Int { bits: 32, val: v })
 }
@@ -9765,9 +9780,9 @@ fn an_unresolvable_pointer_stops_the_path_and_names_its_reason() {
     assert_ne!(r.fidelity(), Fidelity::Approximated);
     // And the finding names a cause a reader can act on.
     assert!(
-        r.findings()
+        degradations(&r)
             .iter()
-            .any(|f| f.contains("value is unconstrained")),
+            .any(|d| d.contains("symbolic pointer with no constraint")),
         "step 4's own cause, not the solver's: {:#?}",
         r.findings()
     );
@@ -10011,16 +10026,16 @@ fn an_undecided_pointer_blames_the_solver_not_the_program() {
         .with_solver(SolverTier::LiteOnly)
         .run(&mut a);
     assert!(
-        r.findings()
+        degradations(&r)
             .iter()
-            .any(|f| f.contains("the solver did not decide")),
+            .any(|d| d.contains("the solver could not decide a pointer's object set")),
         "the reason names the solver: {:#?}",
         r.findings()
     );
     assert!(
-        !r.findings()
+        !degradations(&r)
             .iter()
-            .any(|f| f.contains("the value is unconstrained")),
+            .any(|d| d.contains("symbolic pointer with no constraint")),
         "and does not blame the program: {:#?}",
         r.findings()
     );
@@ -10479,9 +10494,9 @@ fn step_four_still_fires_when_there_are_more_objects_than_the_cap() {
         "no pointer was manufactured"
     );
     assert!(
-        !r.findings().is_empty(),
+        !degradations(&r).is_empty(),
         "and it says so: {:#?}",
-        r.findings()
+        r.states()[0].assumptions()
     );
 }
 
@@ -10589,9 +10604,9 @@ fn an_address_in_a_guard_gap_is_a_wild_pointer() {
             .collect::<Vec<_>>()
     );
     assert!(
-        !r.findings()
+        !degradations(&r)
             .iter()
-            .any(|f| f.contains("value is unconstrained")),
+            .any(|d| d.contains("symbolic pointer with no constraint")),
         "and the program is not blamed for saying nothing: {:#?}",
         r.findings()
     );
@@ -10706,9 +10721,9 @@ fn a_use_after_free_through_a_symbolic_address_is_reported() {
         r.findings()
     );
     assert!(
-        !r.findings()
+        !degradations(&r)
             .iter()
-            .any(|f| f.contains("value is unconstrained")),
+            .any(|d| d.contains("symbolic pointer with no constraint")),
         "and the program is not blamed for an address it pinned: {:#?}",
         r.findings()
     );
@@ -11035,7 +11050,8 @@ fn step_four_run(nobj: u32) -> (Vec<String>, Fidelity, bool, u64) {
     let mut a = TermArena::new();
     let r = Engine::new(&m).run(&mut a);
     (
-        r.findings(),
+        // The degradations, not the findings: step 4 records itself as one. See `degradations`.
+        degradations(&r),
         r.fidelity(),
         r.states()[0].local(ValueId(1)).is_some(),
         r.solver_calls,
@@ -11045,12 +11061,11 @@ fn step_four_run(nobj: u32) -> (Vec<String>, Fidelity, bool, u64) {
 #[test]
 fn an_unconstrained_pointer_is_step_four_however_many_objects_exist() {
     for n in [4, 40] {
-        let (findings, fidelity, resolved, _) = step_four_run(n);
+        let (why, fidelity, resolved, _) = step_four_run(n);
         assert!(
-            findings
-                .iter()
-                .any(|f| f.contains("value is unconstrained")),
-            "step 4, named as such, with {n} objects: {findings:#?}"
+            why.iter()
+                .any(|d| d.contains("symbolic pointer with no constraint")),
+            "step 4, named as such, with {n} objects: {why:#?}"
         );
         assert_eq!(fidelity, Fidelity::Unknown);
         assert!(
@@ -11135,9 +11150,9 @@ fn a_mentioned_but_unnarrowed_pointer_still_reaches_step_four() {
     let mut a = TermArena::new();
     let r = Engine::new(&m).with_backend(backend).run(&mut a);
     assert!(
-        r.findings()
+        degradations(&r)
             .iter()
-            .any(|f| f.contains("value is unconstrained")),
+            .any(|d| d.contains("symbolic pointer with no constraint")),
         "x != 0xDEAD still leaves every object and nowhere feasible: {:#?}",
         r.findings()
     );
@@ -11237,9 +11252,9 @@ fn an_address_bounded_by_its_own_arithmetic_is_not_wholly_unconstrained() {
     let mut a = TermArena::new();
     let r = Engine::new(&m).with_backend(backend).run(&mut a);
     assert!(
-        !r.findings()
+        !degradations(&r)
             .iter()
-            .any(|f| f.contains("value is unconstrained")),
+            .any(|d| d.contains("symbolic pointer with no constraint")),
         "the index is 8 bits wide; that is information: {:#?}",
         r.findings()
     );
@@ -11326,9 +11341,9 @@ fn a_cut_enumeration_of_an_unnarrowed_pointer_is_still_step_four() {
         let mut a = TermArena::new();
         let r = Engine::new(&m).with_backend(backend.clone()).run(&mut a);
         assert!(
-            r.findings()
+            degradations(&r)
                 .iter()
-                .any(|f| f.contains("value is unconstrained")),
+                .any(|d| d.contains("symbolic pointer with no constraint")),
             "step 4 at {nobj} objects: {:#?}",
             r.findings()
         );
