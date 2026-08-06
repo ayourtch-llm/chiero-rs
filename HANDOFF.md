@@ -659,9 +659,16 @@ does not exist while the doc comments cite contract 12 as though it did.
 
 **Left, and worth knowing before trusting `--allow-replay-exec` on real code:**
 
-- **050 §6's sandbox does not exist.** No network isolation, no memory cap, no write
-  confinement; the child inherits the caller's cwd. Contract 12 wants a fixture asserting
-  both, and there is none. The timeout is the only limit.
+- ~~**050 §6's sandbox does not exist.**~~ **Built 2026-08-06.** A network namespace of its
+  own, a 2 GiB address-space cap, a cleared environment, the scratch directory as cwd, and the
+  ten-second clock. Three C fixtures attempt the forbidden things.
+
+  **Writes are still not confined, and the code says so in those words** — without root it
+  needs more than an unprivileged user namespace, since remounting the filesystem read-only
+  inside one fails on the underlying device. So `Sandbox` *reports* what this machine enforces
+  and a test asserts that report against what a fixture harness actually manages, in whichever
+  direction. **A limit claimed and not enforced is worse than one honestly absent**, and the
+  test fails on exactly that. Every confirmation carries the report as an assumption.
 - **D9, the two-include trick.** Two versions of a real file share definitions, so including
   both puts each `static` helper in one TU twice → `DidNotBuild`. Fails closed, and makes
   contract 10 ("for every case in the corpus") true only of a toy corpus.
