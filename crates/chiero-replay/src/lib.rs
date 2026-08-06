@@ -631,6 +631,21 @@ pub fn run_with(r: &Replay, cc: &Path, dir: &Path, flags: &[String]) -> Outcome 
     }
 }
 
+/// Kill anything still running with `path` on its command line.
+///
+/// **By command line rather than by process group.** Putting a run in its own session needs the
+/// group id, which `setsid` does not report back; a path unique to this call needs nothing this
+/// crate does not already have. `fork` does not change `argv` and a compiler driver passes the
+/// source name to `cc1`, so this finds exactly this call's descendants.
+fn kill_descendants(path: &Path) {
+    let _ = std::process::Command::new("pkill")
+        .args(["-KILL", "-f"])
+        .arg(path.display().to_string())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
 /// Compile one unit, under the same wall clock the run gets.
 fn compile(
     cc: &Path,
@@ -683,6 +698,11 @@ fn compile(
         if start.elapsed() >= limit {
             let _ = child.kill();
             let _ = child.wait();
+            // **And `cc1`.** A compiler driver spawns the real compiler as a child, so killing
+            // `cc` leaves `cc1` running on the blocked source — the same leak as the harness's
+            // forked child, in the path the fix for that one did not touch. The unit's own
+            // filename is on `cc1`'s command line.
+            kill_descendants(src);
             return Err(Outcome::DidNotRun {
                 detail: format!(
                     "the compiler did not finish within {}s and was killed — a source that \
@@ -739,6 +759,16 @@ fn bounded(bin: &Path, dir: &Path, limit: std::time::Duration) -> Result<(), Str
         if start.elapsed() >= limit {
             let _ = child.kill();
             let _ = child.wait();
+            // **And anything it forked.** Killing our child reaches the harness, because
+            // `unshare -rn` execs in place — but a process the harness forked survives, is
+            // reparented to init, and keeps running after this returns. `fork` does not change
+            // `argv`, and the binary's path is unique to this call, so matching on it finds
+            // exactly this run's descendants and nothing else.
+            //
+            // By command line rather than by process group: putting the run in its own session
+            // needs the group id, which `setsid` does not report back, and a known-unique path
+            // needs nothing this crate does not already have.
+            kill_descendants(bin);
             return Err(format!(
                 "the harness did not finish within {}s and was killed — the witness may be an \
                  input on which the program does not terminate",

@@ -304,8 +304,12 @@ fn a_forked_child_does_not_outlive_the_timeout() {
 
     // Give the kill a moment, then look for anything still running our unique binary.
     std::thread::sleep(std::time::Duration::from_millis(300));
+    // **Scoped to this run's own directory.** `chiero_unit_` alone matched other tests' leftover
+    // processes and their compilers, so the assertion was about the whole machine rather than
+    // about this call — which is how a test comes to fail for reasons that are nothing to do
+    // with it.
     let survivors = std::process::Command::new("pgrep")
-        .args(["-f", "chiero_unit_"])
+        .args(["-f", d.to_str().expect("utf-8 scratch")])
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).lines().count())
         .unwrap_or(0);
