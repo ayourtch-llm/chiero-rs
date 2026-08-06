@@ -192,6 +192,35 @@ Collected from the specs; all must pass:
 | Tool envelope schema; `proven` only when `Exact` | [050](050-tool-interface.md) 1–2 |
 | VPP parser coverage percentage does not regress | [060](060-vpp-integration.md) 17 |
 
+### 4.1 Running them, and the one way of checking that cannot fail
+
+```sh
+./check.sh                              # the whole workspace, keyed on cargo's exit status
+cargo xtask check-deps                  # 001 §4's graph rules
+cargo xtask check-vpp-leak              # 001 §4 rule 4
+cargo xtask check-proof-surface         # 023 contract 13a
+cargo xtask contract-coverage           # which contracts a test cites, by document
+cargo xtask mutation-gate               # 032 contract 19, with its coverage-only baseline
+cargo xtask replay-gate                 # 032 contract 18 — exits 1 while nothing is measured
+```
+
+⚠️ **Do not summarise `cargo test` by counting passes.** A `cargo test --workspace | awk` sum
+over `test result:` lines reported a healthy total for a long stretch while three xtask gates
+were red, because **a crate whose test binary fails to build emits no `test result:` line at
+all** — and counting successes cannot detect a missing success. `check.sh` keys on cargo's exit
+status, which is the one signal that means what it says, and prints the failing suites first.
+
+CI (`.github/workflows/ci.yml`) runs `fmt --check`, `clippy -D warnings`, the
+`--no-default-features` build, `check-deps`, `check-vpp-leak`, `check-proof-surface`,
+`cargo test --workspace`, and prints the contract-coverage report.
+
+The gates in the table above that CI does **not** run are the ones that need something CI does
+not have: the mutation gate and the replay gate (a VPP checkout and a built test suite), the
+ASan confirmation, and the VPP parser-coverage threshold. They are run by hand and the number
+is reported in the commit that moves it. **A gate nobody runs is a gate that is already
+failing** — `check-proof-surface` sat in this table unrun until 2026-08-06, which is how it got
+into CI.
+
 **A contract cited only by an `#[ignore]`d test counts as uncovered.** The coverage gate
 reads citations from comments, so an ignored test citing a contract reports it green while
 running nothing — which is strictly worse than leaving it uncited, because the number then

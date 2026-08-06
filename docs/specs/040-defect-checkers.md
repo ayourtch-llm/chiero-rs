@@ -12,6 +12,24 @@ we ran it.*
 
 ## 1. Checker catalogue
 
+> **What runs today, 2026-08-06.** `chiero_check::default_checkers()` returns **two**:
+> `UndefinedArithmetic` (division by zero, `INT_MIN / -1`, shift by ≥ width or negative,
+> signed overflow, float-cast overflow) and `OrderDependence`. `UnionPun` exists and is off by
+> default — gcc defines the behaviour chiero follows, so it is for projects wanting the
+> stricter reading. **The memory-safety half of this catalogue is not a checker at all**: it
+> reaches findings as `MemFault`s the engine surfaces from [021 §5](021-memory-model.md).
+> Today that is `null-dereference`, `out-of-bounds`, `may-be-out-of-bounds`,
+> `pointer-outside-object`, `uninitialized-read`, `maybe-uninitialized-read`,
+> `use-after-free`, `double-free`, `use-after-scope`, `bad-free`, `overlapping-copy`,
+> `write-to-readonly`, `misaligned`, `wild-pointer` and `allocation-too-large`. The models add
+> `format-mismatch`, `strcpy`/`strlen` and `longjmp` reports.
+>
+> Still unbuilt from the list below: memory leaks, unchecked error returns, infinite loops with
+> no side effects, reaching `__builtin_unreachable` on a feasible path, assertion failures, and
+> lossy implicit conversions. `find_bugs`'s envelope says
+> *"only the 2 checkers of 040 ran; a defect no checker looks for is not reported"* on **every
+> run**, including the clean ones, which is the only reason this gap is safe to have.
+
 Memory safety (faults surfaced by [021 §5](021-memory-model.md)):
 null dereference; out-of-bounds read/write; use-after-free; double free; use-after-scope;
 invalid free (non-heap or interior pointer); memory leak; wild pointer via `IntToPtr`;

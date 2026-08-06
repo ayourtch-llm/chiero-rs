@@ -304,6 +304,16 @@ pub struct Budget {
 }
 ```
 
+**What exists today** (2026-08-06), because a sketch a reader takes for an inventory is worse
+than no sketch. Built: `max_depth`, `max_loop_iters`, `max_recursion_depth` (per `FuncId` in
+the active stack, §5), `max_states`, `max_forks`, `max_indirect`, `max_resolutions`, and
+`wall_clock`. **Not built: `max_memory_objects` and `max_solver_rlimit`.**
+
+The second absence is load-bearing rather than cosmetic, and it is where the wall clock's own
+residue lives: the clock is checked *between steps*, so a single long solver query outlives it,
+and `:rlimit` is the deterministic bound that would cut one. Measured on VPP plugins, three
+entry points of 477 still had to be killed from outside for exactly this reason.
+
 ### 8.1 Determinism requires that time not gate output
 
 [001 §5](001-architecture.md) makes byte-identical output a hard requirement, and a

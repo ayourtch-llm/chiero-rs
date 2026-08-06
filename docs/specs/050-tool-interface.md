@@ -43,6 +43,22 @@ decision in the crate:
 }
 ```
 
+**Three recorded deviations, all dated 2026-08-06**, because a spec that describes a shape the
+code does not emit teaches a consumer to parse the wrong thing:
+
+- **`budgets` lives inside `result`**, and only `find_bugs` emits it: it is that operation's
+  answer about its own run. An envelope-level field would have to be `null` for every operation
+  that runs no engine — and a key whose absence and whose emptiness mean different things is
+  exactly what §2 exists to prevent.
+- **`determinism_key` is `fnv128:` rather than `blake3:`**, and it hashes the *answer* rather
+  than the inputs, for the reason `chiero-gcov::source_hash` gives: this notices an accidental
+  difference and nothing here faces an adversary. Hashing the answer is also what makes
+  contract 16 sound — two runs cut at different points key differently by construction.
+- **`nondeterministic_abort: bool` is emitted on every envelope** (023 §8.1's wall clock
+  fired), and `truncation` is a single object with `shown`/`total` rather than one per list.
+  Per-list truncation with cursors is specified below and unbuilt; today only
+  `expansion_sites` truncates.
+
 Rationale, from the failure mode this exists to prevent: an LLM reading `"findings": []`
 will report "the code is safe." It must instead read
 `"findings": [], "proven": false, "blind_spots": [...]` and be structurally unable to
@@ -54,6 +70,16 @@ Text renderings follow the same rule: "no defects found **within** <bound>", nev
 defects found", unless `proven` is true.
 
 ## 3. Operation catalogue
+
+> **What is built, 2026-08-06.** Ten operations, each reachable both as a Rust function and as
+> `chiero <op>`: `expansion_sites`, `explain_macro_expansion`, `impact`, `select_tests`,
+> `find_bugs`, `check_reachable`, `prove_equivalent` (and `_with_replay`), `find_optimizations`,
+> `layout`. **There is no MCP server and no JSON-RPC server yet**, so contract 18's mechanical
+> CLI/MCP identity check has nothing to compare against and does not run. `get_cfg`,
+> `coverage_of`, `symbolic_run`, `explain_finding`, `locality_report` as a distinct operation,
+> `validate_recipe`/`apply_recipe` and the job surface in §5 are specified and unbuilt. The
+> registry test `chiero-tool/tests/operations.rs` fails if a library operation is added without
+> a sample, so this list cannot silently fall behind the code — only behind the spec.
 
 ### Provenance and navigation
 

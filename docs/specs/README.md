@@ -59,8 +59,29 @@ spec is amended in the same commit as the deviation.
 
 ## Status
 
-All 23 documents are at **draft-1**, written 2026-07-26/27, **pending review before
-implementation begins**.
+**24 documents, written 2026-07-26/27, reviewed and approved 2026-07-27. Implementation has
+been running against them since.** The specs remain normative: where the implementation
+deviates, the spec is amended rather than the deviation left unrecorded — several sections
+carry a dated note saying which way a question was settled once it met real code.
+
+What is built, and how to re-measure it rather than believe this table:
+
+| | |
+|---|---|
+| **contract coverage** | `cargo xtask contract-coverage` — M1 (020–024) **165/166 cited**, frontend (010–015) **114/117**. The uncited ones are named in the report. |
+| **the workspace** | `./check.sh` — 2137 tests across 252 suites, keyed on cargo's exit status rather than on counting successes |
+| **against real code** | `tests/corpus/vpp-findings/measure.sh` — `find-bugs` over VPP entry points, checked in so the numbers are somebody else's to check |
+
+"Cited" means a test names the contract by number; it is a coverage measure and not a proof
+that the contract holds. Both are worth having and they are not the same claim.
+
+Not everything specified is built. The clearest gaps, so a reader does not take the catalogue
+for an inventory: [050](050-tool-interface.md) §3 specifies an MCP server and operations like
+`symbolic_run` and `explain_finding` — today there are 10 library operations behind a CLI and
+no server; [040](040-defect-checkers.md) describes ~25 checkers and `chiero-check` implements
+2 (the envelope says so on every run); [042](042-conformance-recipes.md)'s tier-2 DSL is
+unbuilt, as [080](080-roadmap.md)'s cut list anticipated. [080](080-roadmap.md) carries a
+per-milestone status line.
 
 Two documents were added during drafting in response to review, and are worth calling out
 because they changed the shape of the system rather than filling in detail:

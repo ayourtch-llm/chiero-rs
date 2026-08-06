@@ -39,5 +39,15 @@ jobs:
       - name: VPP leak check
         run: cargo xtask check-vpp-leak
 
+      # 023 contract 13a: a proof cannot be forged. 070 §4 lists this as a gate and it was
+      # only ever run by hand — a gate nobody runs is a gate that is already failing.
+      - name: Proof surface
+        run: cargo xtask check-proof-surface
+
       - name: Test
         run: cargo test --workspace
+
+      # A report rather than a gate (it exits 0 whatever it finds), printed so a reviewer can
+      # see coverage move in the log without running anything themselves. 070 §6.
+      - name: Contract coverage
+        run: cargo xtask contract-coverage

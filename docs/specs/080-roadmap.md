@@ -7,9 +7,28 @@ hand-written CIR, before the frontend exists ([001 §3](001-architecture.md)).
 Every milestone is built with the red-green-review loop in
 [070 §3](070-testing-and-tdd-protocol.md).
 
+## Where this stands, 2026-08-06
+
+A status line per milestone, because a roadmap with no marks on it is a plan rather than a
+record. Re-measure with `cargo xtask contract-coverage`, `./check.sh`, and
+`tests/corpus/vpp-findings/measure.sh`; none of these numbers is worth more than its command.
+
+| | | |
+|---|---|---|
+| M0 | ✅ | 22 crates, `xtask`, CI, corpus layout |
+| M1 | ✅ | 165/166 M1 contracts cited; the one left is 023 c17, which needs a multi-threaded engine that does not exist |
+| M2 | ✅ | 1,871 VPP TUs lower, **zero `not-run`**; the 3 diagnosed are VPP's own |
+| M3 | 🟡 | `explain-macro` and `expansion-sites` ship; `chiero-recipe` exists, the tier-1 sweep over all of VPP is not published |
+| M4 | 🟡 | gcov exact on all of VPP; impact 20/20; selection 18/20 — mutation gate 100% recall, 65% reduction; contract 18's replay corpus has no `observed` entry yet |
+| M5 | 🟡 | `chiero-check` implements **2** of 040's ~25 checkers; `chiero-replay` compiles and runs harnesses; the discipline checker is unbuilt |
+| M6 | 🟡 | `prove_equivalent` proves `x*2 == x<<1` over all 2³² and finds `INT_MIN` for `abs`, with gcc confirming; locality analysis ships as `layout` |
+| M7 | 🟡 | 10 operations, all reachable as `chiero <op>`; **no MCP or JSON-RPC server yet**, so contract 18's CLI/MCP identity check cannot run |
+| M8 | ⬜ | not started as a milestone, though its measurement harness is checked in: `find-bugs` has been run over the pinned 40 vppinfra/vlib entries, 220 across `vnet/`, 207 in the ACL plugin and 477 across 92 plugins |
+
 ## M0 — Skeleton
 
-Workspace, 21 crates, `xtask`, CI, the corpus directory layout, and the contract-coverage
+Workspace, 21 crates (22 today — `chiero-recipe` was added with [042](042-conformance-recipes.md)),
+`xtask`, CI, the corpus directory layout, and the contract-coverage
 report ([070 §6](070-testing-and-tdd-protocol.md)) reporting 0%.
 
 **Exit:** `cargo build --no-default-features` and `cargo test` pass on an empty
@@ -157,14 +176,24 @@ classification is an input to M6's false-sharing analysis. M6's `prove_equivalen
 M4's strongest refinement — M4 ships without it and gains precision when M6 lands, which
 is why [032 §3.1](032-test-selection.md) treats it as optional rather than required.
 
-**The riskiest milestone is M2.** A hand-written C frontend for a 1M-line GNU-extension-
-heavy codebase is the part most likely to overrun, and the temptation to fall back to
-clang will be strongest exactly when it is hardest. That trade was already decided and
-the reason stands: clang cannot give us macro provenance, and macro provenance is the
-product. The mitigations are that parser coverage is measured continuously from M3, the
-extension budget is already known from measurement
-([HANDOFF §4.12b](../../HANDOFF.md)), and unparseable constructs degrade to skipped
-functions with diagnostics rather than to wrong answers.
+**The riskiest milestone was M2**, and it landed: 1,871 VPP translation units lower with zero
+`not-run`, and the three remaining diagnostics are VPP's own ISO C divergences rather than
+chiero's gaps.
+
+⚠️ **This section used to justify the frontend with "clang cannot give us macro provenance",
+and that claim is false** — tested on clang 18.1.3, which prints the full expansion chain in a
+diagnostic and exposes `isMacroArgExpansion` per token
+([010 §1.1](010-source-and-provenance.md) records the measurement). The decision stands on the
+reason [001 §1](001-architecture.md) gives instead: chiero must be a pure-Rust library that
+links nothing and runs under `--no-default-features`, and a *core* capability behind libclang
+forfeits that. Secondary: diffing two revisions including non-compiling ones, `Span` as a
+12-byte `Copy` value rather than a handle into a foreign object graph, and owning lowering.
+**A clang-subprocess provenance extractor stays a legitimate fallback** for the impact vertical
+specifically; a contingency resting on a refuted claim is not a contingency.
+
+The mitigations that did the work: parser coverage measured continuously from M3, the extension
+budget known from measurement ([HANDOFF §4.12b](../../HANDOFF.md)), and unparseable constructs
+degrading to skipped functions with diagnostics rather than to wrong answers.
 
 ## Scope pressure, and what gives first
 

@@ -76,6 +76,34 @@ fn fixtures() -> PathBuf {
         "int loop_then (int n)\n{\n  int t = 0;\n  for (int i = 0; i < n; i++)\n    \
          t += i;\n  if (t > 1000000)\n    return 1;\n  return 0;\n}\n",
     );
+    // Tutorial 6's flag section: a struct through a pointer parameter, and VPP's vector
+    // idiom — the header lives *behind* the data, so `vec_len` reads at a negative offset
+    // and crosses a bound chiero invented rather than one the program has.
+    w(
+        "hdr.c",
+        "struct hdr { unsigned len; unsigned flags; };\n\
+         unsigned f (struct hdr *h) { return h->len + h->flags; }\n",
+    );
+    w(
+        "vec.c",
+        "struct vec_header { unsigned len; };\n\
+         unsigned vec_len (void *v) { return ((struct vec_header *) v)[-1].len; }\n",
+    );
+    // Tutorial 5's wall clock: 24 independent branches is 16 million paths, so the search
+    // does not finish and the clock is what ends it. **One second, not five** — this runs in
+    // the suite, and the transcript's own point is that where it stops is not reproducible.
+    {
+        let mut c = String::from("int f (unsigned x)\n{\n  int t = 0;\n");
+        for i in 0..24 {
+            c.push_str(&format!(
+                "  if ((x >> {i}) & 1u) t += {}; else t -= {};\n",
+                i + 1,
+                i + 1
+            ));
+        }
+        c.push_str("  return t;\n}\n");
+        w("busy.c", &c);
+    }
     w(
         "geom-after.c",
         "#define SCALE(x) ((x) * 3)\nint area (int w) { return SCALE (w) * w; }\n\

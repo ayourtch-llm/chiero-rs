@@ -112,7 +112,7 @@ offset from a `Bytes` object are answered by an if-then-else chain when the feas
 set has ≤ `ite_threshold` (default 16, configurable, recorded in the result) and force
 promotion otherwise.
 
-The second is a `HavocFill::Symbolic` havoc ([024 §2.1](024-library-models.md)), which
+The second is a `HavocFill::Symbolic` havoc ([024 §2.1](024-environment-models.md)), which
 replaces an object's contents with an unconstrained array. This was added while
 implementing the havoc and is amended here rather than left as an undocumented deviation.
 The alternative — one fresh byte term per byte — is O(size) in solver variables for

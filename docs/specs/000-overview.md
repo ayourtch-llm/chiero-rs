@@ -37,8 +37,15 @@ range in an original file. This is why chiero owns its preprocessor
 The concrete payoff: when someone edits the body of `vec_add1` in `vppinfra/vec.h`,
 gcov attributes no line to `vec.h` — coverage data records the `.c` file line where the
 macro was *used*. A coverage-only tool cannot tell you which tests are affected. chiero
-can, because it knows every expansion site of every macro. **This single capability is
-the reason the frontend is written rather than borrowed.**
+can, because it knows every expansion site of every macro.
+
+⚠️ **This section used to end "and that is why the frontend is written rather than borrowed",
+which is not true and was corrected once it was tested.** clang 18.1.3 does supply the nesting
+chain and per-token argument attribution; [010 §1.1](010-source-and-provenance.md) records the
+measurement and the honest reason, which is [001 §5](001-architecture.md)'s no-external-
+toolchain constraint: a *core* capability behind libclang forfeits the pure-Rust,
+links-nothing property the library is specified around. The macro capability is still the
+differentiator; it is not the argument for owning the frontend.
 
 **Incompleteness is declared, never hidden.** Symbolic execution of real C hits
 unbounded loops, external calls, symbolic pointers, and solver timeouts. Every result

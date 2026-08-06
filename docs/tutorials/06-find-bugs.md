@@ -117,6 +117,78 @@ That difference — between "nothing here" and "nothing I looked at" — is what
 [tutorial 5](05-envelope.md) is about, and this is the operation where getting it wrong is
 expensive.
 
+## Three flags, and why a real codebase needs them
+
+The examples above are five lines long and take a millisecond. Pointed at 40 real VPP
+functions, the same operation returned **231 findings** the first time — one of them a false
+proof, and most of the rest one artifact repeated. Four engine fixes and the three flags below
+took it to **one**, which is the finding that was worth reading all along.
+
+None of the flags hides anything: each records itself in the envelope, and what is suppressed
+is always counted there even when it is not shown.
+
+### `--entry-ptr-nonnull` — the caller checked, and this function is not the place to say so
+
+Start anywhere but `main` and the entry's pointer parameters are unconstrained, so `NULL` is a
+value they can have:
+
+```console
+$ chiero find-bugs hdr.c --entry f
+findings:
+  - message: null-dereference: access at offset 0 of NULL through h->len, where %1 is a pointer parameter assumed to be possibly null
+...
+```
+
+That is true, and it is a statement about *the caller contract* rather than about `f`. Measured
+over 40 VPP functions, it was 178 findings and not one `Exact` — every one of them this. For a
+helper whose callers do check, say so:
+
+```console
+$ chiero find-bugs hdr.c --entry f --entry-ptr-nonnull
+findings: (empty)
+...
+proven — this holds for all inputs (Exact)
+...
+  assumed: entry_ptr_nonnull (the entry's pointer parameters were assumed non-null; a caller that does not check has paths this run did not explore)
+```
+
+**It removes real paths, so it is an assumption and appears as one.** The envelope now says the
+answer holds for callers that check, which is a different claim from the one above and is
+labelled as such.
+
+### `--report-invented-bounds` — a bound chiero picked is not a fact about your program
+
+`find-bugs` gives an entry pointer parameter an object of 4096 bytes and points the parameter at
+offset 0 of it. Neither end is something it knows. VPP's vectors put their header *behind* the
+data, so `_vec_len(v)` reads at a negative offset — by design:
+
+```c
+struct vec_header { unsigned len; };
+unsigned vec_len (void *v) { return ((struct vec_header *) v)[-1].len; }
+```
+
+```console
+$ chiero find-bugs vec.c --entry vec_len --entry-ptr-nonnull
+findings: (empty)
+...
+  blind spot: 1 access crossed a bound chiero invented — the 4096 bytes it gives an object behind an entry pointer, which it also assumes the pointer points at the base of. Neither is a fact about your program, so they are not reported; `report_invented_bounds` (`--report-invented-bounds`) shows them
+  assumed: OpaqueCode (the bound crossed belongs to the 4096-byte object reached through an unconstrained pointer, which chiero sized at 4096 bytes and pointed the parameter at the base of because the caller is outside the analysis; a caller passing an interior pointer, or a larger object, has no fault here)
+```
+
+Reported by default, this was **147 of 157 findings** on the VPP sample, and it buried the ten
+that were about the functions. **The count is always in the envelope even when the findings are
+not** — "nothing found" and "147 not shown" are different facts, and collapsing them is the one
+move this project does not make. Turn it on for an entry whose callers really do pass a whole
+object of a known size.
+
+### `--time-budget <secs>` — an answer beats a killed process
+
+Default 60 seconds; `0` means none. A symbolic run on real code can take longer than anyone
+will wait, and the alternative to a clock is not "no clock" but somebody killing the process,
+which prints nothing at all. See [tutorial 5](05-envelope.md#determinism-and-the-one-exception)
+— a run the clock ends says what it found, what bound stopped it, how many states it left, and
+that re-running may answer differently.
+
 ## What it will not find
 
 The checker list is short and honest about it. `chiero-check` implements 040's undefined

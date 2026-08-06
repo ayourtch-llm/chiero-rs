@@ -455,9 +455,9 @@ have entrenched conventions real lowering then had to match.)
 | **031 change impact** | ✅ 20/20 contracts | incl. the headline — a header macro edit impacts every expansion site while coverage sees nothing |
 | **032 test selection** | 🟡 18/20 | mutation gate: **recall 100%, coverage-only 14.3%, reduction 65%** |
 | **041 `prove_equivalent`** + §2/§3 | 🟡 contracts 1–6, 9–18, 21, 22, 24 | z3 proves `x*2 == x<<1` over all 2^32; finds `INT_MIN` as the one input two `abs()`s disagree on — and **gcc confirms it**, via `chiero-replay` |
-| **050 tool interface** | 🟡 9 operations + a CLI (contracts 1–3, 4b, 5–8, 11, 12 partly, 14) | envelope + `select_tests`, `expansion_sites`, `explain_macro_expansion`, `prove_equivalent`(+replay), `impact`, `find_bugs`, `check_reachable`, `layout`; all reachable as `chiero <op>` |
-| 040 checkers, 042 recipes, 060 vpp | partial | `chiero-check`, `chiero-recipe`, `chiero-vpp` exist |
-| **`find-bugs` on real VPP** | 🟡 measured 2026-08-06 | 40 entry points: **231 → 23 findings**, `--entry-ptr-nonnull` **157 → 1**, 0 `Exact`. Four engine defects found by reading what was left — see §7.6 |
+| **050 tool interface** | 🟡 10 operations + a CLI (contracts 1–3, 4b, 5–8, 11, 12 partly, 14) | envelope + `select_tests`, `expansion_sites`, `explain_macro_expansion`, `prove_equivalent`(+replay), `impact`, `find_bugs`, `check_reachable`, `find_optimizations`, `layout`; all reachable as `chiero <op>`. **No MCP/JSON-RPC server**, so contract 18 cannot run |
+| 040 checkers, 042 recipes, 060 vpp | partial | `chiero-check` runs **2** checkers by default; `chiero-recipe`, `chiero-vpp` exist |
+| **`find-bugs` on real VPP** | 🟡 measured 2026-08-06 | pinned 40: **231 → 21 findings**, `--entry-ptr-nonnull` **1**. Plugins: **477 entries over 92 plugins → 18 findings, 1 `Exact` and it is true**; two engine panics found and fixed. §7.6 |
 
 **The two 032 contracts left, and why neither is "just work":**
 
@@ -1066,7 +1066,7 @@ destination** (021 §6, symbolic and initialized) rather than leaving it never-w
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
 three xtask gates were red: a crate whose test *binary* fails to build emits no `test result`
 line at all, so counting successes cannot detect a missing success. `./check.sh` keys on
-cargo's exit status and prints the failing suites first. Current: **2136 passed, 252 suites**.
+cargo's exit status and prints the failing suites first. Current: **2137 passed, 252 suites**.
 
 **Every spec must end with a `## Testable contracts` section** — numbered, checkable
 assertions. Those become the RED tests. This is what makes the specs actually drive TDD

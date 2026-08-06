@@ -72,6 +72,11 @@ fn main() -> ExitCode {
     }
 }
 
+/// **Every task, because a task missing from this list is a task nobody runs.**
+///
+/// `mutation-gate` and `replay-gate` were both absent while the tutorials told readers to run
+/// them — the gates that measure whether test selection is worth anything, invisible to
+/// `--help`.
 fn usage() {
     eprintln!(
         "usage: cargo xtask <task>\n\n  \
@@ -79,8 +84,14 @@ fn usage() {
          check-vpp-leak   enforce 001 §4 rule 4 / contract 5\n  \
          check-proof-surface  enforce 023 contract 13a (a proof cannot be forged)\n  \
          contract-coverage    report M1 exit coverage over 020-024 (080)\n  \
+         mutation-gate    032 contract 19: selection recall over injected mutations,\n                   \
+         beside a coverage-only baseline computed the same way\n  \
+         replay-gate      032 contract 18: recall over historical commits. Exits 1 while\n                   \
+         the corpus has no observed entry — an unmeasured recall is not a pass\n  \
          sweep --tree P [-I dir] [-D name[=v]] [--std gnu11]\n                   \
-         report where chiero and gcc disagree over an external C tree"
+         report where chiero and gcc disagree over an external C tree\n  \
+         recipe-sweep     042 tier-1 structural recipes over a tree\n  \
+         cc / cc-report   the `CC=` shim that records what a real build compiled"
     );
 }
 

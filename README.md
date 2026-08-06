@@ -38,14 +38,24 @@ is worth two minutes before anything else.
 | whether a rewrite is safe | `chiero prove-equivalent` | 🟡 return values, termination, side effects |
 | whether chiero is right about it | `--allow-replay-exec` | 🟡 a C harness a real compiler runs, in a network namespace with a memory cap |
 | where the defects are | `chiero find-bugs` | 🟡 two checkers of 040 |
+| whether execution can reach a line | `chiero check-reachable` | ✅ and "nothing gets there" is a different answer from "I did not" |
+| what a rewrite could gain | `chiero find-optimizations` | 🟡 dead branches, redundant loads, dead stores — proposals only |
+| what a struct's padding costs | `chiero layout` | ✅ with an obligation saying whether reordering it is even allowed |
 | where a macro came from | `chiero explain-macro` | ✅ |
 | what a macro expands into, everywhere | `chiero expansion-sites` | ✅ |
 
-Each is a command *and* a library call; `chiero --help` lists them.
+Each is a command *and* a library call; `chiero --help` lists all nine.
 
-**Verified against the whole of VPP** (~1.5M lines): 1,871 translation units parse and lower;
-1,895 gcc `.gcno` files and 1,872 clang ones decode; line counts for 322 objects match `gcov`
-exactly — 0 differences across 156,991 lines.
+**Verified against the whole of VPP** (~1.5M lines): 1,871 translation units parse and lower
+with **zero** refusals — the three remaining diagnostics are VPP's own ISO C divergences, which
+gcc accepts under `gnu11` and rejects under `-pedantic-errors`. 1,895 gcc `.gcno` files and
+1,872 clang ones decode; line counts for 322 objects match `gcov` exactly — 0 differences
+across 156,991 lines.
+
+`find-bugs` has been run this way over hundreds of VPP entry points — most recently 477 across
+92 plugins, which turned up two engine crashes and one true `Exact` finding. The harness is
+checked in at `tests/corpus/vpp-findings/`, so the numbers are somebody else's to check rather
+than mine to assert.
 
 ## Getting started
 
@@ -61,18 +71,37 @@ $ ./target/release/chiero prove-equivalent before.c after.c --entry f
 verdict: differs
 input:
   - origin: parameter 0
+    width: 32
+    value: 2147483648
     signed: -2147483648
+    pinned: true
 observation:
   kind: return_value
+  before: 2147483648
   before_signed: -2147483648
+  after: 2147483647
   after_signed: 2147483647
+  width: 32
+replay: (none)
 proven — this holds for all inputs (Exact)
+  blind spot: no replay harness was compiled (041 §1.3), so the divergence is chiero's semantics and has not been demonstrated against a compiler
 ```
 
-`chiero --help` lists the five operations. Every one of them prints an
+`chiero --help` lists all nine operations. Every one of them prints an
 [envelope](#the-one-rule-worth-knowing-first); `--json` gives the machine-readable form.
 
-The tutorials are the fastest way in. Each is a complete worked example you can paste and run:
+Three flags are worth knowing before pointing `find-bugs` at real code, because they are the
+difference between an answer and a wall of noise — measured on VPP, they took one run from 231
+findings to 1:
+
+| | |
+|---|---|
+| `--time-budget <secs>` | stop after that long and print what was found, rather than being killed with nothing to show. Default 60 s; `0` means none. |
+| `--entry-ptr-nonnull` | the entry's pointer parameters are not null. Removes real paths, so the envelope records it. |
+| `--report-invented-bounds` | show accesses that cross a bound *chiero* invented behind an entry pointer. Off by default; the count is always reported. |
+
+The [tutorials](docs/tutorials/) are the fastest way in. Each is a complete worked example you
+can paste and run, and every transcript on those pages came from a real run:
 
 1. **[Reading coverage](docs/tutorials/01-coverage.md)** — turning a build's `.gcno`/`.gcda`
    files into something you can ask questions of, and the one distinction that makes the
@@ -103,7 +132,10 @@ library returns a bare answer. Every one returns an **envelope**:
   "fidelity":    "Exact",
   "proven":      true,
   "assumptions": [],
-  "blind_spots": ["caller-visible memory was not compared (041 §1.1)"]
+  "blind_spots": ["caller-visible memory was not compared (041 §1.1)"],
+  "nondeterministic_abort": false,
+  "truncation":  { "truncated": false },
+  "determinism_key": "fnv128:…"
 }
 ```
 
@@ -136,18 +168,26 @@ Byte-identical output for identical input is a hard requirement, not an aspirati
 `HashMap` and `HashSet` are `deny`-lint-banned from every output path, and every rendering
 carries a `determinism_key` you can compare across runs.
 
+**One thing in the system is a measurement rather than a computation, and it says so.** A run
+stopped by `--time-budget` ends where the machine's speed put it, so its envelope carries
+`nondeterministic_abort: true` and a consumer that caches answers must not cache that one.
+Everything else — every verdict, every witness, every rendering — is reproducible, and the
+library's own default is no clock at all.
+
 ## Layout
 
 | Crate | What it is |
 |---|---|
-| `chiero-lex`, `chiero-pp`, `chiero-parse`, `chiero-sema`, `chiero-lower` | the C frontend |
-| `chiero-cir`, `chiero-mem`, `chiero-solver`, `chiero-exec` | the IR, memory model, solver and symbolic engine |
+| `chiero-span` | spans, the source map, and the macro expansion tree everything else hangs from |
+| `chiero-lex`, `chiero-pp`, `chiero-ast`, `chiero-parse`, `chiero-sema`, `chiero-lower` | the C frontend |
+| `chiero-cir`, `chiero-mem`, `chiero-solver`, `chiero-exec`, `chiero-model` | the IR, memory model, solver, symbolic engine and the libc/builtin models |
 | `chiero-gcov` | gcov/llvm-cov artifact decoding |
 | `chiero-diff`, `chiero-select` | change impact and test selection |
 | `chiero-check`, `chiero-opt`, `chiero-recipe` | defect checkers, optimization analysis, conformance rules |
 | `chiero-replay` | the C harness that checks a finding against a real compiler |
 | `chiero-vpp` | everything VPP-specific — and nothing VPP-specific lives anywhere else |
 | `chiero-tool` | the envelope and the operation surface |
+| `chiero-cli` | the `chiero` command — a thin wrapper that decides nothing of its own |
 
 ## Specifications
 
