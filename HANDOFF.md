@@ -454,8 +454,8 @@ have entrenched conventions real lowering then had to match.)
 | **030 coverage** | ✅ 19/19 contracts | full VPP, gcc: **1895/1895 `.gcno`, 322/322 objects, 0 of 156991 lines differ**. clang: **1872/1872** |
 | **031 change impact** | ✅ 20/20 contracts | incl. the headline — a header macro edit impacts every expansion site while coverage sees nothing |
 | **032 test selection** | 🟡 18/20 | mutation gate: **recall 100%, coverage-only 14.3%, reduction 65%** |
-| **041 `prove_equivalent`** | 🟡 contracts 1–6, 9, 12, 13, 13b | z3 proves `x*2 == x<<1` over all 2^32; finds `INT_MIN` as the one input two `abs()`s disagree on |
-| **050 tool interface** | 🟡 7 operations + a CLI | envelope + `select_tests`, `expansion_sites`, `explain_macro_expansion`, `prove_equivalent`, `impact`, `find_bugs`, `check_reachable`; all reachable as `chiero <op>` |
+| **041 `prove_equivalent`** | 🟡 contracts 1–6, 9–13, 13b, 17, 18, 21, 22, 24 | z3 proves `x*2 == x<<1` over all 2^32; finds `INT_MIN` as the one input two `abs()`s disagree on — and **gcc confirms it**, via `chiero-replay` |
+| **050 tool interface** | 🟡 9 operations + a CLI | contracts 1, 2, 3, 4b, 5, 6, 7, 8, 11, 12 (partly), 14 | envelope + `select_tests`, `expansion_sites`, `explain_macro_expansion`, `prove_equivalent`(+replay), `impact`, `find_bugs`, `check_reachable`, `layout`; all reachable as `chiero <op>` |
 | 040 checkers, 042 recipes, 060 vpp | partial | `chiero-check`, `chiero-recipe`, `chiero-vpp` exist |
 
 **The two 032 contracts left, and why neither is "just work":**
