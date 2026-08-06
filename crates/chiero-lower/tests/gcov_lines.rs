@@ -442,3 +442,65 @@ fn corpus_lines_are_a_nonempty_subset_of_gcovs() {
     assert!(checked >= 2, "both functions were checked, not one");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// **A block whose only source content is `return <constant>;` still has a line.**
+///
+/// 015 §5's rule is written over *instructions*: "for each `Inst` in the block, take its
+/// `Span`". `return 1;` lowers to a `Terminator::Return` of a constant and **no instructions
+/// at all**, so the block came out with an empty `gcov_lines` — while gcov records that line
+/// and counts it.
+///
+/// The consequence is not cosmetic. `gcov_lines` is 015 §5's own "join point of the entire
+/// differentiating claim (030 → 031 → 032)": a line gcov counts and chiero attributes to no
+/// block is a line coverage correlation cannot reach, and `return <constant>;` is one of the
+/// most common statements in C. Found by asking `chiero check-reachable` about a `return` line
+/// and being told the function has no code there.
+///
+/// gcov is the oracle, as it is for the rest of this file — the claim is not "chiero should
+/// pick this line" but "gcov counts it and chiero must agree".
+#[test]
+fn a_bare_return_of_a_constant_is_attributed_to_its_line() {
+    let dir = tmpdir("bare-return");
+    // Lines:            1                    2      3          4      5           6
+    let src = "int probe (int v)\n{\n  if (v)\n    return 1;\n  return 2;\n}\n";
+    std::fs::write(dir.join("m.c"), src).unwrap();
+    std::fs::write(
+        dir.join("both.c"),
+        "#include \"m.c\"\nint main(void){ return probe(1) == 1 ? 0 : 1; }\n",
+    )
+    .unwrap();
+
+    let (m, _map) = lower_file(&dir.join("m.c"), std::slice::from_ref(&dir));
+    let f = m.funcs.iter().find(|f| &*f.name == "probe").expect("probe");
+    let mut lines: Vec<u32> = f
+        .blocks
+        .iter()
+        .flat_map(|b| b.gcov_lines.to_vec())
+        .collect();
+    lines.sort_unstable();
+    lines.dedup();
+
+    for want in [4u32, 5] {
+        assert!(
+            lines.contains(&want),
+            "line {want} is a `return <constant>;` and chiero attributes it to no block: \
+             {lines:?}\n{:#?}",
+            f.blocks
+                .iter()
+                .map(|b| (b.id, b.gcov_lines.to_vec(), format!("{:?}", b.term)))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    // And gcov agrees those lines exist as counters.
+    if let Some(gcov) = gcov_lines_for(&dir, "both.c")
+        && let Some((_, mc)) = gcov.iter().find(|(f, _)| f == "m.c").cloned()
+    {
+        for want in [4u32, 5] {
+            assert!(
+                mc.contains(&want),
+                "gcov records line {want} of `m.c`, so the premise holds: {mc:?}"
+            );
+        }
+    }
+}
