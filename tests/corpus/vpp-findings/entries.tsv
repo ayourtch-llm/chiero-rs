@@ -26,12 +26,12 @@ vppinfra/time.c	clock_frequency_from_proc_filesystem
 vppinfra/time.c	clock_frequency_from_sys_filesystem
 vppinfra/time.c	estimate_clock_frequency
 vppinfra/time.c	format_clib_time
-vlib/node_cli.c	VLIB_CLI_COMMAND
 vlib/node_cli.c	clear_node_runtime
 vlib/node_cli.c	format_vlib_node_state
 vlib/node_cli.c	format_vlib_node_stats
 vlib/node_cli.c	node_cmp
 vlib/node_cli.c	set_node_fn
+vlib/node_cli.c	show_node
 vlib/counter.c	vlib_clear_combined_counters
 vlib/counter.c	vlib_clear_simple_counters
 vlib/counter.c	vlib_combined_counter_n_counters

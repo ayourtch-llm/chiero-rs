@@ -49,7 +49,8 @@ DEF="-DHAVE_FCNTL64 -DHAVE_LIBUNWIND=1 -D_FORTIFY_SOURCE=2"
 [ -d "$VPP/src" ] || { echo "no VPP checkout at $VPP" >&2; exit 2; }
 
 J=$(mktemp)
-trap 'rm -f "$J"' EXIT
+E=$(mktemp)
+trap 'rm -f "$J" "$E"' EXIT
 while IFS=$'\t' read -r f fn; do
   case "$f" in ''|'#'*) continue ;; esac
   # Each plugin's API compiler output lives in a directory of its own, exactly as
@@ -71,11 +72,19 @@ while IFS=$'\t' read -r f fn; do
   # that the two are tellable apart: `cut` means chiero stopped, `timeout` means something the
   # clock does not cover did not (the frontend, or a single solver query).
   timeout "$((TIMEOUT + 30))" "$CHIERO" find-bugs "$VPP/src/$f" --entry "$fn" --json \
-      --time-budget "$TIMEOUT" $INC $own $DEF "$@" >"$J" 2>/dev/null
+      --time-budget "$TIMEOUT" $INC $own $DEF "$@" >"$J" 2>"$E"
   rc=$?
   # A timeout and a crash are different facts and neither is "no findings" — the whole
   # project's rule, applied to its own measurement harness.
   if [ $rc -eq 124 ]; then printf '%s\t%s\ttimeout\t0\t0\n' "$f" "$fn"; continue; fi
+  # **A header this machine does not have is not a chiero failure.** `plugins/af_xdp` needs
+  # `xdp/xsk.h` from libxdp, `plugins/dpdk` needs DPDK's tree: the file cannot be preprocessed
+  # here at all, by chiero or by gcc. Filed under `failed` it read as seven defects in the
+  # frontend; it is seven files this environment cannot present, and the number that matters —
+  # what chiero does with the code it can read — is wrong either way round.
+  if [ ! -s "$J" ] && grep -q "cannot include" "$E"; then
+    printf '%s\t%s\tnoinc\t0\t0\n' "$f" "$fn"; continue
+  fi
   if [ ! -s "$J" ]; then printf '%s\t%s\tfailed\t0\t0\n' "$f" "$fn"; continue; fi
   python3 "$HERE/count.py" "$f" "$fn" "$J"
 done < "$LIST"

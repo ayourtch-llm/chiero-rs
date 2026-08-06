@@ -996,12 +996,77 @@ one path. Give those tests a probe first.
 (`BugCfg::report_invented_bounds`) are the two knobs this wave added; both are on `find-bugs`,
 the first also on `check-reachable`, and both are recorded in the envelope when used.
 
+#### The wall clock, and what `timeout` was hiding — 2026-08-06
+
+023 §8.1 specified `Budget::wall_clock` and the engine never had the field; the type's comment
+said the wall clock was "kept out of anything that gates output", which reads as caution about
+determinism and behaves as **silence**. Nothing bounded a run in time, so the only way to stop
+one was to kill the process, and a killed process prints nothing at all.
+
+It is implemented now. On expiry the running state terminates with one `BudgetHit` naming the
+bound *and how many states were left unexplored*, the worklist is cleared (which is also what
+ends the loop), and the envelope carries `nondeterministic_abort`. Three decisions:
+
+- **the library default is `None`** where 023 §8 says 60 s — §8.1 requires the determinism
+  contracts to run without a clock and `Budget::default()` is what they use; the CLI sets 60 s
+  and takes `--time-budget <secs>` (decimals, `0` = none, as `timeout(1)` has it);
+- **the flag follows the abort, not the configuration** — a run that finished inside its clock
+  is byte-for-byte the run it would have been without one;
+- **`check_reachable` cannot answer `unreachable` on a cut run**, which holds by construction
+  since the abort degrades the state, with a `debug_assert` so it cannot quietly stop holding.
+
+⚠️ **The residue, and it is nameable now.** The clock is checked *between steps*, so a single
+step can overrun it: three plugin entries still hit the harness's outer `timeout` at +30 s, and
+one of them ran 10 s against a 5 s budget in a symbolic-offset enumeration. The frontend is not
+the problem — `layout` on the same files takes 1 s. `prove-equivalent` has no clock at all.
+
+#### The plugin sweep — 477 entry points, 92 plugins, two panics and one true `Exact`
+
+`LIST=<list> TIMEOUT=20 measure.sh --entry-ptr-nonnull`, one function from each `.c` under
+`plugins/*/` except `acl/`. **408 ok, 20 cut, 3 timeout, 35 noinc, 11 failed, 18 findings.**
+
+**Two source-triggerable panics, both filed as `failed`** — the same row a file that will not
+preprocess gets, so two crashes on real code read as two files chiero could not read:
+
+1. `Engine::indirect` took **every defined function** as a candidate, capped at 16, against its
+   own comment saying "every defined function *whose signature could be called here*". A
+   pointer to `clib_error_t *(*)(void *, src_t *)` entered a candidate returning `unsigned
+   char`; comparing that against a null pointer aborted the run.
+2. **A `_Bool` store**: CIR types it `Int(1)`, `size_of_cty` rounds to a byte, and the
+   array-backed write path extracted bits 7..0 of a one-bit term. `mp->admin_up_down = ... ? 1
+   : 0` in a VPP API handler, needing only a `strncpy` into the same struct first.
+
+**The one `Exact` is true, and gcc says so.** `comp_ring->gen ^= VMXNET3_TXCF_GEN` where the
+macro is `(1 << 31)` — signed overflow, undefined by C11 6.5.7p4, and
+`gcc -Wshift-overflow=2` prints "requires 33 bits to represent". The first `Exact` on real VPP
+that survived being checked.
+
+⚠️ **And the eighth instance of the recurring confusion was mine.** The first fix refused a
+store whose value was wider than its type — correctly — and *dropped the write*. Re-measuring
+turned 18 findings into 133, of which **108 were `uninitialized-read` on `__X`**, the parameter
+name in gcc's `ia32intrin.h`: an unresolvable callee had entered `__bsfd (int __X)` with a
+pointer argument. Two fixes, and the second is the one to remember: candidates are now filtered
+by **parameter types**, not only arity — and a store chiero cannot represent **havocs its
+destination** (021 §6, symbolic and initialized) rather than leaving it never-written.
+**Re-measure after a fix, not only before it.** Nothing in 2136 tests moved; the corpus did.
+
+#### What the remaining 11 `failed` are, now that errors carry a location
+
+`frontend::at` prints `path:line:col`, with `expanded from` when a macro put the error there:
+
+| | |
+|---|---|
+| 7 | `` `clib_crc32c_with_init` was not declared `` at `cnat_node.h:226` — `vppinfra/crc32.h` defines it only under `__SSE4_2__`, and `frontend::predefines` asks gcc for its macros with **no `-march`** while VPP builds with `-march=x86-64-v2`. Same cause as `u32x4_sum_elts` in `soft-rss`. |
+| 2 | `http_static.c:142:39: expected a type specifier` — a generated `vl_api_*_t` typedef the parser did not record |
+| 1 | `lldp_api.c:135:7: no member named last_heard_age`, expanded from `120:3` inside `REPLY_MACRO_DETAILS4_END` |
+| 1 | `mactime_top.c`: `` `vl_msg_api_set_handlers` was not declared `` |
+
 ### 7.5 How to check the workspace is green — `./check.sh`
 
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
 three xtask gates were red: a crate whose test *binary* fails to build emits no `test result`
 line at all, so counting successes cannot detect a missing success. `./check.sh` keys on
-cargo's exit status and prints the failing suites first. Current: **2065 passed, 247 suites**.
+cargo's exit status and prints the failing suites first. Current: **2136 passed, 252 suites**.
 
 **Every spec must end with a `## Testable contracts` section** — numbered, checkable
 assertions. Those become the RED tests. This is what makes the specs actually drive TDD
@@ -1052,25 +1117,37 @@ typing the paths ever would.
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE — **`find-bugs` on VPP went 231 findings → 1 this wave. §7.6 has the story.**
+> ### ⏭️ START HERE — **the plugins are swept: 477 entries, 92 plugins, two panics fixed and one true `Exact`.** §7.6 has the story.
 >
-> Retake the measurement any time: `tests/corpus/vpp-findings/measure.sh` (~4 min, needs the
-> VPP checkout at `/home/ubuntu/vpp`). It is checked in precisely so the number is somebody
-> else's to check, and the scripts were already lost once when they lived only in scratch.
+> Retake any measurement: `tests/corpus/vpp-findings/measure.sh` (~4 min for the pinned 40,
+> ~25 min for the plugin list; needs the VPP checkout at `/home/ubuntu/vpp`). Checked in so the
+> numbers are somebody else's to check, and the scripts were already lost once when they lived
+> only in scratch.
 >
-> | | findings | `Exact` |
-> |---|---|---|
-> | start of wave | 231 | 1, **and it was wrong** |
-> | now | 23 | 0 |
-> | now, `--entry-ptr-nonnull` | **1** | 0 |
+> | | entries | findings | `Exact` |
+> |---|---|---|---|
+> | pinned 40 | 40 | 21 | 0 |
+> | pinned 40, `--entry-ptr-nonnull` | 40 | **1** | 0 |
+> | plugins, `--entry-ptr-nonnull` | 477 over 92 plugins | **18** | **1, and it is true** |
 >
-> **The method, which matters more than the number:** each of the four engine defects fixed this
-> wave was found by reading what was left after the previous one. Nothing in the test suite was
-> going to find any of them — the same lesson §7.3 records about `check-reachable`.
+> **`timeout` is no longer a status that hides a function.** 023 §8.1's `wall_clock` is
+> implemented: a run nobody will wait for now ends by its own decision, prints what it found,
+> names the bound *and how many states it left*, and marks itself `nondeterministic_abort`.
+> `--time-budget <secs>` on `find-bugs` and `check-reachable`; library default `None`, CLI
+> default 60 s. The harness keeps an outer `timeout` at +30 s, and the three entries that still
+> hit it are the honest residue: **the clock is checked between steps, and one step can
+> overrun it.**
 >
-> **The one remaining finding is the shape a finding should have**: `clib_time_init` divides by
-> a value the path allows to be zero, `Unknown`, with inline asm, `__builtin_expect`, an opaque
-> write and 1496 unreported invented-bound accesses named in the envelope.
+> **The true `Exact`**: `comp_ring->gen ^= VMXNET3_TXCF_GEN`, and that macro is `(1 << 31)` —
+> signed overflow. `gcc -Wshift-overflow=2` agrees. The previous `Exact` on VPP was a false
+> proof, so this one was checked against gcc before it was believed.
+>
+> **The lesson of the wave, and it cost 108 false findings**: I fixed a store that could not be
+> represented by *dropping* it, and the next read of those bytes became `uninitialized-read`.
+> That is the eighth instance of *chiero not knowing a value is not the program failing to
+> write one* — committed four hours after reading the note that warns about it. **Re-measure
+> after a fix, not only before it.** The suite never moved; the corpus did, in the wrong
+> direction, and that is the only thing that said so.
 >
 > ### ✅ CLOSED — "a struct copy over 16 bytes is truncated" was the wrong diagnosis
 >
@@ -1098,24 +1175,33 @@ typing the paths ever would.
 >
 > ### ⏭️ What to do next, in order
 >
-> 1. **Decide what "unresolvable pointer" and "a symbolic pointer could not be resolved" are.**
->    23 of the 42 findings on the wide sweep, and they read as statements about chiero — but
->    unlike `symbolic-byte` they are not obviously so. A genuinely arbitrary pointer value *is*
->    a hazard. **Decide the line before filtering**, or a real `WildPointer` class gets
->    suppressed with them. This is the highest-value item and the only one that needs judgement
->    rather than typing.
-> 2. **The 6 timeouts at 30 s** (and 2 of the 40 at 60 s) are unexplained. A function chiero
->    cannot finish is a hole in coverage that no envelope names, because the run produces none.
->    Everything else in this project distinguishes "nothing there" from "did not look"; this
->    does not yet.
-> 3. **`MemFault::BadRange`** — same class as `is_chiero_limit`, held back because three
+> 1. **The 11 `failed` plugin entries, which are now one-line diagnoses** (§7.6 has the table).
+>    Seven are one cause: `frontend::predefines` asks gcc for its macros with **no `-march`**,
+>    while VPP builds `-march=x86-64-v2`, so `__SSE4_2__` is undefined and `vppinfra/crc32.h`
+>    never defines `clib_crc32c_with_init`. Passing `-march` through would then require parsing
+>    `x86intrin.h`, which is the part to think about before typing. The other four are two
+>    parser/sema gaps in generated API headers.
+> 2. **A step that outlives the clock.** Three entries still need the outer `timeout`; one ran
+>    10 s against a 5 s budget inside a symbolic-offset enumeration. The clock is only checked
+>    between steps, and 022 §8's `max_solver_rlimit` — deterministic work units — is specified
+>    and unimplemented. That is the principled bound for the solver half.
+> 3. **`InstKind::Call` carries no result type**, so an indirect call's result width is whatever
+>    candidate ran. The arity and parameter-type filters cut the wildest cases and cannot close
+>    it; the engine survives the rest by degrading. The real fix is a CIR change — 135 sites
+>    construct `InstKind::Call`, and the text format needs syntax for it.
+> 4. **`MemFault::BadRange`** — same class as `is_chiero_limit`, held back because three
 >    `step.rs` tests use it as their only objectless non-fatal probe. Give them one (a new
 >    non-fatal objectless *defect* fault, or a different keying fixture) and move it.
-> 4. **Widen again.** Each widening has paid: 7 files → four defects, 56 files → three more.
->    `plugins/` and `vnet/ip*` are untouched, and `pick_entries.py` takes a file list.
-> 5. 032 contract 18's corpus still has **no `observed` entry** and the gate correctly exits 1
+> 5. **Widen again.** Every widening has paid: 7 files → four defects, 56 files → three more,
+>    92 plugins → two panics and a true `Exact`. `vnet/ip*` and `plugins/*/` beyond one function
+>    per file are untouched; `pick_entries.py --per-file N <files>` takes a list.
+> 6. 032 contract 18's corpus still has **no `observed` entry** and the gate correctly exits 1
 >    saying "NOT MEASURED". The method is recorded below: revert a fix's `src/` diff onto HEAD
 >    rather than hunting for a commit whose parent fails.
+>
+> ✅ **Done since this list was written**: "decide what *unresolvable pointer* is" (7433ad2 —
+> both sentences are degradations, not findings, and the cause survives in the assumption), and
+> the timeouts (023 §8.1's wall clock, above).
 >
 > ### 🔁 The pattern this wave is really about
 >

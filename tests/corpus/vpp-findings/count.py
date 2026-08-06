@@ -15,5 +15,14 @@ except Exception:
     raise SystemExit
 fs = e.get("result", {}).get("findings", [])
 ex = sum(1 for x in fs if x.get("fidelity") == "Exact")
-status = "cut" if e.get("nondeterministic_abort") else "ok"
+if e.get("result", {}).get("error"):
+    # **`no function named X` is not a clean run.** `find-bugs` says so in the envelope and
+    # sets a `nothing_analysed` assumption; counting it as `ok` with zero findings is the
+    # harness reporting an all-clear for a function it never looked at — which is the exact
+    # failure the envelope was built to make impossible, arriving through the summariser.
+    status = "nofn"
+elif e.get("nondeterministic_abort"):
+    status = "cut"
+else:
+    status = "ok"
 print("%s\t%s\t%s\t%d\t%d" % (f, fn, status, len(fs), ex))
