@@ -1939,6 +1939,52 @@ impl Memory {
         self.read_bits(p, lo_bit, n_bits, at)
     }
 
+    /// **A bitfield as a term** — the bit path's `read_term`.
+    ///
+    /// [`Memory::read_bits`] answers in a `u128`, so a byte holding a symbol is a byte it
+    /// cannot answer for, and it says so with `SymbolicByte`. That is a true statement about
+    /// this API and not one about the program, and it is the whole of what a caller sees when
+    /// it reads `p->traced` out of a struct somebody else filled in — which on VPP is most
+    /// structs. 021 §3 has one answer for a value chiero does not know, used everywhere else:
+    /// a term.
+    ///
+    /// Reads the whole bytes the field lives in and extracts. Little-endian only, and that is a
+    /// refusal rather than an assumption: on a big-endian target the field's bits are not at
+    /// this offset within the byte string, and getting that silently wrong is worse than
+    /// answering `None` on a target chiero does not run on yet.
+    pub fn read_bits_term(
+        &mut self,
+        a: &mut TermArena,
+        p: Pointer,
+        lo_bit: u64,
+        n_bits: u64,
+        e: Endian,
+        at: Span,
+    ) -> Option<AccessResult<Term>> {
+        if e != Endian::Little || n_bits == 0 || n_bits > 128 {
+            return None;
+        }
+        let b = abs_bit(p.off, lo_bit)?;
+        let (first, last) = (b / 8, (b + n_bits - 1) / 8);
+        let size = last - first + 1;
+        // Addressed from the object's base: `first` is already absolute, so the pointer's own
+        // offset must not be added a second time.
+        let base = Pointer {
+            base: p.base,
+            off: first as i64,
+        };
+        let r = self.read_term(a, base, size, e, at);
+        let t = r.value?;
+        // The low bit of the read is bit `first * 8` of the object, so the field starts
+        // `b - first * 8` bits into it — under little-endian, where byte `first` is the low
+        // byte of the term.
+        let lo = (b - first * 8) as u32;
+        Some(AccessResult {
+            value: Some(a.extract(t, lo + n_bits as u32 - 1, lo)),
+            faults: r.faults,
+        })
+    }
+
     pub fn read_bits(
         &mut self,
         p: Pointer,

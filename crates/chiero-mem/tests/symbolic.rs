@@ -2090,3 +2090,91 @@ fn a_symbolic_write_to_a_freed_object_reports_the_free_not_a_symbolic_byte() {
         r.faults
     );
 }
+
+/// **`read_bits_term` agrees with `read_bits` wherever `read_bits` can answer.**
+///
+/// The term path exists for the case the concrete one cannot serve — a bitfield in memory
+/// somebody else filled in, which on VPP is most structs. That case has no independent oracle:
+/// the answer is a symbol, and a wrong bit range produces a symbol too, equally plausible and
+/// silently wrong for every `p->flags` in the tree.
+///
+/// So it is pinned where an oracle does exist. Over concrete bytes the two APIs must agree
+/// exactly, for every field offset and width across a byte boundary — which is what catches an
+/// off-by-one in the extraction or a byte order read backwards, the two ways this can be wrong.
+#[test]
+fn the_term_bitfield_read_agrees_with_the_concrete_one() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 16, 8, sp(1));
+    // An asymmetric pattern: 0x00/0xFF would pass a byte-order bug, and a palindrome would
+    // pass a reversed extraction.
+    m.write(ptr(o, 0), &[0x12, 0x34, 0x56, 0x78], sp(2));
+
+    for lo_bit in 0u64..24 {
+        for n_bits in 1u64..=9 {
+            let concrete = m.read_bits(ptr(o, 0), lo_bit, n_bits, sp(3));
+            let Some(want) = concrete.value else {
+                panic!("the concrete API should answer over concrete bytes at {lo_bit}+{n_bits}");
+            };
+            let got = m
+                .read_bits_term(&mut a, ptr(o, 0), lo_bit, n_bits, Endian::Little, sp(4))
+                .unwrap_or_else(|| panic!("no term at {lo_bit}+{n_bits}"));
+            let t = got.value.expect("a term");
+            assert_eq!(
+                a.width(t),
+                n_bits as u32,
+                "the field's own width, not the containing bytes' ({lo_bit}+{n_bits})"
+            );
+            assert_eq!(
+                a.eval_ground(t).expect("a ground term").bits(),
+                want,
+                "term and concrete reads disagree at bit {lo_bit}, width {n_bits}"
+            );
+        }
+    }
+}
+
+/// And the case it was built for: a symbolic byte gives a **value**, where the concrete API
+/// gives a `SymbolicByte` fault and nothing to compute with.
+#[test]
+fn a_bitfield_of_a_symbolic_byte_reads_as_a_term_not_a_fault() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 16, 8, sp(1));
+    let x = a.var(Sort::BitVec(8), "x");
+    m.write_sym_byte(ptr(o, 0), x, sp(2));
+
+    let concrete = m.read_bits(ptr(o, 0), 1, 1, sp(3));
+    assert!(
+        concrete
+            .faults
+            .iter()
+            .any(|f| matches!(f, MemFault::SymbolicByte { .. })),
+        "the concrete API cannot answer, and says so: {:?}",
+        concrete.faults
+    );
+
+    let got = m
+        .read_bits_term(&mut a, ptr(o, 0), 1, 1, Endian::Little, sp(4))
+        .expect("little-endian, one bit");
+    assert!(
+        !got.faults
+            .iter()
+            .any(|f| matches!(f, MemFault::SymbolicByte { .. })),
+        "the term API can: {:?}",
+        got.faults
+    );
+    let t = got.value.expect("a term");
+    assert_eq!(a.width(t), 1);
+
+    // It is bit 1 of `x` and not some other bit: `x = 0b10` makes it 1, `x = 0b01` makes it 0.
+    for (v, want) in [(0b10u128, 1u128), (0b01, 0)] {
+        let mut model = Model::new();
+        model.set(a.var_id(x).unwrap(), BvConst::new(8, v));
+        assert_eq!(
+            a.eval(&model, t).expect("evaluable").bits(),
+            want,
+            "x = {v:#b}"
+        );
+    }
+}

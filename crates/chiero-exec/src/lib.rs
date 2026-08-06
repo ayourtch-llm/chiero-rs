@@ -5273,8 +5273,41 @@ impl<'m> Engine<'m> {
                 let r = s
                     .mem
                     .read_bits_via(a, p, bits.off as u64, bits.width as u64, span);
-                self.report_faults(a, s, &r.faults, span);
+                // **A byte holding a symbol is a value, not a fault.**
+                //
+                // `read_bits` answers in a `u128` and reports `SymbolicByte` when it cannot —
+                // true of the API, and nothing about the program. The term path answers the
+                // same question the way 021 §3 answers every other unknown value, so it is
+                // taken *before* the faults are reported rather than as a recovery: reporting
+                // and then retracting would leave the sentence in a reader's output.
+                let symbolic = r
+                    .faults
+                    .iter()
+                    .any(|f| matches!(f, chiero_mem::MemFault::SymbolicByte { .. }));
                 let w = bits_of_cty(unit).unwrap_or(bits.width);
+                if symbolic
+                    && let Some(t) = s.mem.read_bits_term(
+                        a,
+                        p,
+                        bits.off as u64,
+                        bits.width as u64,
+                        Endian::Little,
+                        span,
+                    )
+                {
+                    // The bytes' own faults still stand — a symbolic byte inside a *freed*
+                    // object is still a use-after-free, and only the "cannot answer" one was
+                    // about the API.
+                    let live = self.report_faults(a, s, &t.faults, span);
+                    if let Some(v) = t.value.filter(|_| !unusable(&live)) {
+                        return Some(Value::Scalar(if *signed {
+                            a.sext(v, w)
+                        } else {
+                            a.zext(v, w)
+                        }));
+                    }
+                }
+                self.report_faults(a, s, &r.faults, span);
                 // **A value that arrived with a fault is not the program's.** 021 §5
                 // hands back faults *alongside* a value, and for an uninitialized read
                 // that value is the backing store's zero — the exact answer 021 §3.1
