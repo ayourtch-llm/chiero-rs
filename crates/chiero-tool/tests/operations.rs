@@ -278,15 +278,18 @@ fn prove_equivalent_replay_samples() -> Vec<Envelope> {
             chiero_tool::ReplayPolicy::EmitOnly,
         ),
     ];
-    if cfg.backend.is_some() && chiero_replay::compiler().is_some() {
-        out.push(chiero_tool::prove_equivalent_with_replay(
-            &m(DOUBLE),
-            &m(TRIPLED),
-            &cfg,
-            Some(&sources),
-            chiero_tool::ReplayPolicy::Run,
-        ));
-    }
+    // **`ReplayPolicy::Run` is deliberately not sampled here, and the reason is a real
+    // boundary in 001 §5's determinism claim.**
+    //
+    // What chiero *computes* is reproducible: the verdict, the witness, and the text of the
+    // emitted program. Whether a compiler on a loaded machine finishes inside the wall-clock
+    // limit is a *measurement*, not a computation, and it varies. Sampling it here made
+    // `every_operation_is_deterministic` fail intermittently under the full workspace run and
+    // pass alone — which is worse than a consistent failure, because it teaches a reader to
+    // re-run rather than to look.
+    //
+    // The Run path is covered by `replay_scope.rs` and `prove_equivalent.rs`, where a
+    // non-reproducible outcome is the subject rather than a nuisance.
     out
 }
 

@@ -1293,6 +1293,15 @@ pub enum ReplayPolicy {
 /// - **did_not_build / did_not_run** — nothing was learned, so nothing changes except a blind
 ///   spot naming what stopped it. A build failure is a fact about the harness; treating it as
 ///   a downgrade would punish the analysis for the emitter's limits.
+///
+/// # This operation is reproducible up to the harness, and no further
+///
+/// 001 §5 requires byte-identical output for identical input, and everything chiero *computes*
+/// here is: the verdict, the witness, and the text of the emitted program. **Whether a compiler
+/// on a loaded machine finishes inside the wall-clock limit is a measurement, not a
+/// computation.** With [`ReplayPolicy::Run`] the `outcome` field can therefore differ between
+/// runs of the same input — that is a property of asking the outside world, which is the whole
+/// value of asking it, and it is why the operations registry samples `EmitOnly`.
 pub fn prove_equivalent_with_replay(
     before: &chiero_cir::Module,
     after: &chiero_cir::Module,
