@@ -3582,14 +3582,15 @@ impl Memory {
         };
         let size = e.size;
         // An unmaterialized object has nothing to promote *from*. Returning silently left
-        // the caller believing a promotion had happened.
-        let Some(o) = e.obj.as_ref() else {
+        // the caller believing a promotion had happened. Checked before the materialization
+        // below, which would otherwise walk an object that is not there.
+        if e.obj.is_none() {
             return AccessResult::fault(MemFault::AllocationTooLarge {
                 obj: id,
                 size,
                 at: Span::DUMMY,
             });
-        };
+        }
         // **A lazy object is fully initialized (021 §6), and promotion must not forget it.**
         //
         // Laziness is discharged *on read* — a byte becomes a symbol nobody has claimed when
