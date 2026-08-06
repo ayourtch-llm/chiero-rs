@@ -332,7 +332,8 @@ fn renderable(witness: &Witness) -> Result<Vec<String>, Refusal> {
                 if b.width > 64 {
                     return Err(Refusal {
                         why: format!(
-                            "a {}-bit input has no C literal this emitter can write — above 64                              bits gcc truncates a decimal constant silently",
+                            "a {}-bit input has no C literal this emitter can write — above 64 bits gcc \
+                             truncates a decimal constant silently",
                             b.width
                         ),
                     });
@@ -342,7 +343,7 @@ fn renderable(witness: &Witness) -> Result<Vec<String>, Refusal> {
             other => {
                 return Err(Refusal {
                     why: format!(
-                        "the witness binds {}, which is not a parameter — 040 §3 wants                          unmodeled extern calls stubbed to return the engine's values and                          memory objects materialized, and neither is built",
+                        "the witness binds {}, which is not a parameter — 040 §3 wants unmodeled extern calls stubbed to return the engine's values and memory objects materialized, and neither is built",
                         other.label()
                     ),
                 });
@@ -353,7 +354,7 @@ fn renderable(witness: &Witness) -> Result<Vec<String>, Refusal> {
     args.sort_by_key(|(i, _)| *i);
     if args.iter().enumerate().any(|(n, (i, _))| n != *i) {
         return Err(Refusal {
-            why: "the witness's parameter indices are not 0..n, so they cannot be passed                   positionally"
+            why: "the witness's parameter indices are not 0..n, so they cannot be passed positionally"
                 .to_string(),
         });
     }
