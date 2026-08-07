@@ -1278,6 +1278,7 @@ This has now paid out three times in a row, each time on the first run after a w
 | `find-bugs`: 7 files → 56 → 92 plugins | a sweep each | 4 defects, then 3, then two panics and a true `Exact` |
 | `layout`: no bit-field records → runs modelled | one wave | 2 VPP findings, and a review found a `proven` wrong answer inside the fix |
 | contract-12 gate: 20 `vppinfra/` seeds → +1 `vnet/` seed | 86 files, ~5 min | **2 layout defects + 1 in the gate itself; 5482 → 8492 assertions** |
+| chasing one failure message out of `vlib/` | one wave | no defect — gcc agrees with chiero — but the message now names the type, which is what turned a compile into a read |
 
 The loop, and it is deliberately mechanical:
 
@@ -1453,9 +1454,12 @@ typing the paths ever would.
 >    - **`chiero-parse`'s `vpp_corpus.rs` keeps its *own* six-seed list**, still all `vppinfra/`.
 >      The corpus it reads already has 113 files; adding `vnet/session/session_types.h` there
 >      costs nothing but the pinned diagnostic metric, and that metric is the point.
->    - **A `vlib/` seed that pulls `trace.h`**, which is a known parse failure:
->      `src/vlib/trace.h:51:43: expected a type specifier`. That one is a real parser gap and
->      will not land in a single wave — read it before starting.
+>    - ~~A `vlib/` seed that pulls `trace.h`~~ — **not a parser gap; I was wrong to call it
+>      one.** gcc rejects `#include <vlib/node.h>` at the *same line and column*
+>      (`unknown type name 'vlib_buffer_t'`): that header is simply not self-contained. Any
+>      seed reaching it must come in through `vlib/vlib.h`, which sets the include order.
+>      The wave it did produce was a diagnostic: chiero now prints gcc's message verbatim,
+>      which is what made the answer a read rather than a compile.
 >    - **The sema corpus gate's own contract 11** (re-lex round trip) and contract 19
 >      (per-`ConfigId` sites) are listed in §7 as owed and have no corpus at all.
 > 2. **⏸️ PARKED at the owner's request 2026-08-07 — `-march`.** Do not start this without
