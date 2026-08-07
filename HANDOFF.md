@@ -1594,12 +1594,12 @@ typing the paths ever would.
      `chiero-span/tests/config_sites.rs`; 11 genuinely had no test and now does (§7.18), and it
      holds. ⚠️ **This entry named the wrong spec and claimed a gap that was half fictional** —
      `grep 'Covers:' crates/*/tests/*.rs` settles such a claim in one command.
-   - **014 contract 11's census does not ask its own question of `&&`/`||`.** It checked that
-     both operands share one type — right for arithmetic, wrong for these (C 6.5.13/6.5.14
-     compare each against 0 independently), and it is now skipped with the constraint C *does*
-     impose asserted instead. But lowering must still insert a compare-against-zero per operand,
-     and 014 §5 says the typed tree makes every implicit operation explicit. **Nothing checks
-     that**, and it is the contract's actual subject.
+   - ~~014 contract 11's `&&`/`||` half~~ — **closed 2026-08-07, an honest zero.** Lowering does
+     call `truth_of` per operand and gets every case right; three genuinely-absent rows landed in
+     `chiero-lower/tests/differential.rs` (an operand wider than `int`, operands of different
+     types, four-way short-circuiting with a side effect). ⚠️ **The wave was mis-scoped** — most
+     of what I planned to add was already covered, including the `-0.0` case I had named as the
+     discriminator. Read the corpus before asserting its edge (§8.3 step 1).
    - `vnet/ip*` and `plugins/*/` beyond one function per file are untouched by the find-bugs
      sweep; `pick_entries.py --per-file N <files>` takes a list.
 
