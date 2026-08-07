@@ -679,3 +679,44 @@ fn an_attribute_may_stand_where_a_statement_belongs() {
         "the declaration is still a declaration"
     );
 }
+
+/// **An unknown type name is named** — gcc's message, because gcc's choice of message is this
+/// project's tiebreak and because the difference is an hour of somebody's reduction.
+///
+/// `typedef int (f_t) (undeclared_t *b);` has no type specifier where one belongs, and
+/// "expected a type specifier" is true of it. It is also true of every other way to reach that
+/// branch, and the reader's next question is always *which name*. gcc answers it: `unknown
+/// type name 'undeclared_t'`.
+///
+/// **Measured on real code, which is why this is worth a wave.** `vlib/node.h` reports this at
+/// `vlib/trace.h:51:43` — and gcc rejects the same line at the same column, because that header
+/// is genuinely not self-contained. Reaching that conclusion took compiling it; with the name
+/// in the message it would have taken reading it. The same message is one of the eleven
+/// one-line diagnoses in §7.6's plugin table.
+///
+/// The generic wording stays where it is right: a specifier position holding a punctuator has
+/// no name to report, and inventing one would be worse than saying less.
+#[test]
+fn a_missing_type_specifier_names_the_identifier_when_there_is_one() {
+    let (_, p) = parse("typedef int (f_t) (undeclared_t *b);\n");
+    let first = p
+        .diagnostics
+        .first()
+        .unwrap_or_else(|| panic!("an undeclared type name is a diagnostic"));
+    assert!(
+        first.message.contains("undeclared_t"),
+        "the reader's next question is which name, and gcc answers it: {:?}",
+        first.message
+    );
+
+    // **And where there is no name, the generic wording stands.** Without this half the fix
+    // could be "always print the next token", which is wrong for a punctuator.
+    let (_, q) = parse("int f(void) { struct { const } x; return 0; }\n");
+    assert!(
+        q.diagnostics
+            .iter()
+            .any(|d| d.message.contains("expected a type specifier")),
+        "a specifier position holding no identifier has no name to report: {:?}",
+        q.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
