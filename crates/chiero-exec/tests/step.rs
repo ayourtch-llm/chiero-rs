@@ -11635,3 +11635,87 @@ fn a_symbolic_address_pinned_to_zero_is_the_null_pointer() {
         r.findings()
     );
 }
+
+/// **023 §8's `max_memory_objects`, the last of its deterministic budgets to be built.**
+///
+/// §8's own inventory listed it as "not built" beside `max_solver_rlimit` — which shipped on
+/// 2026-08-07 — and this is what is left. It is not decoration: an `alloca` in a loop mints a
+/// fresh object per iteration (`alloca_dyn_in_a_loop_creates_a_distinct_object_each_time` pins
+/// exactly that), and UCSE's lazy initialisation mints one on first dereference of every
+/// unknown pointer. Nothing bounded either. `max_states` bounds *paths*, and a single path can
+/// allocate without limit.
+///
+/// Deterministic, in §8.1's sense: a count of objects does not move with machine speed or
+/// thread count, so a run cut here is an ordinary answer rather than a measurement — which is
+/// asserted below, because that is the property that makes it a budget rather than a clock.
+#[test]
+fn a_run_that_allocates_without_end_is_bounded_and_says_so() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![
+            block(
+                0,
+                vec![inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::Use(i32c(0)),
+                })],
+                Terminator::Goto(BlockId(1)),
+            ),
+            block(
+                1,
+                vec![inst(InstKind::AllocaDyn {
+                    dst: ValueId(1),
+                    alloca: AllocaId(0),
+                    elem: CTy::Int(8),
+                    count: Operand::Const(Const::Int { bits: 64, val: 8 }),
+                    align: 8,
+                })],
+                Terminator::Goto(BlockId(1)),
+            ),
+        ],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![AllocaDecl {
+        count: chiero_cir::DYNAMIC_EXTENT,
+        ..alloca(0, CTy::Int(8), 0)
+    }];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    // **The loop bound is generous and the object bound is not**, so the one under test is the
+    // one that fires. With `max_loop_iters` doing the stopping this test would pass against a
+    // `max_memory_objects` that does nothing at all.
+    let r = Engine::new(&m)
+        .with_budget(Budget {
+            max_loop_iters: 10_000,
+            max_memory_objects: 12,
+            ..Budget::default()
+        })
+        .run(&mut a);
+
+    let most = r
+        .states()
+        .iter()
+        .map(|s| s.mem.object_count_for_test())
+        .max()
+        .unwrap_or(0);
+    assert!(
+        most <= 12,
+        "the bound is a bound: {most} objects against a limit of 12"
+    );
+    assert!(
+        degradations(&r)
+            .iter()
+            .any(|d| d.contains("max_memory_objects")),
+        "and the run names what stopped it: {:#?}",
+        degradations(&r)
+    );
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Bounded,
+        "a truncated search is Bounded, never Exact"
+    );
+}
