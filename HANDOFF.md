@@ -1274,7 +1274,8 @@ size**.
 | run | findings | agreement |
 |---|---|---|
 | first, before any fix | **22** (2 panics) | 92 / 141 |
-| after each of seven waves | 19, 21, 18, 17, 16, 16, **14** | → **100 / 141** |
+| after each of seven waves | 19, 21, 18, 17, 16, 16, 14 | → 100 / 141 |
+| + `push_macro`/`pop_macro` and `#pragma GCC error`/`warning` | **12** | **101 / 141** |
 
 *(21 is not a regression: splitting the "neither compiler ran it" bucket let two rows be seen for
 the first time. §7.10's shape — a change that makes a gate reject more is information.)*
@@ -1304,6 +1305,35 @@ spelling, not identity**.
 builtins = **382 rows, every value measured from gcc**, and a contract test re-asks gcc for each.
 A name it does not cover answers 0 **and says so by name** — which is why `answer` returns
 `Option<u32>`, and which turned the last wave's fix from an investigation into a lookup.
+
+### 🎯 **The owner asked to fully close the preprocessor gap. 12 findings left, and here is each.**
+*(2026-08-07. Two closed in the first pass: `pragma-pushpop-macro.c` — `#pragma push_macro`/
+`pop_macro` is a stack of **name bindings**, since a `MacroId` is never reused; and
+`diagnostic-pragma-1.c` — `#pragma GCC error`/`warning`, one text-based implementation for both
+the directive and `_Pragma`.)*
+
+**Mechanical, do these first:**
+
+| file(s) | what it needs |
+|---|---|
+| `_Pragma-dependency2.c` | `#pragma GCC dependency "f"` must **error when `f` is not found**. ⚠️ The `_Pragma` route runs inside `expand_inner`, which has **no `FileLoader`** — that is the actual work, not the check |
+| `has_attribute.c` | 8 clang-only attribute names the table lacks. chiero answering **0 is correct** (it impersonates gcc); adding measured rows removes the "not in the persona table" diagnostics |
+
+**Real features:**
+
+| file(s) | what it needs |
+|---|---|
+| `macro_fn_comma_swallow2.c` (×2 RUN lines), `macro_paste_commaext.c` | more GNU comma-swallow shapes, same family as §7.11's defect 5+6. **Measure every row of each file** — the gate names one divergence per file and named the wrong one last time |
+| `macro_backslash.c` | `'bar\'` and a trailing `TTB` — a backslash inside a character constant reaching a paste |
+| `c99-6_10_3_4_p6.c` | `stray \ in program`; ours `x`, theirs `printf`. Likely another UCN-adjacent lexer corner |
+| `macro_fn_va_opt.c` | **`__VA_OPT__`** — the big one. 012 §2.3 declares it out of v1 scope *by measurement* (VPP uses it zero times) and **diagnoses** rather than guessing. Closing it is a scope change, so **ask the owner** before building it |
+
+**Decisions, not defects — closing these means choosing:**
+
+| file(s) | the choice |
+|---|---|
+| `normalize-3.c`, `ucnid-2011-1.c` | chiero and gcc agree on **identity** and differ on **spelling**: `gcc -E` normalizes `\u00AA` to `\U000000aa`, chiero preserves what was written because 010 contract 11 wants a token's bytes to re-lex to its own spelling (011 §2.0). **Close it in the gate, not the preprocessor** — normalize UCN escapes on both sides before comparing, which compares identity rather than rendering |
+| `pr58844-1.c`, `-2.c` | `x######x` is **UB** and gcc and clang *disagree* — gcc gives `xx`, clang rejects. There is no answer to match. Closing means **deciding to follow gcc**, which is defensible (gcc is VPP's compiler) but is a decision, not a fix |
 
 ⚖️ **Assessment: harvested.** Of the 14 findings left, **none affects VPP** — 1 is a declared
 scope limit (`__VA_OPT__`), 2 a declared spelling divergence, 2 UB where gcc and clang disagree,
@@ -1490,8 +1520,15 @@ typing the paths ever would.
 >
 > Read **§8.3** first: it is the loop, its yield table, and the trap that let a defect survive
 > for months (*a green gate is evidence about the corpus, not about the tree*). Then §9.1 for
-> the next target. **§9.1 leads with what is closed and why**, then eight live items; the most
-> ready is **`MemFault::BadRange`** (item 6), whose stated blocker turns out to have a route.
+> the next target.
+>
+> 🎯 **The owner's standing ask as of 2026-08-07: fully close the preprocessor gap before other
+> work.** §7.11 carries a table of all **12** remaining pp-gate findings with what each needs —
+> two mechanical, four real features, and four that are **decisions** (two UCN-spelling rows to
+> close in the *gate*, two UB rows where gcc and clang disagree so closing means choosing gcc).
+> ⚠️ **`__VA_OPT__` is a declared scope change — ask before building it.**
+> After that: §9.1's live items, the readiest being `MemFault::BadRange` (⚠️ its blocker is
+> **real** — I tested the way round and it fails; the mutant recipe is in the entry).
 > The `-march` item stays parked for the owner.
 >
 > 🆕 **The newest entry in the yield table is the most useful one: change the *kind* of corpus,
@@ -1500,10 +1537,13 @@ typing the paths ever would.
 > corpora had begun returning honest zeros. §11.3 carries the general form.
 >
 > **State: 2026-08-07 — §7.11's seven waves over the preprocessor conformance corpus (nine
-> defects), plus an honest zero on 014 contract 11. `./check.sh` GREEN: 2191 passed across 257
-> suites**, up from 2154 at the session's start. The contract-12 layout gate is 22 seeds / 2238 records / **10248 assertions
-> put to gcc**; pp-gate is 141 C cases, **100 agree**, **14 findings**, every one named and
-> classified in §7.11's assessment.
+> defects), plus honest zeros on 014 contract 11, `vnet/ip/` (§7.17) and 010 contract 11 (§7.18),
+> then two more preprocessor closures (`push_macro`/`pop_macro`, `#pragma GCC error`/`warning`).
+> `./check.sh` GREEN at 2193/258 before those two; re-measured after.** Up from 2154 at the
+> session's start. The contract-12 layout gate is 22 seeds / 2238 records / **10248 assertions
+> put to gcc**; pp-gate is 141 C cases, **101 agree** (+8 matching one compiler where the two
+> disagree, +19 correctly rejected), **12 findings**, every one named in §7.11's close-the-gap
+> table.
 >
 > ⏱️ **Budget the clock.** A full both-legs run is over an hour and dominated the last session.
 > Do not start a widening and a full run in the same breath.
