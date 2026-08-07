@@ -1553,8 +1553,8 @@ token 4.
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
 three xtask gates were red: a crate whose test *binary* fails to build emits no `test result`
 line at all, so counting successes cannot detect a missing success. `./check.sh` keys on
-cargo's exit status and prints the failing suites first. Current: **2188 passed, 257 suites**
-(2026-08-07, after §7.11-§7.14).
+cargo's exit status and prints the failing suites first. Current: **2189 passed, 257 suites**
+(2026-08-07, after §7.11-§7.15).
 
 ⏱️ **It now takes over an hour per leg**, and that is the session's dominant cost — see §9's
 note on the corpus. `conversions` and `semantics` are ~55 s each, the two VPP gates ~60 s, and
@@ -1677,9 +1677,9 @@ typing the paths ever would.
 > corpora had begun returning honest zeros. §11.3 carries the general form.
 >
 > **State: three waves landed 2026-08-07 — §7.11 (preprocessor conformance), §7.12 (compiler
-> persona), §7.13 (GNU comma-swallow), §7.14 (universal character names), plus an honest zero on
-> 014 contract 11. `./check.sh` GREEN: 2188 passed across 257 suites**, up from 2154 at the
-> session's start. The contract-12 layout gate is 22 seeds / 2238 records / **10248 assertions
+> persona), §7.13 (GNU comma-swallow), §7.14 (universal character names), §7.15 (`__has_c_attribute`
+> and six wrong table rows), plus an honest zero on 014 contract 11. `./check.sh` GREEN: 2189
+> passed across 257 suites**, up from 2154 at the session's start. The contract-12 layout gate is 22 seeds / 2238 records / **10248 assertions
 > put to gcc**; pp-gate is 141 C cases, **100 agree**, 16 findings, and §9.1 item 1 names every
 > remaining one.
 >
@@ -1701,9 +1701,12 @@ typing the paths ever would.
    **What is left in it, as of 2026-08-07 — 16 findings, 100 agree, and the residue is named:**
    - **`_Pragma` and `#pragma push_macro`/`pop_macro`** — 3 files. `_Pragma` is C11, not an
      extension, and chiero records pragmas rather than acting on them.
-   - **`__has_c_attribute`** — 2 files (`pr63831-1/2`). gcc 13 has it and chiero does not register
-     it. ⚠️ It returns a **version number** (`202202`), not `1`, so `features::answer`'s
-     `Option<bool>` is the wrong shape for it — that is the work, not the table.
+   - ~~**`__has_c_attribute`**~~ — **done (§7.15).** The two files now reach token 73 instead of
+     token 4. What is left in them is **scoped attribute names** (`__has_attribute(gnu::noreturn)`)
+     and `__has_cpp_attribute`: gcc accepts a `scope::name` operand in all three queries, and
+     `answer_feature_queries` matches a single identifier between the parens. `__has_cpp_attribute`
+     is C++ and gcc does not define it in C, so the right answer there is to leave it undefined and
+     let the file's own `#ifdef` take the else-branch — **check that before implementing anything**.
    - **More comma-swallow corners** — 2 files (`macro_fn_comma_swallow2`, `macro_paste_commaext`),
      same family as §7.13 and different shapes.
    - **`__VA_OPT__`** — 1 file, out of v1 scope by measurement (012 §2.3), diagnosed not guessed.
