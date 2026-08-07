@@ -1481,6 +1481,7 @@ This has now paid out three times in a row, each time on the first run after a w
 | following the **diagnostics the tool itself emitted** — three names it said it did not know | one wave | §7.11: scoped operands + `__has_cpp_attribute`; findings 16 → **14**, and `pr63831-1/2` leave the list. The honesty mechanism turned the next fix into a mechanical one |
 | find-bugs to a **new subsystem**: `vnet/ip/`, 152 entries (never swept) | one sweep, ~20 min | **zero chiero defects — 0 failed, 0 `Exact`.** 143 ok, 7 cut, 9 `Unknown` findings, all one known class. See §7.17 |
 | **010 contract 11**, the one contract with no test anywhere — verified by reading, not by trusting §9's note | one wave | **zero defects.** The round trip holds over twelve fixtures incl. splices, macro-body/argument spans and the session's new UCN identifiers |
+| *not a widening* — **taking a `timeout` row seriously instead of counting it** | one sweep + one stack sample | the CIR verifier was **super-quadratic**: 11.5 s for 3001 blocks, and it is what killed VPP's last two `timeout` entries. 023 §8 had attributed them to a long *solver* query and specified a bound for that; the bound did not move them. **42x faster, 0 `timeout` rows left, one spec claim retracted** |
 | *not a widening* — **re-measuring the pinned 40 and asking why nothing moved** | one retake + one `grep` | the corpus **cannot reach** a 32-byte access: `__AVX2__` is undefined in every configuration chiero compiles, so every AVX2/AVX512 path in vppinfra is invisible to every measurement this project has published. New evidence for the parked `-march` item, and it came from an *unchanged* number |
 
 The loop, and it is deliberately mechanical:
@@ -1583,11 +1584,13 @@ typing the paths ever would.
 > panics on the C standard's own worked example, after four consecutive widenings of VPP-shaped
 > corpora had begun returning honest zeros. §11.3 carries the general form.
 >
-> **State: 2026-08-07 — `./check.sh` GREEN at 2225 passed across 264 suites, fmt and clippy
+> **State: 2026-08-07 — `./check.sh` GREEN at 2226 passed across 264 suites, fmt and clippy
 > clean.** That is the first run verified against all three CI legs; the tree had been **red in
 > CI** (26 fmt diffs, 2 clippy errors) while the old one-leg script called it green. Closed this
-> session: `MemFault::BadRange`, 023 §8's `max_solver_rlimit`, and `--solver-rlimit` on the
-> three commands that run a solver.
+> session: `MemFault::BadRange`, 023 §8's `max_solver_rlimit`, `--solver-rlimit` on the three
+> commands that run a solver, and — the biggest of them — **the CIR verifier's super-quadratic
+> `dominators`**, which was what VPP's last two `timeout` rows actually were. The plugin sweep
+> now has **zero** `timeout` rows.
 >
 > *Earlier in the session, at 2215/263, measured after the `BadRange` closure:* Up from 2154 at the previous session's start and 2193/258 before the
 > last two preprocessor closures. Earlier in the session: §7.11's seven waves over the
@@ -2046,6 +2049,21 @@ doubles the wake-ups.
   `field_of` are adjacent and their first five lines are identical, so every edit anchored on
   those lines — the fix and four rounds of debug prints — landed in the function that path never
   calls. **Anchor a patch on the signature, not on the body.**
+- ⚠️ **A status that means "chiero did not finish" is a lead, not a footnote — and the cause it
+  is filed under is a claim.** Two `timeout` rows sat in the plugin sweep for a wave, counted and
+  never named, under a spec sentence saying they were a long solver query "for exactly this
+  reason". The check that broke it open cost one command: *does the bound that sentence proposes
+  actually move them?* It did not, at any value, and neither did the engine's clock — because the
+  time was in the verifier, before execution. **When a document names a cause, it has made a
+  testable claim; the test is usually cheaper than the reading.**
+  ⚠️ Practical note for the next stack sample: `ptrace_scope=1` here blocks `gdb -p <pid>`. Run
+  the program as gdb's *child* (`gdb -batch -x cmds --args ./prog …` with `run` then `bt 18`) and
+  interrupt it from a background `( sleep N; pkill -INT -x prog )`.
+- **A growth curve settles a performance claim; a single timing never does.** 10/40/160/320/640
+  and the *ratio per doubling* is the whole argument — 4x is quadratic, 6x is worse than
+  quadratic, and either is a fact nobody can wave away. The same shape appears in this file's
+  earlier 673-second finding (250/500/1000 functions), which is how that one was attributed
+  correctly too.
 - **Do not trust profiler function names.** Under callgrind, `declare_ordinary` and `intern_tagged`
   existed only in the profile build's inlining; read the **inclusive** figure and only that
   (`const_eval`'s own body was 0.02% of a cost that was entirely its recursion).
