@@ -1618,7 +1618,30 @@ typing the paths ever would.
    - `vnet/ip*` and `plugins/*/` beyond one function per file are untouched by the find-bugs
      sweep; `pick_entries.py --per-file N <files>` takes a list.
 
-3. **⚠️ Settle the corpus runtime before widening much further.** Every corpus-consuming test
+3. 🆕 **`compile_commands.json` is one command away, and two contracts have been blocked on its
+   absence since M2.** `docs/reviews/m2-frontend-notes.md` records *"`…/compile_commands.json`
+   does not exist, and `find /home/ubuntu/vpp -name compile_commands.json` returns no
+   alternatives. Contract 17's full configured-TU regression metric therefore cannot run in this
+   environment."* That was **true when written** — VPP was not built yet — and it is a stale
+   blocker now, not an error.
+
+   Measured 2026-08-07: `ninja -C $VPPBUILD -t compdb` emits the whole database in **90 ms**,
+   **6235 entries, 2226 of them C**, with the `command`/`directory`/`file`/`output` keys the
+   format specifies. Nothing needs to be re-configured and the VPP tree needs no edit — the
+   generator writes to stdout.
+
+   What it unblocks: **012 contract 17** (`every_vpp_compile_command_preprocesses_without_panicking`
+   in `chiero-pp/tests/directives.rs` is `#[ignore]`d *and* returns early on the missing file —
+   two ways of measuring nothing, stacked) and **060 contract 1** (every TU yields a `ConfigId`).
+   ⚠️ Neither is free: the sweep already covers "1871 VPP TUs lower", so the value is the
+   *configuration* half — per-TU flags, and 060's multiarch 1:N — not the parse. Decide which
+   contract is actually being bought before writing the ingest.
+
+   ⚠️ And the general form, because it is the third stale blocker this file has produced:
+   **a blocker records the world at a moment. Re-measure one before spending a wave routing
+   around it** — this one cost nothing to check and had been standing for months.
+
+4. **⚠️ Settle the corpus runtime before widening much further.** Every corpus-consuming test
    preprocesses, parses and analyses all 22 seeds. Sharing one `PreprocessorSession` across seeds
    bought ~15% (`conversions` 62→53 s, `vpp_layout_gate` 62→58 s, `vpp_corpus` 16→13 s) — **less
    than hoped, and it says where the cost is**: not lexing, but parse and analyse, which no cache
@@ -1628,17 +1651,17 @@ typing the paths ever would.
    and reloaded — a real design question, and **020's CIR text format may already be most of the
    answer**.
 
-4. **A step that outlives the clock.** Three find-bugs entries still need the outer `timeout`; one
+5. **A step that outlives the clock.** Three find-bugs entries still need the outer `timeout`; one
    ran 10 s against a 5 s budget inside a symbolic-offset enumeration. The clock is only checked
    *between* steps, and 022 §8's `max_solver_rlimit` — deterministic work units — is specified and
    unimplemented. That is the principled bound for the solver half.
 
-5. **`InstKind::Call` carries no result type**, so an indirect call's result width is whatever
+6. **`InstKind::Call` carries no result type**, so an indirect call's result width is whatever
    candidate ran. The arity and parameter-type filters cut the wildest cases and cannot close it;
    the engine survives the rest by degrading. The real fix is a CIR change — **135 sites**
    construct `InstKind::Call`, and the text format needs syntax for it.
 
-6. ~~### **`MemFault::BadRange`**~~ — **CLOSED 2026-08-07.** See §7's entry. The two stated
+7. ~~### **`MemFault::BadRange`**~~ — **CLOSED 2026-08-07.** See §7's entry. The two stated
    options were both wrong because the premise was: the probes did not need an *objectless*
    fault, only two findings agreeing on `object`, which a **shared** object gives just as well.
    Both mutants confirm the replacements. ⚠️ The lesson generalises past this item —
@@ -1646,12 +1669,12 @@ typing the paths ever would.
    X or the property X was being used for.** Two waves were spent hunting for an objectless
    non-fatal fault that does not exist.
 
-7. **032 contract 18's corpus still has no `observed` entry** and the gate correctly exits 1
+8. **032 contract 18's corpus still has no `observed` entry** and the gate correctly exits 1
    saying "NOT MEASURED". Method, learned the hard way (§7.1): **revert a historical fix's `src/`
    diff onto HEAD and run the suite** rather than hunting for a commit whose parent happens to
    fail. Two builds and ~40 minutes bought one rejected candidate the other way.
 
-8. **`:0` bit-fields in `layout`, deliberately left open** (§7.9). A record declaring a
+9. **`:0` bit-fields in `layout`, deliberately left open** (§7.9). A record declaring a
    zero-width bit-field still gets no padding number, because a `:0`-terminated run's cost depends
    on where the run is placed and this arithmetic sums constants. Closing it needs the run's
    allocation unit in the field description — `Field` would carry `unit_bits`, and the ideal
