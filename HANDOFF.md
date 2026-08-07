@@ -1308,6 +1308,36 @@ A name it does not cover answers 0 **and says so by name** — which is why `ans
 ⚖️ **Assessment: harvested.** See §9.1 item 1 — of the 14 findings left, none affects VPP.
 Keep `pp-gate` as a two-minute standing regression check.
 
+### 7.17 `vnet/ip/` swept, 2026-08-07 — an honest zero, and the class §7.6 predicted
+
+152 entry points, four per `.c` from `vnet/ip/`, a subsystem the find-bugs harness had never
+touched. `LIST=<file> TIMEOUT=20 measure.sh --entry-ptr-nonnull`.
+
+| | |
+|---|---|
+| 143 ok, 7 cut, 1 no-such-function, **0 failed** | no crash, no file chiero could not read |
+| **9 findings, 0 `Exact`**, every one `Unknown` | and all of them one class |
+
+**Zero chiero defects.** Every earlier find-bugs widening found engine defects — two
+source-triggerable panics, `__builtin_expect` as an opaque call, `Memory::copy` losing 021 §6's
+laziness. This one found none, and `0 failed` on a subsystem of packet-processing code is the
+result worth recording: the frontend and engine handle shapes quite unlike `vppinfra` containers.
+
+**The 9 findings are all the same shape, and §7.6 named it as the next honest improvement.**
+`ip_punt_redirect_add (fib_protocol_t fproto, …)` indexes
+`ip_punt_redirect_cfg.redirect_by_rx_sw_if_index[fproto]`, an array of `FIB_PROTOCOL_IP_MAX` = 2
+elements inside a 24-byte struct. `fib_protocol_t` admits **three** values — IP4, IP6 and
+**MPLS = 2** — so `fproto == MPLS` reads at offset 24 of a 24-byte object. Both callers pass IP4
+or IP6, so the program is safe as assembled.
+
+⚠️ **This one is not fixed by the improvement §7.6 proposed, and that is why it is interesting.**
+§7.6's plan was to apply the exported-vs-`static` call-site rule to scalar index parameters.
+`ip_punt_redirect_add` is **exported**, so that rule would not reach it — and constraining
+`fproto` to its *enumerators* would not help either, because `MPLS` is a valid enumerator and
+still out of bounds. **An enum-typed parameter whose type is wider than the array it indexes is a
+latent contract hazard in the program, not an artefact of chiero's ignorance**, and `Unknown`
+fidelity is the honest verdict for it.
+
 ### 7.5 How to check the workspace is green — `./check.sh`
 
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
@@ -1362,6 +1392,7 @@ This has now paid out three times in a row, each time on the first run after a w
 | the same gate's **remaining findings, read as a to-do list** rather than as noise | one wave | §7.11: chiero was rejecting **valid C11** — a UCN in an identifier. **51 spurious diagnostics gone.** The corpus paid a fifth time, in a fifth different way |
 | **sharpening an oracle** — a feature query's value rather than its truthiness | one wave | §7.11: six rows of the table shipped two waves earlier were wrong, and the old test agreed with every one. The corpus was not widened at all; the *instrument* was |
 | following the **diagnostics the tool itself emitted** — three names it said it did not know | one wave | §7.11: scoped operands + `__has_cpp_attribute`; findings 16 → **14**, and `pr63831-1/2` leave the list. The honesty mechanism turned the next fix into a mechanical one |
+| find-bugs to a **new subsystem**: `vnet/ip/`, 152 entries (never swept) | one sweep, ~20 min | **zero chiero defects — 0 failed, 0 `Exact`.** 143 ok, 7 cut, 9 `Unknown` findings, all one known class. See §7.17 |
 
 The loop, and it is deliberately mechanical:
 
