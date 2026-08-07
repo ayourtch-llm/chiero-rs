@@ -388,6 +388,13 @@ struct Engine {
     /// *absence* — pushing an undefined name and popping it must leave it undefined, which a
     /// stack of bare indices could not express.
     macro_stack: BTreeMap<String, Vec<Option<usize>>>,
+    /// `#pragma GCC dependency "f"` requests, resolved in `finish`.
+    ///
+    /// Deferred because `_Pragma` is handled inside `expand_inner`, which has **no
+    /// `FileLoader`** — and `DO_PRAGMA ("GCC dependency …")` reaches it only that way, which is
+    /// exactly what the corpus fixture tests. `finish` has the loader, so the request is
+    /// recorded where it is seen and answered where it can be.
+    pending_dependencies: Vec<(String, Span)>,
     /// Feature-query names `features::TABLE` had no answer for, so each is reported once.
     ///
     /// `sys/cdefs.h` alone queries many times per TU, so a diagnostic per *query* would drown
@@ -440,6 +447,7 @@ impl Engine {
             lex_session,
             unknown_queries: BTreeSet::new(),
             macro_stack: BTreeMap::new(),
+            pending_dependencies: Vec::new(),
             root_path: path.to_path_buf(),
             input,
             deps: vec![file],
@@ -516,6 +524,7 @@ impl Engine {
         // and the pp-gate caught it immediately, with `__has_attribute` sitting in the output
         // token stream where both compilers had put a number.
         let output = self.answer_feature_queries(output);
+        self.resolve_dependencies(&root_path, loader);
         // **A stray character is one that reaches the program** (C 6.4p3). 010 classifies a
         // character C has no use for as `Other` and says nothing, because at that point it does
         // not know: gcc takes `S(a\b)` where `#define S(x) #x` stringizes the backslash, and
@@ -1262,11 +1271,48 @@ impl Engine {
     /// ⚠️ **chiero's `Diagnostic` carries no severity**, so `warning` and `error` are equally
     /// loud here. That is a real limit; reporting neither would be worse, and grading them needs
     /// a severity channel this type does not have.
+    /// Answer the `#pragma GCC dependency` requests recorded during expansion.
+    ///
+    /// gcc searches the include path and **errors when the file is not found**; that is the whole
+    /// observable behaviour the corpus fixture asks for. The freshness comparison gcc also does
+    /// is not modelled — a stale dependency is a warning about build order, not about the
+    /// program, and chiero has no build clock.
+    fn resolve_dependencies(&mut self, current: &Path, loader: &mut dyn FileLoader) {
+        for (name, span) in std::mem::take(&mut self.pending_dependencies) {
+            let mut roots: Vec<PathBuf> = Vec::new();
+            if let Some(dir) = current.parent() {
+                roots.push(dir.to_path_buf());
+            }
+            roots.extend(self.config.iquote_paths.iter().cloned());
+            roots.extend(self.config.include_paths.iter().cloned());
+            roots.extend(self.config.system_paths.iter().cloned());
+            let found = roots
+                .iter()
+                .any(|root| loader.load(&root.join(&name)).is_ok());
+            if !found {
+                self.diagnostics.push(Diagnostic {
+                    span,
+                    message: format!("`{name}` file not found"),
+                });
+            }
+        }
+    }
+
     fn report_diagnostic_pragma(&mut self, text: &str, span: Span) {
         let Some(rest) = text.strip_prefix("GCC ") else {
             return;
         };
         let rest = rest.trim_start();
+        if let Some(operand) = rest.strip_prefix("dependency") {
+            if let Some(name) = operand
+                .trim()
+                .strip_prefix('"')
+                .and_then(|n| n.strip_suffix('"'))
+            {
+                self.pending_dependencies.push((name.to_owned(), span));
+            }
+            return;
+        }
         let severity = ["error", "warning"]
             .into_iter()
             .find(|kind| rest.starts_with(kind));
