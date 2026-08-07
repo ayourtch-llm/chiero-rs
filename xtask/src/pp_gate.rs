@@ -489,6 +489,16 @@ pub fn run_case(
         }
     };
 
+    // **Agreeing to reject is agreement.** A compiler that refuses a file returns `None` here, so
+    // a row where chiero diagnoses *and* a compiler refuses is the two of them reaching the same
+    // verdict about the program — even though there are no tokens to compare. `x######x` is the
+    // case: it is UB, gcc silently emits `xx`, clang rejects it, and chiero rejects it too.
+    // Scoring that as "matched neither" counts a defensible answer as a divergence.
+    let refused_by = [("gcc", &gcc), ("clang", &clang)]
+        .into_iter()
+        .find(|(_, tokens)| tokens.is_none())
+        .map(|(name, _)| name);
+
     let verdict = match (&gcc, &clang) {
         (None, None) => {
             if chiero_diagnostics.is_empty() {
@@ -516,6 +526,10 @@ pub fn run_case(
             {
                 // The compilers split, and chiero renders the same program as one of them.
                 Verdict::RendersDifferently
+            } else if let Some(compiler) = refused_by.filter(|_| !chiero_diagnostics.is_empty()) {
+                // One compiler refused the file and so did chiero: they agree it is not valid C,
+                // which is a real answer and not a failure to have one.
+                Verdict::MatchedOne { compiler }
             } else {
                 Verdict::MatchedNeither
             }
