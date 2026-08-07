@@ -290,6 +290,21 @@ pub struct RecordLayout {
     /// member's type (gcc's extension). glibc declares `bind`/`connect`/`sendto` this way, so
     /// every socket-calling translation unit depends on it.
     pub transparent: bool,
+    /// Whether the record declares a **zero-width bit-field**, whose effect on the layout
+    /// `fields` cannot show.
+    ///
+    /// A `:0` declares no member and forces the *next* allocation to a unit boundary, so it
+    /// pushes no `FieldLayout` — it cannot, because C 6.7.9 has initializers skip unnamed
+    /// bit-fields and the initializer check indexes `fields` positionally. Its effect
+    /// therefore survives only as a gap in its neighbours' offsets, indistinguishable from
+    /// ordinary alignment padding.
+    ///
+    /// That distinction is the whole question for a consumer proposing a reorder
+    /// ([041 §3.1](../../../docs/specs/041-optimization-analysis.md)): ordinary padding comes
+    /// back and this gap does not, because the boundary follows the run wherever it is moved.
+    /// So the layout says the record has one rather than leaving a reader to infer it from an
+    /// absence.
+    pub has_zero_width_bitfield: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -3583,6 +3598,8 @@ impl Cx<'_> {
         let mut size_bits: u64 = 0;
         let mut align: u64 = 1;
         let mut flexible_member = None;
+        // Set where the `w == 0` case is handled, which is the only place a `:0` is seen.
+        let has_zero_width_bitfield = false;
 
         for &m in members {
             let DeclKind::Var {
@@ -3891,9 +3908,13 @@ impl Cx<'_> {
                 if w == 0 {
                     // Contract 4: declares no member, and forces the next allocation to
                     // the next unit boundary.
+                    //
+                    // **Recorded, because `fields` cannot hold it.** See
+                    // `RecordLayout::has_zero_width_bitfield`: the boundary survives only as a
+                    // gap in the neighbours' offsets, and a consumer proposing a reorder must
+                    // be able to tell that gap from alignment padding.
                     if !member_packed {
                         bit_cursor = round_up(bit_cursor, unit_align_bits);
-                        align = align.max(unit_align_bits / 8);
                     }
                     size_bits = size_bits.max(bit_cursor);
                     continue;
@@ -3905,6 +3926,14 @@ impl Cx<'_> {
                     if unit_bits > 0 && (start % unit_bits) + w > unit_bits {
                         start = round_up(start, unit_align_bits);
                     }
+                    // **Only a *named* bit-field aligns the record** — the psABI's rule, and
+                    // gcc's. The unit still governs where the bits go either way, which is why
+                    // the straddling computation above is unconditional and this is not.
+                    //
+                    // Applying it to both inflated every record with an unnamed bit-field:
+                    // `struct { char c; unsigned :0; char d; }` was 8 with alignment 4 where
+                    // gcc says 5 and 1. It reached the surface as a wrong `chiero layout`
+                    // number, which is how a reviewer found it, but the error was here.
                     align = align.max(unit_align_bits / 8).max(requested.unwrap_or(1));
                 } else if let Some(r) = requested {
                     align = align.max(r);
@@ -4011,6 +4040,7 @@ impl Cx<'_> {
             packed,
             transparent,
             complete: true,
+            has_zero_width_bitfield,
         }
     }
 
@@ -4638,6 +4668,7 @@ fn incomplete_layout(is_union: bool) -> RecordLayout {
         flexible_member: None,
         packed: false,
         complete: false,
+        has_zero_width_bitfield: false,
     }
 }
 

@@ -366,3 +366,80 @@ fn a_spread_of_awkward_records_agrees_with_gcc() {
         harness::assert_agrees_with_gcc(src, tag, a.layout(rid), &p);
     }
 }
+
+/// **An unnamed bit-field does not align the record** — the psABI's rule, and gcc's.
+///
+/// A bit-field's declared type sets the allocation unit whether or not the member has a name,
+/// but only a *named* one contributes to the record's alignment. chiero applied
+/// `align.max(unit_align)` to both, which is wrong in the direction that inflates: it told
+/// `struct R` it was 8 bytes with alignment 4 where gcc says 5 and 1.
+///
+/// Found by a reviewer attacking 041 §3.1's padding proposal, in the layer beneath it — which
+/// is where it mattered, because every number `chiero layout` prints for such a record was
+/// computed from a size that was already wrong.
+///
+/// `T` is the discriminator and it is the reason this is not a test about nothing: give the
+/// same bit-field a name and the alignment *is* 4, so an implementation that simply stopped
+/// aligning for bit-fields would fail here.
+#[test]
+fn an_unnamed_bitfield_does_not_contribute_alignment() {
+    // The zero-width case: still forces `d` to the next unit, still takes no alignment.
+    check(
+        "struct R { char c; unsigned :0; char d; };",
+        "R",
+        5,
+        1,
+        &[("c", 0), ("d", 4)],
+    );
+    // And the ordinary unnamed case, which occupies bits without naming them.
+    check(
+        "struct S { char c; unsigned :4; char d; };",
+        "S",
+        3,
+        1,
+        &[("c", 0), ("d", 2)],
+    );
+    // Named: the alignment is real.
+    check(
+        "struct T { char c; unsigned n:4; char d; };",
+        "T",
+        4,
+        4,
+        &[("c", 0), ("d", 2)],
+    );
+}
+
+/// **A record that declares a `:0` says so**, because `fields` cannot show one.
+///
+/// A zero-width bit-field pushes no `FieldLayout` — C 6.7.9 has initializers skip unnamed
+/// bit-fields and the initializer check indexes `fields` positionally, so putting one in the
+/// list would misread every positional initializer of such a struct. Its effect survives only
+/// as a gap in its neighbours' offsets, which is indistinguishable from alignment padding.
+///
+/// 041 §3.1 needs exactly that distinction: padding a reorder recovers, against a boundary
+/// that follows the run wherever it goes. Without this flag a consumer summing member sizes
+/// proposes a floor no declaration order reaches — measured, on `struct Q` below.
+#[test]
+fn a_record_declaring_a_zero_width_bitfield_says_so() {
+    let p = parse(
+        "struct Q { unsigned a:1; unsigned :0; char c; };\n\
+         struct P { unsigned a:1; char c; };",
+        TargetConfig::x86_64_linux(),
+    );
+    let (a, q) = layout_of(&p, "Q");
+    let (_, r) = layout_of(&p, "P");
+    assert!(
+        a.layout(q).has_zero_width_bitfield,
+        "`Q` declares one and its 3-byte gap is not recoverable padding"
+    );
+    assert!(
+        !a.layout(r).has_zero_width_bitfield,
+        "`P` does not, and its gap is ordinary — the pair is the discriminator"
+    );
+    // The flag has to be about the record, not about bit-fields in general.
+    assert_eq!(
+        a.layout(q).fields.len(),
+        a.layout(r).fields.len(),
+        "the `:0` is in neither field list; that is why the flag exists"
+    );
+}

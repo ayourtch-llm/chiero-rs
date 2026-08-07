@@ -36,6 +36,25 @@ fn run(args: &[&str]) -> (i32, serde_json::Value, String) {
     )
 }
 
+/// The record tags the envelope says it could not judge — parsed out of the blind spot rather
+/// than matched as a substring of it.
+///
+/// **A test that greps the blind spot for a word in its explanation asserts nothing**: the
+/// explanation is prose that the next rewording changes, and two of these tests were greping
+/// for "bit-field" *after* the sentence stopped containing it, so they could not fail. What
+/// the contract is actually about is which records are named, so that is what this returns.
+fn unjudged(v: &serde_json::Value) -> Vec<String> {
+    v["blind_spots"]
+        .as_array()
+        .expect("blind_spots")
+        .iter()
+        .filter_map(|b| b.as_str())
+        .find(|s| s.starts_with("no padding proposal was computed"))
+        .and_then(|s| s.rsplit_once(": "))
+        .map(|(_, tags)| tags.split(", ").map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
 /// `char a; long big; char b;` — 24 bytes that would be 16 reordered.
 const PADDED: &str = "struct p { char a; long big; char b; };\nstruct p instance;\n";
 
@@ -288,11 +307,7 @@ fn a_bit_field_run_is_measured_rather_than_dropped() {
     // **And the record is no longer one chiero declines to judge**, so nothing in the envelope
     // may say it was.
     assert!(
-        !v["blind_spots"]
-            .as_array()
-            .expect("blind_spots")
-            .iter()
-            .any(|b| b.as_str().is_some_and(|s| s.contains("bit-field"))),
+        !unjudged(&v).contains(&"q".to_string()),
         "a record that got a number is not a record that could not be judged: {v}"
     );
 }
@@ -335,11 +350,7 @@ fn a_record_whose_bit_fields_already_pack_tight_is_silent_for_the_right_reason()
         "8 + 1 + 1 rounds to 16, which is what it already is: {rec}"
     );
     assert!(
-        !v["blind_spots"]
-            .as_array()
-            .expect("blind_spots")
-            .iter()
-            .any(|b| b.as_str().is_some_and(|s| s.contains("bit-field"))),
+        !unjudged(&v).contains(&"with_bits".to_string()),
         "this record was judged and found tight, not skipped: {v}"
     );
 }
@@ -385,5 +396,66 @@ fn the_padding_proposal_names_the_fields_the_holes_are_between() {
     assert!(
         ev.contains("`tag`") && ev.contains("`big`") && ev.contains("`last`"),
         "every field a hole touches is named, so a reader can act without counting: {ev}"
+    );
+}
+
+/// **A zero-width bit-field's gap is not padding, and proposing it as such was a proven wrong
+/// answer.** Found by an adversarial review of the change that made §3.1's runs measurable.
+///
+/// ```c
+/// struct Q { unsigned a:1; unsigned :0; char c; unsigned b:1; unsigned :0; char d; };
+/// ```
+///
+/// gcc 13.3 says 12 bytes, and chiero agreed on the size — then said it "would be 4 with its
+/// fields ordered by size", `proven: true`, no advisory. Brute-forcing all 24 orders that move
+/// each run as a unit gives sizes in {8, 12}: **the floor is 8, and 4 is only reachable by
+/// deleting the `:0`s**, which is the repacking §3.1 promises the reorder never does.
+///
+/// The cause is that a `:0` declares no member, so it is in no field list (014 §3, and C
+/// 6.7.9 is why it cannot be — initializers skip unnamed bit-fields and that check indexes
+/// the list positionally). Its effect survives only as a gap in its neighbours' offsets,
+/// which reads exactly like alignment padding and is not: the boundary follows the run
+/// wherever the run is moved.
+///
+/// So the record is one this analysis cannot state in full, and the answer is the one §7.7
+/// settled for a partial field list — no number, and the envelope names the record. This
+/// asserts both halves, because a silent skip and a measured tight struct are the pair
+/// contract 25 exists to keep apart.
+#[test]
+fn a_zero_width_bit_field_makes_the_field_list_partial_rather_than_the_number_wrong() {
+    let p = write(
+        "zero_width.c",
+        "struct Q {\n\
+         \x20 unsigned a : 1;\n\
+         \x20 unsigned   : 0;   /* forces `c` to byte 4, and no reorder recovers those 3 */\n\
+         \x20 char c;\n\
+         \x20 unsigned b : 1;\n\
+         \x20 unsigned   : 0;\n\
+         \x20 char d;\n\
+         };\n\
+         struct Q instance;\n",
+    );
+    let (code, v, err) = run(&["layout", p.to_str().expect("utf-8"), "--json"]);
+    assert_eq!(code, 0, "{err}");
+    let rec = v["result"]["records"]
+        .as_array()
+        .expect("records")
+        .iter()
+        .find(|r| r["tag"] == "Q")
+        .expect("the record is analysed");
+    assert_eq!(rec["size"], 12, "gcc says 12: {rec}");
+    assert!(
+        rec["proposals"]
+            .as_array()
+            .expect("proposals")
+            .iter()
+            .all(|p| p["kind"] != "padding_waste"),
+        "gcc's floor for this struct is 8 and the sum of its visible members says 4: {rec}"
+    );
+    // **Said, not swallowed** — the direction the deleted bit-field test used to cover, and
+    // the only end-to-end assertion that the envelope positively names a record it skipped.
+    assert!(
+        unjudged(&v).contains(&"Q".to_string()),
+        "a record chiero could not judge is not a record with nothing to find: {v}"
     );
 }
