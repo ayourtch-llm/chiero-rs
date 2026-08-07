@@ -1582,8 +1582,8 @@ gcc and clang disagree, which is a pass by simplecpp's own rule.
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
 three xtask gates were red: a crate whose test *binary* fails to build emits no `test result`
 line at all, so counting successes cannot detect a missing success. `./check.sh` keys on
-cargo's exit status and prints the failing suites first. Current: **2189 passed, 257 suites**
-(2026-08-07, after §7.11-§7.15).
+cargo's exit status and prints the failing suites first. Current: **2191 passed, 257 suites**
+(2026-08-07, after §7.11-§7.16).
 
 ⏱️ **It now takes over an hour per leg**, and that is the session's dominant cost — see §9's
 note on the corpus. `conversions` and `semantics` are ~55 s each, the two VPP gates ~60 s, and
@@ -1708,10 +1708,10 @@ typing the paths ever would.
 >
 > **State: three waves landed 2026-08-07 — §7.11 (preprocessor conformance), §7.12 (compiler
 > persona), §7.13 (GNU comma-swallow), §7.14 (universal character names), §7.15 (`__has_c_attribute`
-> and six wrong table rows), plus an honest zero on 014 contract 11. `./check.sh` GREEN: 2189
-> passed across 257 suites**, up from 2154 at the session's start. The contract-12 layout gate is 22 seeds / 2238 records / **10248 assertions
-> put to gcc**; pp-gate is 141 C cases, **100 agree**, 16 findings, and §9.1 item 1 names every
-> remaining one.
+> and six wrong table rows), §7.16 (scoped operands), plus an honest zero on 014 contract 11.
+> `./check.sh` GREEN: 2191 passed across 257 suites**, up from 2154 at the session's start. The contract-12 layout gate is 22 seeds / 2238 records / **10248 assertions
+> put to gcc**; pp-gate is 141 C cases, **100 agree**, **14 findings**, and §9.1 item 1 names
+> every remaining one.
 >
 > ⏱️ **Budget the clock.** A full both-legs run is over an hour and dominated the last session.
 > Do not start a widening and a full run in the same breath.
@@ -1731,6 +1731,8 @@ typing the paths ever would.
    **What is left in it, as of 2026-08-07 — 16 findings, 100 agree, and the residue is named:**
    - **`_Pragma` and `#pragma push_macro`/`pop_macro`** — 3 files. `_Pragma` is C11, not an
      extension, and chiero records pragmas rather than acting on them.
+   - ~~**`__has_c_attribute`**, **scoped operands**, **`__has_cpp_attribute`**~~ — **all done
+     (§7.15, §7.16); `pr63831-1/2` have left the findings list.** Historical detail follows.
    - ~~**`__has_c_attribute`**~~ — **done (§7.15).** The two files now reach token 73 instead of
      token 4. What is left in them is **scoped attribute names** (`__has_attribute(gnu::noreturn)`)
      and `__has_cpp_attribute`. ⚠️ **I wrote here that gcc does not define `__has_cpp_attribute`
