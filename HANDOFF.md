@@ -1766,6 +1766,15 @@ typing the paths ever would.
    by one step's worth (measured: 13 against 12), which is `max_forks`'s shape and is stated in
    the spec rather than glossed.
 
+5a. 🆕 **Replace the verifier's wall-clock bound with a counter.** `a_function_with_twelve_thousand_blocks_verifies_promptly` asserts a duration, and on 2026-08-07 that bit: the bound was 5 s, chosen under the unoptimised dev profile; `opt-level = 2` made everything ~6.7x faster, the bound stayed, and a mutant restoring **one** of the eight removed scans came in at **4.60 s and passed**. **A wall-clock assertion silently weakens whenever the build gets faster** — nobody edits the test, and it stops discriminating.
+
+   Tightened to 1.5 s (0.40 s as it stands, 4.44 s for the mutant) so it discriminates *today*,
+   and that is a patch, not a fix. ⚠️ **If the number is ever adjusted again rather than
+   replaced, the trap is being re-armed.** `chiero-solver`'s slicing test made the right move the
+   same day — an exact counter of scratch initialisations. Here it needs a count threaded through
+   `Terminator::successors` or a per-function "predecessor scans" tally, which is a wider change
+   than the test was worth in the moment.
+
 5b. 🆕 **Audit `Vec` + `.contains()` on paths that scale — the shape, not the site.** The
    verifier fix above is the **second** time this exact defect class has been found in
    `crates/chiero-cir/src/verify.rs`. Seven hundred lines above `dominators`,

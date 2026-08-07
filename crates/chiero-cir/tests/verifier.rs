@@ -2089,9 +2089,23 @@ fn a_function_with_twelve_thousand_blocks_verifies_promptly() {
     let d = verify(&m);
     let took = started.elapsed();
     assert!(d.is_empty(), "the module is well-formed: {d:#?}");
+    // ⚠️ **This bound is relative to the build profile, and that has already caught it out.**
+    // It was 5 s, chosen when `[profile.dev]` was unoptimised. Setting `opt-level = 2` made
+    // everything about 6.7x faster and the bound stayed put, so a mutant restoring *one* of the
+    // eight removed scans came in at **4.60 s and passed**. A wall-clock assertion silently
+    // weakens whenever the build gets faster.
+    //
+    // Re-measured under `opt-level = 2`: **0.40 s** as it stands, **4.60 s** with `check_phis`
+    // rebuilding its predecessor list per block. 1.5 s sits between them with room either way.
+    //
+    // 📌 **The durable fix is a counter, not a tighter number** — see §9.1. `chiero-solver`'s
+    // slicing test made exactly this move on the same day, after a duration-ratio version went
+    // red under load. This one keeps a duration only because the counter would have to be
+    // threaded through `Terminator::successors`, which is a wider change than the test is worth
+    // today. **If this bound is ever adjusted rather than replaced, that is the trap re-arming.**
     assert!(
-        took < std::time::Duration::from_secs(5),
-        "12001 blocks took {took:?}; the verifier is still quadratic in the block count and \
+        took < std::time::Duration::from_millis(1_500),
+        "12001 blocks took {took:?}; the verifier is quadratic in the block count again and \
          no engine budget can reach it, because it runs before execution"
     );
 }
