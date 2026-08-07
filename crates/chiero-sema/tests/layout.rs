@@ -443,3 +443,62 @@ fn a_record_declaring_a_zero_width_bitfield_says_so() {
         "the `:0` is in neither field list; that is why the flag exists"
     );
 }
+
+/// **An attribute after a typedef declarator belongs to the name, not to the struct.**
+///
+/// `typedef struct S { … } T __attribute__((aligned(16)));` aligns **`T`**. `struct S` keeps
+/// its own size and alignment, and gcc is emphatic about it: write `packed` in that position
+/// instead and it compiles with `warning: 'packed' attribute ignored` while `struct S` stays
+/// exactly as declared. chiero was applying the attribute to the record — and then rounding
+/// `sizeof` up to it, which gcc does not do even for the typedef name.
+///
+/// **Found by the contract-12 gate the first time its corpus reached outside `vppinfra/`.**
+/// glibc's `<pthread.h>` is this shape — `__pthread_unwind_buf_t`, 104 bytes and 16-aligned
+/// under gcc, 112 under chiero — so every translation unit that reaches pthread.h carried it.
+/// `chiero layout` could not show it because that struct is anonymous and the command needs a
+/// tag; the gate covers anonymous records, which is the whole reason it exists.
+///
+/// The pair is the discriminator: move the same attribute *before* the declarator and it is
+/// the definition's, so `on_def` really is 112/16. An implementation that simply stopped
+/// honouring `aligned` on records would fail that half.
+#[test]
+fn an_attribute_after_a_typedef_declarator_belongs_to_the_name_not_the_struct() {
+    // The declarator's: `via_td` is untouched, and gcc says so.
+    let p = check(
+        "typedef struct via_td { long j[8]; int m; void *pad[4]; } td_t \
+         __attribute__((aligned(16)));\n\
+         td_t named_by_the_typedef;",
+        "via_td",
+        104,
+        8,
+        &[],
+    );
+    // **And the alignment did not vanish — it went to the name.** Dropping the attribute
+    // instead of moving it would pass the assertion above and be just as wrong.
+    let sym = p.symbol("named_by_the_typedef").expect("the variable");
+    let decl = p
+        .parsed
+        .ast
+        .items()
+        .iter()
+        .copied()
+        .find(|&id| {
+            matches!(&p.parsed.ast.decl(id).kind,
+                chiero_ast::DeclKind::Var { name: Some(n), .. } if *n == sym)
+        })
+        .expect("declared at file scope");
+    assert_eq!(
+        p.analysis.decl_align(decl),
+        Some(16),
+        "`td_t` carries the alignment even though `struct via_td` does not"
+    );
+
+    // The definition's: unchanged, and this is the half that keeps the fix honest.
+    check(
+        "struct on_def { long j[8]; int m; void *pad[4]; } __attribute__((aligned(16)));",
+        "on_def",
+        112,
+        16,
+        &[],
+    );
+}
