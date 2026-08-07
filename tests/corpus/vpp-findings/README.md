@@ -17,6 +17,35 @@ Release binary, `/home/ubuntu/vpp` at `7fe9c266`, 60-second cap per entry point.
 | `./measure.sh` | 21 | 0 | 2 |
 | `./measure.sh --entry-ptr-nonnull` | **1** | 0 | 2 |
 
+**Retaken 2026-08-07 after `BadRange` left the defect list: byte-identical.** `ok=38 cut=2
+findings=21 exact=0`. That is the correct answer and it took a second run to know it — see
+below, because "the numbers did not move" is the one result a summary line cannot explain.
+
+### Why the numbers did not move, and what that says about the corpus
+
+`BadRange` — "unsupported-access-width", a 32-byte access chiero cannot carry — moved from
+being reported to being a degradation on 2026-08-07. The expectation was that some of the 21
+would go. None did, and the reason is not that the change did nothing:
+
+**`KEEP` says the string `unsupported-access-width` appears nowhere in all forty envelopes** —
+not in a finding, not in an assumption, zero occurrences. The pinned 40 never produce a
+32-byte access at all, so the corpus is **blind to this change** rather than unaffected by it.
+
+Why it is blind, measured rather than guessed:
+
+| | |
+|---|---|
+| every 32-byte type in VPP lives in `vppinfra/vector_avx2.h` | `vector.h:197` includes it under `#if defined (__AVX2__)` |
+| `__AVX2__` needs `-march=x86-64-v3` or `-mavx2` | `gcc -dM -E` defines it at `v3`, **not** at `v2` and not with no `-march` |
+| VPP's baseline build is `-march=x86-64-v2` | from `ninja -t commands`; the AVX2 paths are compiled only in *multiarch variants* |
+| chiero's `frontend::predefines` probes gcc with **no `-march`** | so it does not see them either |
+
+So `BadRange` is currently **unreachable on VPP through any harness chiero has**, and the fix
+is preventative — correct, and not measured on real code. ⚠️ Whoever reaches for these numbers
+to argue a checker's worth should read that as the corpus's edge (HANDOFF §8.3), not as a
+clean bill: 021 §5's note that "vppinfra uses `u8x32`/`u8x64` throughout" is true of code this
+measurement has never once compiled.
+
 ### The five statuses, and why `timeout` is no longer one of them
 
 | | means |

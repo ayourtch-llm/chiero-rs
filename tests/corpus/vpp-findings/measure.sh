@@ -14,6 +14,13 @@
 #   VPPBUILD its cmake build directory    (default: $VPP/build-root/build-vpp-native)
 #   TIMEOUT  seconds per entry point      (default: 60)
 #   LIST     the entry list to run        (default: entries.tsv beside this script)
+#   KEEP     a directory to save each entry's envelope into, as `<file>.<fn>.json`
+#
+# **`KEEP` exists because the summary line cannot answer "what changed".** Moving `BadRange`
+# out of the defect list on 2026-08-07 left the pinned-40 numbers **byte-identical** — 21
+# findings, 0 `Exact`, 2 cut — and there was no way to tell "this corpus never produced one"
+# from "the harness is not measuring what I think". §11.3: the residue of a gate is a corpus,
+# and this one was being thrown away.
 #
 # Output is one TSV line per entry: file<TAB>fn<TAB>status<TAB>findings<TAB>exact.
 # Summarise with:
@@ -74,6 +81,14 @@ while IFS=$'\t' read -r f fn; do
   timeout "$((TIMEOUT + 30))" "$CHIERO" find-bugs "$VPP/src/$f" --entry "$fn" --json \
       --time-budget "$TIMEOUT" $INC $own $DEF "$@" >"$J" 2>"$E"
   rc=$?
+  # Saved before any of the classification below, so a `timeout`'s empty file and a `failed`'s
+  # stderr are both in the residue rather than only the rows that produced a count.
+  if [ -n "${KEEP:-}" ]; then
+    mkdir -p "$KEEP"
+    k=$KEEP/$(printf '%s' "$f" | tr / _).$fn
+    cp "$J" "$k.json" 2>/dev/null
+    [ -s "$E" ] && cp "$E" "$k.err"
+  fi
   # A timeout and a crash are different facts and neither is "no findings" — the whole
   # project's rule, applied to its own measurement harness.
   if [ $rc -eq 124 ]; then printf '%s\t%s\ttimeout\t0\t0\n' "$f" "$fn"; continue; fi
