@@ -249,9 +249,11 @@ fn verify_function(m: &Module, f: &Function, out: &mut Vec<VerifyError>) {
 /// silently *wrong* execution: `Function::block()` is a linear find, so the second block
 /// is unreachable and control lands in the first.
 fn check_structural_identity(f: &Function, out: &mut Vec<VerifyError>) {
-    let mut seen_blocks: Vec<BlockId> = Vec::new();
+    // Sets, for the reason `check_module_identity` records above: `Vec` + `contains` is
+    // O(n²), and a function with thousands of blocks is ordinary in real C.
+    let mut seen_blocks: IndexSet<BlockId> = IndexSet::new();
     for b in &f.blocks {
-        if seen_blocks.contains(&b.id) {
+        if !seen_blocks.insert(b.id) {
             err(
                 out,
                 f,
@@ -260,11 +262,10 @@ fn check_structural_identity(f: &Function, out: &mut Vec<VerifyError>) {
                 format!("{:?} is declared more than once", b.id),
             );
         }
-        seen_blocks.push(b.id);
     }
-    let mut seen_allocas: Vec<AllocaId> = Vec::new();
+    let mut seen_allocas: IndexSet<AllocaId> = IndexSet::new();
     for a in &f.allocas {
-        if seen_allocas.contains(&a.id) {
+        if !seen_allocas.insert(a.id) {
             err(
                 out,
                 f,
@@ -273,13 +274,12 @@ fn check_structural_identity(f: &Function, out: &mut Vec<VerifyError>) {
                 format!("{:?} is declared more than once", a.id),
             );
         }
-        seen_allocas.push(a.id);
         // Rule 7 applies to declarations too, not only to accesses.
         check_align(f, a.align, a.span, out);
     }
-    let mut seen_params: Vec<ValueId> = Vec::new();
+    let mut seen_params: IndexSet<ValueId> = IndexSet::new();
     for p in &f.params {
-        if seen_params.contains(&p.value) {
+        if !seen_params.insert(p.value) {
             err(
                 out,
                 f,
@@ -288,7 +288,6 @@ fn check_structural_identity(f: &Function, out: &mut Vec<VerifyError>) {
                 format!("parameter {:?} appears more than once", p.value),
             );
         }
-        seen_params.push(p.value);
     }
     // Rule 13's second half: a declaration claiming a runtime extent needs an
     // `AllocaDyn` to supply it, or nothing ever sizes the object.
@@ -408,7 +407,7 @@ fn check_references(m: &Module, f: &Function, out: &mut Vec<VerifyError>) {
 
 /// Rule 2.
 fn check_block_refs(f: &Function, out: &mut Vec<VerifyError>) {
-    let known: Vec<BlockId> = f.blocks.iter().map(|b| b.id).collect();
+    let known: IndexSet<BlockId> = f.blocks.iter().map(|b| b.id).collect();
     for b in &f.blocks {
         for s in b.term.successors() {
             if !known.contains(&s) {
@@ -467,14 +466,25 @@ fn check_reachability(f: &Function, out: &mut Vec<VerifyError>) {
     }
 }
 
-fn reachable_blocks(f: &Function) -> Vec<BlockId> {
-    let mut seen = vec![f.entry];
+/// The blocks reachable from entry, **as a set**.
+///
+/// It returned a `Vec` and probed it with `contains`, which is O(blocks²) — and every caller
+/// then probed *that* `Vec` once per block, for another O(blocks²) each. Three of the eight
+/// scans this file's second performance pass removed were this one value.
+fn reachable_blocks(f: &Function) -> IndexSet<BlockId> {
+    let mut seen: IndexSet<BlockId> = IndexSet::new();
+    seen.insert(f.entry);
+    // **`Function::block` is a linear find** (its own doc says so), and calling it once per
+    // block popped is another O(blocks²) hiding behind a method call rather than behind a
+    // `contains`. One index, built once.
+    let by_id: IndexMap<BlockId, &Block> = f.blocks.iter().map(|b| (b.id, b)).collect();
     let mut stack = vec![f.entry];
     while let Some(b) = stack.pop() {
-        let Some(blk) = f.block(b) else { continue };
+        let Some(blk) = by_id.get(&b).copied() else {
+            continue;
+        };
         for s in blk.term.successors() {
-            if !seen.contains(&s) {
-                seen.push(s);
+            if seen.insert(s) {
                 stack.push(s);
             }
         }
@@ -602,18 +612,28 @@ fn check_ssa_and_types(f: &Function, out: &mut Vec<VerifyError>) {
 /// Checked here rather than inside the dominance walk because both are facts about a
 /// block's *edges* and its instruction order, neither of which that walk is looking at.
 fn check_phis(f: &Function, out: &mut Vec<VerifyError>) {
+    // **Built once**, not rebuilt per block. This scan is the same defect `dominators` had —
+    // in the same file, fixed in the same session, and this copy kept it for a wave. When a
+    // fix is about a *shape*, grep the file for the shape before calling it done.
+    //
+    // A block may branch to the same successor twice (`br c, bb1, bb1`), and that is **one**
+    // edge for a phi's purposes: there is one value to choose no matter which arm the printer
+    // wrote first. So the per-block list is deduped, exactly as before.
+    let mut preds_of: IndexMap<BlockId, Vec<BlockId>> =
+        f.blocks.iter().map(|b| (b.id, Vec::new())).collect();
+    for p in &f.blocks {
+        for s in p.term.successors() {
+            if let Some(list) = preds_of.get_mut(&s) {
+                list.push(p.id);
+            }
+        }
+    }
+    for list in preds_of.values_mut() {
+        list.sort_by_key(|x: &BlockId| x.0);
+        list.dedup();
+    }
     for b in &f.blocks {
-        // The predecessors of `b`, as a set. A block may branch to the same successor
-        // twice (`br c, bb1, bb1`), and that is **one** edge for a phi's purposes: there
-        // is one value to choose no matter which arm the printer wrote first.
-        let mut preds: Vec<BlockId> = f
-            .blocks
-            .iter()
-            .filter(|p| p.term.successors().contains(&b.id))
-            .map(|p| p.id)
-            .collect();
-        preds.sort_by_key(|x| x.0);
-        preds.dedup();
+        let preds: Vec<BlockId> = preds_of.get(&b.id).cloned().unwrap_or_default();
 
         let mut seen_ordinary = false;
         for i in &b.insts {

@@ -2038,8 +2038,26 @@ fn a_non_integer_size_operand_is_rejected() {
 /// `seen`, and the phi checker's predecessor scan — the last being the *same* defect as
 /// `dominators`', one function away.
 ///
-/// The bound here is deliberately generous. The claim is that the cost is not quadratic, not
-/// that this machine is fast.
+/// ⚠️ **And it is *still* quadratic afterwards — stated because the ratio says so.** Removing
+/// every scan bought a large constant and did not change the shape:
+///
+/// ```text
+///   blocks     first pass    scans removed
+///      481        63.9 ms          1.1 ms
+///     1921         3.1 s          10.7 ms
+///     7681       (minutes)       160.9 ms
+///    30721       (hours)           2.4 s
+/// ```
+///
+/// 4x the blocks still costs about 15x the time. What is left is not a scan: `dominators`
+/// holds an explicit dominator *set* per block, which is O(blocks²) by construction, and
+/// cutting that needs a different algorithm (Lengauer-Tarjan's idom-only form, or bitsets) —
+/// a design change, not a cleanup. **Queued rather than claimed**, because "we made it fast"
+/// and "we made it linear" are different sentences and this file has already conflated them
+/// once today.
+///
+/// The bound here is deliberately generous. The claim is that a function of realistic size
+/// verifies promptly, not that this machine is fast.
 #[test]
 fn a_function_with_twelve_thousand_blocks_verifies_promptly() {
     let n = 4000u32;
