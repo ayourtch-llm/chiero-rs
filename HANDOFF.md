@@ -1714,9 +1714,16 @@ being overwritten.
 
 ## 9.9 ⏰ THE HEARTBEAT — **running, re-armed 2026-08-07 at the owner's request**
 
-`mcp__tttt__tttt_cron_create`, **`*/10 * * * *`**, `if_busy=wait`, currently `cron-3`. Its
-standing job is §8.3's widening pattern; it names §9 item 1 as the source of targets and says
-item 2 (`-march`) is parked.
+`mcp__tttt__tttt_cron_create`, **`*/10 * * * *`**, `if_busy=wait`, currently **`cron-4`**. Its
+standing job is §8.3's widening pattern.
+
+⚠️ **Re-issued 2026-08-07 because the old prompt referred to queue items by number.** §9.1 gets
+renumbered whenever an item closes, and the prompt said "item 2 is PARKED" — which, after item 1
+closed and a new item 2 appeared, would have told a fresh context to skip live work and would
+have said nothing about the actually-parked one. The prompt now **names** the parked item
+(`-march` / per-TU target configuration) and tells the reader not to trust a number in it at all.
+Any future edit to this cron must keep that property: *a number in a standing instruction is a
+reference that rots silently.*
 
 **Ten minutes, not thirty**, and the earlier reasoning here was wrong rather than merely
 superseded. It argued that a short tick "interrupts mid-task more often than it produces work"
