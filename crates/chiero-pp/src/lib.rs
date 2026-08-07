@@ -185,6 +185,23 @@ impl HideSet {
             *target |= source;
         }
     }
+
+    /// The set of macros hidden by **both**, which is what a function-like invocation is
+    /// entitled to carry (012 §2.4, C99 6.10.3.4p2).
+    ///
+    /// `extend` and this are opposites, and the difference is the whole of contract 21. Words
+    /// beyond `other`'s length are dropped rather than kept, because an absent word means every
+    /// bit in it is zero and the intersection with zero is zero — the mistake `extend`'s
+    /// `resize` would invite if this were written by analogy to it.
+    fn intersect(&self, other: &Self) -> Self {
+        Self(
+            self.0
+                .iter()
+                .zip(&other.0)
+                .map(|(a, b)| a & b)
+                .collect(),
+        )
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1722,6 +1739,17 @@ impl Engine {
         def: &StoredMacro,
         mut args: Vec<Vec<Tok>>,
     ) -> Vec<Tok> {
+        // **C99 6.10.3.4p2, Prosser's rule: the invocation's hide set intersects at the closing
+        // paren** (012 §2.4). An object-like macro has no paren and carries `HS(name)` alone;
+        // this one is `HS(name) ∩ HS(close)`, and the `∪ {M}` half is the `insert(def.def.id)`
+        // beside each use below.
+        //
+        // The intersection is not a refinement of the union it replaced, it is the opposite. A
+        // name that came out of an earlier expansion but takes its argument list from the source
+        // that followed is only *partly* inside that expansion — so the outer macro's paint drops
+        // off, and tokens the union left inert go on expanding. Taking the union stalled
+        // `f(2)(9)` at `2*f(9)` where both compilers reach `2*9*g`.
+        let invocation_hide = call.hide.intersect(&close.hide);
         if args.len() == 1 && args[0].is_empty() && def.params.is_empty() {
             args.clear();
         }
@@ -1825,14 +1853,14 @@ impl Engine {
                     if index == 0 {
                         arg.token.leading_space = body.token.leading_space;
                     }
-                    arg.hide.extend(&call.hide);
+                    arg.hide.extend(&invocation_hide);
                     arg.hide.insert(def.def.id);
                     replacement.push(arg);
                 }
             } else {
                 let mut copied = body.clone();
                 copied.token.span.ctx = expn;
-                copied.hide.extend(&call.hide);
+                copied.hide.extend(&invocation_hide);
                 copied.hide.insert(def.def.id);
                 replacement.push(copied);
             }
