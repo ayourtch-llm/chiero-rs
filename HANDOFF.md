@@ -1885,6 +1885,12 @@ doubles the wake-ups.
   gap was queued as a splitter bug to fix first; the fixed splitter produced byte-identical
   output, because 304 came from a looser scan that over-counted. Reproduce the gap before
   budgeting a fix for it.
+- ⚠️ **Never edit a source file while `./check.sh` is running.** A full run is over an hour and
+  cargo compiles once at the start, so an edit part-way through poisons it: `E0460: found
+  possibly newer version of crate chiero_pp`, reported as `RED (cargo exit 1)` with **0 tests
+  failed**. That is a build artifact, not a failure, and the run has to be redone from scratch.
+  Docs, specs and HANDOFF are safe to edit; anything under `crates/` or `xtask/` is not. Queue
+  the edit, or start the run after it.
 - **Run the suite both ways.** `./check.sh` covers the machine as it is; CI also runs
   `CHIERO_SMT_SOLVER=/nonexistent`, and `--no-fail-fast` is required to see past the first
   failing binary (§7.8).
