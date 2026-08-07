@@ -107,6 +107,69 @@ fn a_pasted_hashhash_reaching_a_second_expansion_is_an_ordinary_token() {
     }
 }
 
+/// **The flag must not survive the pass that consumes it**, and an adversarial review found
+/// that it does: `paste()`'s two error-recovery branches push the operator token back into the
+/// output still armed. It then rides the rescan into a later macro's substituted sequence and
+/// fires there — **resurrecting the exact panic this file was written about**.
+///
+/// ```c
+/// #define bad a ## ## b
+/// #define m(x) [x]
+/// m(bad)
+/// ```
+///
+/// Adjacent `##` in a replacement list is UB (6.10.3.3p3) and the two compilers disagree about
+/// the tokens, so this asserts the property that is not UB: **chiero does not crash, and it says
+/// something.** gcc processes this silently and clang errors; neither aborts.
+///
+/// The rule the fix belongs to: `paste()`'s output is a *substituted sequence*, never a
+/// replacement list, so by definition no token leaving it is an operator. That is one place, not
+/// two branches — §7.2's standing lesson, which the first version of this fix did not apply to
+/// itself.
+#[test]
+fn an_unconsumed_operator_does_not_escape_the_paste_pass() {
+    for src in [
+        "#define bad a ## ## b\n#define m(x) [x]\nm(bad)\n",
+        "#define bad a ## ## b\n#define m(x) [x]\n#define n() bad\nm(n())\n",
+        "#define w x , ## ## y\n#define m(p) [p]\nm(w)\n",
+    ] {
+        // Both compilers survive this input; chiero aborting is the defect, whatever it
+        // ultimately decides the tokens are.
+        let tu = preprocess_str("paste.c", src, Config::default());
+        let texts: Vec<_> = tu.token_texts().collect();
+        assert!(
+            !texts.is_empty(),
+            "expected some output rather than an abort: {src}"
+        );
+        // **A silent wrong answer is the worse half.** gcc and clang both diagnose every one of
+        // these; chiero emitting nothing is the "dropped token nobody is told about" shape this
+        // file exists to reject.
+        assert!(
+            !tu.diagnostics.is_empty(),
+            "both compilers diagnose this and chiero said nothing: {src}"
+        );
+    }
+}
+
+/// A macro defined by `-D` pastes exactly like one defined by `#define`.
+///
+/// The review's third finding, and it is a test gap rather than a defect: the marking is done
+/// for command-line macros and nothing exercises it, so deleting that call passes the whole
+/// suite in silence — which is precisely the "reachable-but-unset" failure the flag's own
+/// documentation warns about.
+#[test]
+fn a_command_line_macro_pastes() {
+    let config = Config {
+        defines: vec![("CAT(a,b)".to_owned(), "a##b".to_owned())],
+        ..Config::default()
+    };
+    let ours: Vec<String> = preprocess_str("paste.c", "CAT(x,y)\n", config)
+        .token_texts()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(ours, vec!["xy"]);
+}
+
 /// **The companion assertion that the fix did not simply disable pasting.** An absence test
 /// with no positive counterpart is close to asserting nothing (§11.1), and the whole risk of
 /// this fix is that it stops `##` working where it *is* the operator.
