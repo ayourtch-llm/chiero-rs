@@ -1481,6 +1481,7 @@ This has now paid out three times in a row, each time on the first run after a w
 | following the **diagnostics the tool itself emitted** — three names it said it did not know | one wave | §7.11: scoped operands + `__has_cpp_attribute`; findings 16 → **14**, and `pr63831-1/2` leave the list. The honesty mechanism turned the next fix into a mechanical one |
 | find-bugs to a **new subsystem**: `vnet/ip/`, 152 entries (never swept) | one sweep, ~20 min | **zero chiero defects — 0 failed, 0 `Exact`.** 143 ok, 7 cut, 9 `Unknown` findings, all one known class. See §7.17 |
 | **010 contract 11**, the one contract with no test anywhere — verified by reading, not by trusting §9's note | one wave | **zero defects.** The round trip holds over twelve fixtures incl. splices, macro-body/argument spans and the session's new UCN identifiers |
+| *not a widening* — **sampling a real run's stack instead of reading its code** | one 90-second run under `gdb` | `TermArena::vars_of` allocated a bool per node in the *whole arena* on every call, and 022 §6.2's slicing calls it once per constraint on **every** backend query. 8.3 µs → 699 µs as the arena grew; now flat. **Nothing in the code reads as wrong** — the defect is a call pattern, and only a profile shows it |
 | *not a widening* — **taking a `timeout` row seriously instead of counting it** | one sweep + one stack sample | the CIR verifier was **super-quadratic**: 11.5 s for 3001 blocks, and it is what killed VPP's last two `timeout` entries. 023 §8 had attributed them to a long *solver* query and specified a bound for that; the bound did not move them. **42x faster, 0 `timeout` rows left, one spec claim retracted** |
 | *not a widening* — **re-measuring the pinned 40 and asking why nothing moved** | one retake + one `grep` | the corpus **cannot reach** a 32-byte access: `__AVX2__` is undefined in every configuration chiero compiles, so every AVX2/AVX512 path in vppinfra is invisible to every measurement this project has published. New evidence for the parked `-march` item, and it came from an *unchanged* number |
 
@@ -1584,7 +1585,7 @@ typing the paths ever would.
 > panics on the C standard's own worked example, after four consecutive widenings of VPP-shaped
 > corpora had begun returning honest zeros. §11.3 carries the general form.
 >
-> **State: 2026-08-07 — `./check.sh` GREEN at 2227 passed across 264 suites, fmt and clippy
+> **State: 2026-08-07 — `./check.sh` GREEN at 2228 passed across 264 suites, fmt and clippy
 > clean.** That is the first run verified against all three CI legs; the tree had been **red in
 > CI** (26 fmt diffs, 2 clippy errors) while the old one-leg script called it green. Closed this
 > session: `MemFault::BadRange`; 023 §8's `max_solver_rlimit` and `max_memory_objects` — with
@@ -2106,6 +2107,18 @@ doubles the wake-ups.
   ⚠️ Practical note for the next stack sample: `ptrace_scope=1` here blocks `gdb -p <pid>`. Run
   the program as gdb's *child* (`gdb -batch -x cmds --args ./prog …` with `run` then `bt 18`) and
   interrupt it from a background `( sleep N; pkill -INT -x prog )`.
+- ⚠️ **Some defects are invisible to reading and cheap to sample.** `vars_of` looks fine: it walks
+  a term and collects variables. What is wrong is the *pattern* — one `vec![false; nodes.len()]`
+  per call, called once per constraint, on every query, against an arena that only grows. Eight
+  stack samples of one VPP run found it in about two minutes; the `Vec::contains` grep that
+  found its neighbours never would, because there is no `contains` in it.
+  **Sampling is now a cheap standing move:** `gdb -batch -x cmds --args ./target/release/chiero …`
+  with `run` then repeated `bt`/`continue`, interrupted from `( for i in $(seq 1 8); do sleep 6;
+  pkill -INT -x chiero; done ) &`. ⚠️ `ptrace_scope=1` here forbids `gdb -p`, so the program must
+  be gdb's *child*.
+  ⚠️ **And read what the samples say, not what you went looking for.** Four of eight were waiting
+  on z3 — the expected answer, and the one that would have ended the investigation if it were the
+  only frame checked.
 - ⚠️ **A speedup is not a complexity change, and only the ratio tells them apart.** The
   verifier's `dominators` went 11.5 s → 270 ms at 3001 blocks and was called fixed; the growth
   per doubling had not moved at all, so seven more instances of the same scan were still there —
