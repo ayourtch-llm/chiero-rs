@@ -1383,10 +1383,59 @@ typing the paths ever would.
 >    contributed the alignment. The defect is real (the sema test checks it against gcc) and
 >    this corner of VPP does not exhibit it. `drivers/armada/pp2/pp2_hw.h` is the third file
 >    with unnamed bit-fields and does not preprocess yet — unmeasured.
-> 1. **Widen `CORPUS_SEEDS` past `vppinfra/`.** The narrowness above is the finding, not the
->    alignment result: twenty headers from one directory is a gate that cannot see a construct
->    VPP uses elsewhere. `vnet/session/session_types.h` needs its transitive includes copied
->    into `tests/corpus/vpp/` — check how much that is before committing to it.
+> 1. ### 🔴 **A defect the widened gate found in one run — fix this, then land the widening.**
+>
+>    **`typedef struct {…} N __attribute__((aligned));` — chiero puts the alignment on the
+>    struct; gcc puts it on the typedef name.** Measured against gcc 13.3:
+>
+>    | | gcc | chiero |
+>    |---|---|---|
+>    | `struct on_def {…} __attribute__((aligned(16)));` | 112 / 16 | 112 / 16 ✓ |
+>    | `typedef struct via_td {…} td_t __attribute__((aligned(16)));` | **104 / 8** | 112 / 16 ✗ |
+>    | `typedef struct {…} bare_t __attribute__((__aligned__));` | **104 / 8** | 112 / 16 ✗ |
+>    | the typedef names `td_t` / `bare_t` themselves | 104 / **16** | — |
+>
+>    Two errors: the attribute is attached to the wrong entity, **and** the size is rounded up
+>    to it (gcc's typedef alignment raises `_Alignof` and leaves `sizeof` alone). gcc's rule is
+>    clean and was checked, not assumed — a post-declarator attribute belongs to the *declared
+>    name*: `typedef struct pt {…} pt_t __attribute__((packed));` compiles with
+>    **`warning: 'packed' attribute ignored`** and `struct pt` stays 8/4.
+>
+>    **It matters because glibc's `<pthread.h>` is exactly this shape** —
+>    `__pthread_unwind_buf_t`, gcc 104/16, chiero 112 — so every TU that reaches pthread.h has
+>    it. `chiero layout` never showed it because the struct is anonymous and that command needs
+>    a tag; the gate covers anonymous records, which is how it surfaced.
+>
+>    Where it lives: `chiero-parse` `unshare` (`crates/chiero-parse/src/lib.rs`, ~1826) clones
+>    the declarator's type node and `attrs.extend(post)` appends the post-declarator attributes
+>    — and for a plain declarator that clone **is** the record definition, so `lay_out` reads
+>    them. The definition's own attrs come first in the list and the declarator's last, but
+>    nothing records the boundary, so sema cannot tell them apart. `Attr` (`chiero-ast`) has no
+>    provenance field; `Decl` has no attrs. sema already has the right destination for the
+>    typedef case — `Analysis::typedef_aligns`, keyed by name, fed by `declared_align` — so only
+>    the layout side is wrong. **Do not widen `packed`'s fix to match without testing it
+>    separately**: gcc ignores it there rather than moving it to the name.
+>
+>    **Then land the corpus widening**, which is what found this. Recipe, ~5 minutes:
+>
+>    ```sh
+>    cd /home/ubuntu/vpp   # still at the pinned 7fe9c266, so a copy stays consistent
+>    echo '#include <vnet/session/session_types.h>' | \
+>      gcc -MM -MG -I src -std=gnu11 -x c - | tr ' ' '\n' | grep '^src/' | sort -u > closure.txt
+>    # 108 headers, 86 of them new; copy preserving paths under tests/corpus/vpp/
+>    # then also copy the two generated ones, which vlib really does need:
+>    #   build-root/install-vpp-native/vpp/include/{vlib/config.h,vpp/vnet/config.h}
+>    ```
+>
+>    Add `"vnet/session/session_types.h"` to `CORPUS_SEEDS` (`chiero-sema/tests/harness/mod.rs`)
+>    — **one seed, 3010 new assertions, 570 records**, and the gate went from 5482 to 8492
+>    assertions put to gcc. Update `tests/corpus/vpp/PROVENANCE.md`: the closure rule there says
+>    "resolve inside `vpp/src`", which the two generated `config.h` do not, so say why they are
+>    in. `chiero-parse/tests/vpp_corpus.rs` keeps its **own** `SEEDS` list and is untouched by
+>    this; its pinned diagnostic metric only moves if that list moves.
+>
+>    The narrowness was the finding, and one seed proved it: twenty headers from one directory
+>    is a gate that cannot see what the tree does elsewhere.
 > 2. **The 11 `failed` plugin entries, which are now one-line diagnoses** (§7.6 has the table).
 >    Seven are one cause: `frontend::predefines` asks gcc for its macros with **no `-march`**,
 >    while VPP builds `-march=x86-64-v2`, so `__SSE4_2__` is undefined and `vppinfra/crc32.h`
