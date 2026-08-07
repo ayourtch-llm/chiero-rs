@@ -1373,11 +1373,20 @@ typing the paths ever would.
 >    field description — `Field` would carry `unit_bits`, and the ideal layout would charge the
 >    run `round_up(payload, unit)` at a unit-aligned offset. Worth doing only if `:0` turns out
 >    to be common; the sweep of 69 VPP headers found none.
-> 1. **Sweep VPP for the two defects §7.9 fixed in 014.** Unnamed bit-fields were inflating
->    every record that has one, and that layout feeds 021's memory model, not only `layout`'s
->    proposals — so the corpus gate's numbers moved for any VPP struct with an unnamed
->    bit-field. `vpp_layout_gate` passes, which says the gate does not reach one; find out
->    whether that is because VPP has none reachable or because the gate's corpus is narrow.
+> ✅ **Measured: the 014 alignment fix moves nothing on VPP** (2026-08-07,
+>    `tests/corpus/layout/vpp_sizes.py`). **The gate's corpus is narrow** — `CORPUS_SEEDS` is
+>    twenty `vppinfra/` headers and none has an unnamed bit-field, so `vpp_layout_gate` passing
+>    said nothing about it. Pointing contract 12's method at the headers that do:
+>    **269 named records across `vnet/session/{session,transport}_types.h`, 0 disagreeing with
+>    gcc** — and reverting the `name.is_some()` guard gives a byte-identical dump, because
+>    VPP's unnamed bit-fields are padding beside a *named* one of the same type, which already
+>    contributed the alignment. The defect is real (the sema test checks it against gcc) and
+>    this corner of VPP does not exhibit it. `drivers/armada/pp2/pp2_hw.h` is the third file
+>    with unnamed bit-fields and does not preprocess yet — unmeasured.
+> 1. **Widen `CORPUS_SEEDS` past `vppinfra/`.** The narrowness above is the finding, not the
+>    alignment result: twenty headers from one directory is a gate that cannot see a construct
+>    VPP uses elsewhere. `vnet/session/session_types.h` needs its transitive includes copied
+>    into `tests/corpus/vpp/` — check how much that is before committing to it.
 > 2. **The 11 `failed` plugin entries, which are now one-line diagnoses** (§7.6 has the table).
 >    Seven are one cause: `frontend::predefines` asks gcc for its macros with **no `-march`**,
 >    while VPP builds `-march=x86-64-v2`, so `__SSE4_2__` is undefined and `vppinfra/crc32.h`

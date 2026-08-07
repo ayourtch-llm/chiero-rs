@@ -23,3 +23,23 @@ Both want a release build (`cargo build --release -p chiero-cli`) and gcc on `PA
 fixed one it prints no proposal for that record. An instrument that has never been shown
 failing is a claim about the code that nothing checked — this repository has shipped three
 of those.
+
+## `vpp_sizes.py` — contract 12's method, pointed outside the gate's corpus
+
+`vpp_layout_gate` (014 contract 12) generates `_Static_assert`s for every record it can
+parse and lets gcc reject them. Its corpus is `CORPUS_SEEDS`: twenty `vppinfra/` headers.
+**None of them contains an unnamed bit-field**, so the gate passing said nothing about the
+alignment defect fixed in `68f7924` — that is what this script was written to find out.
+
+    python3 vpp_sizes.py src/vnet/session/session_types.h src/vnet/session/transport_types.h
+
+Needs the VPP checkout at `/home/ubuntu/vpp` and a release build. Measured 2026-08-07:
+**269 named records across the two session headers, 0 disagreeing with gcc** on size or
+alignment.
+
+And the fix is a **no-op on those headers** — reverting the `name.is_some()` guard and
+re-dumping every tag/size/align gives a byte-identical list. VPP's unnamed bit-fields are
+padding inside structs that also declare a *named* bit-field of the same type, so the
+alignment was already contributed by the named one. The defect is real — the sema test
+checks it against gcc — and this corner of VPP does not exhibit it. `pp2_hw.h`, the third
+file with unnamed bit-fields, does not preprocess yet and is unmeasured.
