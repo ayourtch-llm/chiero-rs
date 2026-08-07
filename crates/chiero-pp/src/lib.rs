@@ -147,6 +147,19 @@ struct Tok {
     token: PpToken,
     text: String,
     hide: HideSet,
+    /// **This `##` is the paste operator**, as opposed to an ordinary `##` punctuator.
+    ///
+    /// C11 6.10.3.3 identifies the operator in a macro's *replacement list*, at definition
+    /// time. A `##` that reaches a substituted sequence any other way — spelled at a call site
+    /// and passed as an argument, or produced by an earlier paste, as `# ## #` does — is an
+    /// ordinary token, and 6.10.3.3p4's worked example exists to say so.
+    ///
+    /// It is a flag on the token rather than a position computed at the paste site because
+    /// **that is the level the rule lives at**: `substitute` interleaves replacement-list
+    /// tokens with argument tokens, and by the time `paste` walks the result, where each one
+    /// came from is exactly the thing it can no longer see. Marking at definition and letting
+    /// the flag ride through substitution is what makes the three routes one fix.
+    paste_op: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -357,6 +370,7 @@ impl Engine {
                 token: token.clone(),
                 text: lexed.text_at(index).unwrap_or("").to_owned(),
                 hide: HideSet::default(),
+                paste_op: false,
             })
             .collect();
         let mut lex_diagnostics = BTreeMap::new();
@@ -712,6 +726,7 @@ impl Engine {
                 token: token.clone(),
                 text: lexed.text_at(index).unwrap_or("").to_owned(),
                 hide: HideSet::default(),
+                paste_op: false,
             })
             .collect()
     }
@@ -759,6 +774,7 @@ impl Engine {
             .source_map
             .add_macro_at(name, Span::DUMMY, Span::DUMMY, None, 0);
         let index = self.macros.len();
+        // No body to mark: a builtin's replacement is computed at each use, not stored.
         self.macros.push(StoredMacro {
             def: MacroDef {
                 id,
@@ -783,7 +799,8 @@ impl Engine {
             .source_map
             .add_macro_at(name, Span::DUMMY, Span::DUMMY, None, 0);
         let index = self.macros.len();
-        let body = vec![synthetic_number(value, Span::DUMMY)];
+        let mut body = vec![synthetic_number(value, Span::DUMMY)];
+        mark_paste_operators(&mut body);
         self.macros.push(StoredMacro {
             def: MacroDef {
                 id,
@@ -809,7 +826,8 @@ impl Engine {
             .source_map
             .add_macro_at(name, Span::DUMMY, Span::DUMMY, None, 0);
         let index = self.macros.len();
-        let body = vec![synthetic_number("0", Span::DUMMY)];
+        let mut body = vec![synthetic_number("0", Span::DUMMY)];
+        mark_paste_operators(&mut body);
         self.macros.push(StoredMacro {
             def: MacroDef {
                 id,
@@ -837,7 +855,7 @@ impl Engine {
         let mut temporary = SourceMap::new();
         let file = temporary.add_file("<command-line>", value);
         let lexed = self.lex_session.lex(&temporary, file, LexConfig::default());
-        let body: Vec<_> = lexed
+        let mut body: Vec<_> = lexed
             .tokens()
             .iter()
             .enumerate()
@@ -851,6 +869,7 @@ impl Engine {
                 },
                 text: lexed.text_at(index).unwrap_or("").to_owned(),
                 hide: HideSet::default(),
+                paste_op: false,
             })
             .collect();
         let id = self
@@ -868,6 +887,7 @@ impl Engine {
                 variadic: Variadic::No,
             }
         };
+        mark_paste_operators(&mut body);
         self.macros.push(StoredMacro {
             def: MacroDef {
                 id,
@@ -1400,6 +1420,7 @@ impl Engine {
         } else {
             MacroKind::ObjectLike
         };
+        mark_paste_operators(&mut body);
         self.macros.push(StoredMacro {
             def: MacroDef {
                 id,
@@ -1670,6 +1691,7 @@ impl Engine {
             },
             text,
             hide: call.hide.clone(),
+            paste_op: false,
         }
     }
 
@@ -1793,6 +1815,7 @@ impl Engine {
                         },
                         text: String::new(),
                         hide: HideSet::default(),
+                        paste_op: false,
                     });
                 }
                 for (index, mut arg) in selected.into_iter().enumerate() {
@@ -1863,6 +1886,7 @@ impl Engine {
             },
             text: format!("\"{inside}\""),
             hide: HideSet::default(),
+            paste_op: false,
         }
     }
 
@@ -1870,7 +1894,11 @@ impl Engine {
         let mut output: Vec<Tok> = Vec::new();
         let mut i = 0;
         while i < input.len() {
-            if matches!(input[i].token.kind, PpTokenKind::Punct(Punct::HashHash)) {
+            // **`paste_op`, not the token kind.** By the time this walks the substituted
+            // sequence, a `##` here may have come from the replacement list (the operator), from
+            // an argument the caller spelled, or from a previous paste — and the kind is
+            // identical in all three. C11 6.10.3.3 makes only the first one an operator.
+            if input[i].paste_op {
                 let right = input.get(i + 1).cloned();
                 if right.is_none() {
                     if output
@@ -1935,6 +1963,11 @@ impl Engine {
                         bol: left.token.bol,
                     },
                     text,
+                    // **`# ## #` produces a `##` that is not an operator.** This is the token
+                    // 6.10.3.3p4's example is built around, and the whole point of the flag: a
+                    // paste's *result* is available for further replacement as an ordinary
+                    // preprocessing token, never as the operator.
+                    paste_op: false,
                     hide: {
                         let mut hide = left.hide.clone();
                         hide.extend(&right.hide);
@@ -1992,6 +2025,23 @@ fn span_from_ends(first: Span, last: Span) -> Span {
         // contiguous envelope; retain the first spelling span instead of fabricating an
         // inverted/cross-file range.
         Span::new(first.lo, first.hi, first.ctx)
+    }
+}
+
+/// Mark every `##` in a **replacement list** as the paste operator, and nothing else ever.
+///
+/// C11 6.10.3.3 identifies the operator here, at definition time. Every `StoredMacro` body goes
+/// through this — including the ones built from `-D` on the command line, because
+/// `-D'CAT(a,b)=a##b'` defines a macro that pastes exactly like a `#define` does.
+///
+/// The single call point is what makes the rule checkable: a body reaching `self.macros` without
+/// passing through here is a macro whose `##` silently stops working, and there is no second
+/// place that can make a token an operator.
+fn mark_paste_operators(body: &mut [Tok]) {
+    for token in body {
+        if matches!(token.token.kind, PpTokenKind::Punct(Punct::HashHash)) {
+            token.paste_op = true;
+        }
     }
 }
 
@@ -2140,6 +2190,7 @@ fn synthetic_punct(text: &str, punct: Punct, at: Span) -> Tok {
         },
         text: text.into(),
         hide: HideSet::default(),
+        paste_op: false,
     }
 }
 
@@ -2153,6 +2204,7 @@ fn synthetic_number(text: &str, at: Span) -> Tok {
         },
         text: text.into(),
         hide: HideSet::default(),
+        paste_op: false,
     }
 }
 
