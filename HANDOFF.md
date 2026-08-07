@@ -1459,13 +1459,24 @@ typing the paths ever would.
 >    Unwidened surfaces, roughly in order of expected yield:
 >    - ✅ **`chiero-parse`'s `vpp_corpus.rs`** — done, seven seeds now. Zero defects; the
 >      seed parses clean at 401k tokens (the largest in the corpus by 40%) with 0 diagnostics.
->    - ⚠️ **The widening has a runtime cost and it is now the suite's dominant one.** Every
->      corpus-consuming test preprocesses and analyses all 21 seeds, and the new one is ~5x the
->      size of a `vppinfra/` header — `conversions` and `semantics` each went from ~60s to
->      several minutes, and a full both-legs `check.sh` is now well over an hour. Before the
->      next widening, decide whether these gates should share one analysis rather than each
->      rebuilding it (`corpus_analyses()` already exists for exactly that and only two callers
->      use it).
+>    - ⚠️ **The widening's runtime cost — partly addressed, and the rest is measured.** Every
+>      corpus-consuming test preprocesses, parses and analyses all 21 seeds. Sharing one
+>      `PreprocessorSession` across seeds (its `LexSession` caches lexed files by content hash,
+>      and the closures overlap almost entirely) bought:
+>
+>      | | before | after |
+>      |---|---|---|
+>      | `conversions` | 62 s | **53 s** |
+>      | `vpp_layout_gate` | 62 s | **58 s** |
+>      | `vpp_corpus` (parse) | 16 s | **13 s** |
+>
+>      **~15%, which is less than hoped and says where the cost actually is**: not lexing, but
+>      parse and analyse, which no cache touches. The remaining structural waste is that each
+>      *test binary* rebuilds the corpus from scratch — Rust integration tests are separate
+>      processes, so `corpus_analyses()` cannot be shared across them however it is written.
+>      Cutting that needs the analysis serialised to disk and reloaded, which is a real design
+>      question (and 020's CIR text format may already be most of the answer). **Do not widen
+>      further without settling it** — a full both-legs `check.sh` is over an hour.
 >    - ~~A `vlib/` seed that pulls `trace.h`~~ — **not a parser gap; I was wrong to call it
 >      one.** gcc rejects `#include <vlib/node.h>` at the *same line and column*
 >      (`unknown type name 'vlib_buffer_t'`): that header is simply not self-contained. Any

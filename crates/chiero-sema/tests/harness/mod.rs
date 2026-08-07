@@ -143,6 +143,12 @@ pub fn corpus_analyses() -> Option<Vec<(&'static str, Parsed)>> {
     let sys = system_include_paths()?;
     let defines = gcc_predefines();
     let mut out = Vec::new();
+    // **One session for every seed.** `PreprocessorSession` holds a `LexSession`, which caches
+    // lexed files by content hash — and the seeds' include closures overlap almost entirely, so
+    // a fresh session per seed threw away a hit on nearly every header. Building it inside the
+    // loop cost the corpus gates most of their runtime; the widening to 21 seeds is what made
+    // that visible.
+    let session = chiero_pp::PreprocessorSession::new();
     for seed in CORPUS_SEEDS {
         let cfg = Config {
             include_paths: vec![corpus_dir()],
@@ -150,7 +156,6 @@ pub fn corpus_analyses() -> Option<Vec<(&'static str, Parsed)>> {
             defines: defines.clone(),
             ..Config::default()
         };
-        let session = chiero_pp::PreprocessorSession::new();
         let tu = session.preprocess_with_loader(
             corpus_dir().join("tu.c"),
             &format!("#include <{seed}>\n"),

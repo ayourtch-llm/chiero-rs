@@ -117,6 +117,18 @@ fn gcc_predefines() -> Option<Vec<(String, String)>> {
     (!defs.is_empty()).then_some(defs)
 }
 
+thread_local! {
+    /// **One preprocessor session per thread**, so the lexer's content-hash cache is shared
+    /// across seeds instead of thrown away between them.
+    ///
+    /// `PreprocessorSession` holds a `LexSession`, which caches lexed files by content hash —
+    /// and the seeds' include closures overlap almost entirely, so a session built per call
+    /// missed on every header of every seed after the first. Thread-local rather than a static
+    /// because the cache is `Rc`-based and deliberately not `Sync`; each test runs on its own
+    /// thread and loops the seeds itself, which is exactly the scope that benefits.
+    static SESSION: PreprocessorSession = PreprocessorSession::new();
+}
+
 fn preprocess(seed: &str) -> Option<PreprocessedTu> {
     let sys = system_include_paths()?;
     let defines = gcc_predefines()?;
@@ -126,9 +138,10 @@ fn preprocess(seed: &str) -> Option<PreprocessedTu> {
         defines,
         ..Config::default()
     };
-    let session = PreprocessorSession::new();
     let src = format!("#include <{seed}>\n");
-    Some(session.preprocess_with_loader(corpus_dir().join("tu.c"), &src, cfg, &mut Disk))
+    Some(SESSION.with(|session| {
+        session.preprocess_with_loader(corpus_dir().join("tu.c"), &src, cfg, &mut Disk)
+    }))
 }
 
 /// **Contract 19.** Parsing every preprocessed TU in the corpus produces zero panics, and

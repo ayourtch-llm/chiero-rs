@@ -93,6 +93,18 @@ fn gcc_predefines() -> Vec<(String, String)> {
         .collect()
 }
 
+thread_local! {
+    /// **One preprocessor session per thread**, so the lexer's content-hash cache is shared
+    /// across seeds instead of thrown away between them.
+    ///
+    /// `PreprocessorSession` holds a `LexSession`, which caches lexed files by content hash —
+    /// and the seeds' include closures overlap almost entirely, so a session built per call
+    /// missed on every header of every seed after the first. Thread-local rather than a static
+    /// because the cache is `Rc`-based and deliberately not `Sync`; each test runs on its own
+    /// thread and loops the seeds itself, which is exactly the scope that benefits.
+    static SESSION: PreprocessorSession = PreprocessorSession::new();
+}
+
 fn preprocess(seed: &str, sys: &[PathBuf]) -> PreprocessedTu {
     let cfg = Config {
         include_paths: vec![corpus_dir()],
@@ -100,13 +112,14 @@ fn preprocess(seed: &str, sys: &[PathBuf]) -> PreprocessedTu {
         defines: gcc_predefines(),
         ..Config::default()
     };
-    let session = PreprocessorSession::new();
-    session.preprocess_with_loader(
-        corpus_dir().join("tu.c"),
-        &format!("#include <{seed}>\n"),
-        cfg,
-        &mut Disk,
-    )
+    SESSION.with(|session| {
+        session.preprocess_with_loader(
+            corpus_dir().join("tu.c"),
+            &format!("#include <{seed}>\n"),
+            cfg,
+            &mut Disk,
+        )
+    })
 }
 
 /// A record chiero laid out, named the way C can refer to it.
