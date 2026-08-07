@@ -2085,27 +2085,34 @@ fn a_function_with_twelve_thousand_blocks_verifies_promptly() {
     m.funcs[0].blocks = blocks;
     m.funcs[0].entry = BlockId(0);
 
+    chiero_cir::verify::reset_terminators_examined();
     let started = std::time::Instant::now();
     let d = verify(&m);
     let took = started.elapsed();
     assert!(d.is_empty(), "the module is well-formed: {d:#?}");
-    // ⚠️ **This bound is relative to the build profile, and that has already caught it out.**
-    // It was 5 s, chosen when `[profile.dev]` was unoptimised. Setting `opt-level = 2` made
-    // everything about 6.7x faster and the bound stayed put, so a mutant restoring *one* of the
-    // eight removed scans came in at **4.60 s and passed**. A wall-clock assertion silently
-    // weakens whenever the build gets faster.
+    // **A counter, not a clock — and the clock had already been caught out.**
     //
-    // Re-measured under `opt-level = 2`: **0.40 s** as it stands, **4.60 s** with `check_phis`
-    // rebuilding its predecessor list per block. 1.5 s sits between them with room either way.
+    // This asserted `took < 5s`, chosen when `[profile.dev]` was unoptimised. `opt-level = 2`
+    // made every build about 6.7x faster, the bound stayed put, and a mutant restoring **one**
+    // of the eight removed scans came in at 4.60 s and **passed**. A wall-clock assertion
+    // silently weakens whenever the build gets faster; nobody edits the test, it just stops
+    // being able to fail.
     //
-    // 📌 **The durable fix is a counter, not a tighter number** — see §9.1. `chiero-solver`'s
-    // slicing test made exactly this move on the same day, after a duration-ratio version went
-    // red under load. This one keeps a duration only because the counter would have to be
-    // threaded through `Terminator::successors`, which is a wider change than the test is worth
-    // today. **If this bound is ever adjusted rather than replaced, that is the trap re-arming.**
+    // `terminators_examined` counts the thing that actually differs. Examining every block's
+    // terminator **once per function** is linear; doing it **once per block** is quadratic. The
+    // number is identical on every machine, at any load, under any profile.
+    let examined = chiero_cir::verify::terminators_examined();
+    let blocks = (n * 3 + 1) as u64;
     assert!(
-        took < std::time::Duration::from_millis(1_500),
-        "12001 blocks took {took:?}; the verifier is quadratic in the block count again and \
-         no engine budget can reach it, because it runs before execution"
+        examined < blocks * 20,
+        "verification examined {examined} terminators for {blocks} blocks — that is per-block \
+         rather than per-function, which is the quadratic shape this test exists to catch"
+    );
+    // The duration stays as a *smoke* check with a deliberately loose bound: it is not the
+    // assertion, and it is here only so a catastrophic regression fails fast rather than hanging
+    // the suite.
+    assert!(
+        took < std::time::Duration::from_secs(30),
+        "12001 blocks took {took:?}"
     );
 }

@@ -409,7 +409,7 @@ fn check_references(m: &Module, f: &Function, out: &mut Vec<VerifyError>) {
 fn check_block_refs(f: &Function, out: &mut Vec<VerifyError>) {
     let known: IndexSet<BlockId> = f.blocks.iter().map(|b| b.id).collect();
     for b in &f.blocks {
-        for s in b.term.successors() {
+        for s in succs(&b.term) {
             if !known.contains(&s) {
                 err(
                     out,
@@ -435,7 +435,7 @@ fn check_block_refs(f: &Function, out: &mut Vec<VerifyError>) {
 /// Rule 9: lowering must insert a preheader rather than loop back to entry.
 fn check_entry_predecessors(f: &Function, out: &mut Vec<VerifyError>) {
     for b in &f.blocks {
-        if b.term.successors().contains(&f.entry) {
+        if succs(&b.term).contains(&f.entry) {
             err(
                 out,
                 f,
@@ -466,6 +466,42 @@ fn check_reachability(f: &Function, out: &mut Vec<VerifyError>) {
     }
 }
 
+thread_local! {
+    /// How many terminators verification has examined, this thread, since the last reset.
+    ///
+    /// **A counter, because the duration was not a test.** `verifier.rs`'s scale test asserted a
+    /// wall clock, and when `[profile.dev]` gained `opt-level = 2` every build got about 6.7x
+    /// faster while the bound stayed put — so a mutant restoring one of the removed per-block
+    /// scans came in *under* it and passed. A wall-clock assertion silently weakens whenever the
+    /// build gets faster, and nobody edits the test.
+    ///
+    /// This number is the same on every machine, at any load, under any profile. It counts the
+    /// thing that actually differs: examining every block's terminator **once per function** is
+    /// linear, and doing it **once per block** is quadratic.
+    static TERMINATORS_EXAMINED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// `t.successors()`, counted. Every enumeration of a block's successors inside verification goes
+/// through here — that is what makes the count track the *scan*, rather than the one site a fix
+/// happened to hoist it to. A mutant that reintroduces a per-block scan increments per block by
+/// construction.
+fn succs(t: &Terminator) -> Vec<BlockId> {
+    TERMINATORS_EXAMINED.with(|c| c.set(c.get() + 1));
+    t.successors()
+}
+
+/// Terminators examined since [`reset_terminators_examined`]. Test-only observability; see
+/// `TERMINATORS_EXAMINED` for why it exists at all.
+#[doc(hidden)]
+pub fn terminators_examined() -> u64 {
+    TERMINATORS_EXAMINED.with(std::cell::Cell::get)
+}
+
+#[doc(hidden)]
+pub fn reset_terminators_examined() {
+    TERMINATORS_EXAMINED.with(|c| c.set(0));
+}
+
 /// The blocks reachable from entry, **as a set**.
 ///
 /// It returned a `Vec` and probed it with `contains`, which is O(blocks²) — and every caller
@@ -483,7 +519,7 @@ fn reachable_blocks(f: &Function) -> IndexSet<BlockId> {
         let Some(blk) = by_id.get(&b).copied() else {
             continue;
         };
-        for s in blk.term.successors() {
+        for s in succs(&blk.term) {
             if seen.insert(s) {
                 stack.push(s);
             }
@@ -622,7 +658,7 @@ fn check_phis(f: &Function, out: &mut Vec<VerifyError>) {
     let mut preds_of: IndexMap<BlockId, Vec<BlockId>> =
         f.blocks.iter().map(|b| (b.id, Vec::new())).collect();
     for p in &f.blocks {
-        for s in p.term.successors() {
+        for s in succs(&p.term) {
             if let Some(list) = preds_of.get_mut(&s) {
                 list.push(p.id);
             }
@@ -850,7 +886,7 @@ fn dominators(f: &Function) -> IndexMap<BlockId, Vec<BlockId>> {
         if !reachable.contains(&p.id) {
             continue;
         }
-        for s in p.term.successors() {
+        for s in succs(&p.term) {
             if let Some(list) = preds.get_mut(&s) {
                 list.push(p.id);
             }
