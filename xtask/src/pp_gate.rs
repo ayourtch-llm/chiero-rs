@@ -85,10 +85,19 @@ pub enum Verdict {
     Differs,
     /// The compilers disagreed and chiero matched neither. Also a finding, and a worse one.
     MatchedNeither,
-    /// Neither compiler would preprocess the file, so nothing was asked of chiero. Kept apart
-    /// from a pass for the reason `sweep::Bucket::BothRefused` exists: a gate that tested
-    /// nothing must not report success.
-    CompilerRefused,
+    /// Both compilers rejected the file **and so did chiero**. These are the corpus's negative
+    /// tests — `#if` with no expression, `#ifdef` with no name, a paste of `/` and `*` — and
+    /// agreeing to reject one is a real result, not a skip.
+    RefusedByAll,
+    /// **Both compilers rejected the file and chiero said nothing.** A missing diagnostic, and
+    /// its own finding class.
+    ///
+    /// The first version of this gate folded it into a single "no compiler ran it" bucket, on
+    /// the reasoning that nothing had been asked of chiero. That was wrong in the way
+    /// `sweep::Bucket::Miss` is written to prevent: 21 of 141 cases landed there, they are the
+    /// corpus's *error-recovery* half, and the question they ask — does chiero notice — was
+    /// being answered by not asking it.
+    AcceptedWhatBothRejected,
     /// chiero **crashed** on the file. Its own class, and above every other finding.
     ///
     /// §7.6 filed two source-triggerable panics in the same row as a file that would not
@@ -359,7 +368,7 @@ pub fn run_case(
     let Ok(source) = std::fs::read_to_string(&case.path) else {
         return Row {
             case: case.clone(),
-            verdict: Verdict::CompilerRefused,
+            verdict: Verdict::RefusedByAll,
             chiero_diagnostics: vec!["file unreadable".to_owned()],
             first_difference: None,
         };
@@ -407,7 +416,13 @@ pub fn run_case(
     };
 
     let verdict = match (&gcc, &clang) {
-        (None, None) => Verdict::CompilerRefused,
+        (None, None) => {
+            if chiero_diagnostics.is_empty() {
+                Verdict::AcceptedWhatBothRejected
+            } else {
+                Verdict::RefusedByAll
+            }
+        }
         (Some(g), Some(c)) if g == c => {
             if &ours == g {
                 Verdict::Agree
@@ -493,7 +508,10 @@ impl Report {
         self.rows.iter().filter(|row| {
             matches!(
                 row.verdict,
-                Verdict::Differs | Verdict::MatchedNeither | Verdict::Panicked(_)
+                Verdict::Differs
+                    | Verdict::MatchedNeither
+                    | Verdict::Panicked(_)
+                    | Verdict::AcceptedWhatBothRejected
             )
         })
     }
@@ -516,7 +534,8 @@ impl Report {
                 Verdict::MatchedOne { compiler } => format!("matched {compiler} only"),
                 Verdict::Differs => "DIFFERS".to_owned(),
                 Verdict::MatchedNeither => "MATCHED NEITHER".to_owned(),
-                Verdict::CompilerRefused => "no compiler ran it".to_owned(),
+                Verdict::RefusedByAll => "rejected by all three".to_owned(),
+                Verdict::AcceptedWhatBothRejected => "ACCEPTED WHAT BOTH REJECTED".to_owned(),
                 Verdict::NoCommand => "no RUN line".to_owned(),
                 Verdict::Panicked(_) => "PANICKED".to_owned(),
             };
