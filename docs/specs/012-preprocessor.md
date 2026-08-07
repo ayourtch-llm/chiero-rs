@@ -83,6 +83,26 @@ relationship backwards inverts the backtrace, which is contract 7.
 - `a ## b` produces a token lexed from the concatenation, with `ExpnKind::Paste`. If the
   result is not a single valid pp-token, that is UB; chiero emits a diagnostic and keeps
   both tokens (gcc's behavior).
+- **The paste operator is identified in the replacement list, at definition time, and
+  nowhere else.** C11 6.10.3.3 makes `##` an operator by where it is *spelled*. A `##`
+  that reaches a substituted token sequence any other way is an ordinary punctuator:
+  spelled at a call site and passed as an argument (`#define FOO(x) A x B` / `FOO(##)` →
+  `A ## B`), or produced by an earlier paste — `# ## #` yields a `##` token, which is the
+  whole subject of 6.10.3.3p4's worked example:
+
+  ```c
+  #define hash_hash # ## #
+  #define mkstr(a) # a
+  #define in_between(a) mkstr(a)
+  #define join(c, d) in_between(c hash_hash d)
+  char p[] = join(x, y);            /* "x ## y" */
+  ```
+
+  Implementation consequence, and it is not optional: **the "is an operator" bit must be
+  carried on the token**, set when a macro body is stored and preserved through
+  substitution. Substitution interleaves replacement-list tokens with argument tokens, so
+  by the time the paste pass walks the result, where each token came from is precisely
+  what it can no longer recover. A paste's own result is minted *without* the bit.
 - GNU `, ## __VA_ARGS__` comma-swallowing is supported (§4). The comma is deleted only
   when the variadic argument is **empty**; with a non-empty argument it stays a separate
   token, and fusing it into the argument produces a token that is not a pp-token at all.
@@ -103,6 +123,37 @@ A macro currently being expanded is disabled for the duration. chiero tracks thi
 `hide_set` on each token rather than a global stack, because tokens outlive the
 expansion that produced them once they are buffered. `hide_set` is a small interned
 bitset keyed by `MacroId`.
+
+**The combination rule is the part that matters, and it is an intersection.** C99
+6.10.3.4p2 as realized by Prosser's algorithm — the standard formulation every C
+preprocessor implements:
+
+| invocation | hide set of the resulting tokens |
+|---|---|
+| object-like `M` | `HS(M) ∪ {M}` |
+| function-like `M ( … )` | `(HS(M) ∩ HS(the closing paren)) ∪ {M}` |
+
+The intersection is not a refinement of a union, it is the opposite of one, and the
+difference is observable. When `M`'s name comes out of an earlier expansion but its
+argument list is taken from the source tokens that followed, the invocation is only
+*partly* inside that earlier expansion — so the outer macro's paint drops off, and
+tokens the union would have left inert go on expanding:
+
+```c
+#define f(a) a*g
+#define g(a) f(a)
+b: f(2)(9)                  /* b: 2*9*g — not 2*f(9) */
+```
+
+`f(2)` yields `2*g` whose `g` is painted by `f`; but `g(9)` takes its `)` from the
+source, whose hide set is empty, so `f` leaves the set and the `f(9)` that `g` produces
+expands. Taking the union instead stalls two expansions early.
+
+⚠️ **The failure mode of getting this wrong in the other direction is non-termination**,
+so a change here is only safe beside the cases that must not move: 6.10.3.4p2's own
+`f(f(z))`, the `A B C` triangle, direct self-reference, mutual recursion through two
+object-like names, and — the discriminating one — the same `f(2)(9)` where `g` is
+*object-like*, where there is no closing paren to intersect at and `f` must stay painted.
 
 ## 3. Directives
 
@@ -236,3 +287,18 @@ mitigations: per-TU expansion tables dropped after lowering, retaining only the
 18. Every result record carries a non-default `ConfigId`.
 19. Two runs over the same TU produce byte-identical token streams and identical
     `ExpnCtx` numbering.
+20. **A `##` that arrives by substitution is not the paste operator** (§2.3). C11
+    6.10.3.3p4's worked example — `hash_hash`/`mkstr`/`in_between`/`join` — yields
+    `char p[] = "x ## y";`. `#define FOO(x) A x B` / `FOO(##)` yields `A ## B`, three
+    tokens. `#define hh # ## #` / `#define m(a) [a]` / `m(x hh y)` yields `[x ## y]`.
+    In every case a `##` spelled in a replacement list still pastes.
+21. **The invocation hide set intersects at the closing paren** (§2.4).
+    `#define f(a) a*g` / `#define g(a) f(a)` / `f(2)(9)` yields `2*9*g`; with `g`
+    object-like (`#define g f`) the same input yields `2*f(9)`. Contracts 2 and 3 are
+    the non-termination guard on this one and must be re-asserted beside it.
+22. **Conformance against two independent compilers over a preprocessor test corpus.**
+    `cargo run -p xtask -- pp-gate` runs a simplecpp checkout's `testsuite/` through gcc,
+    clang and chiero and reports, per case, whether chiero matched either. gcc and clang
+    are the oracle; the corpus supplies inputs only. A case both compilers *reject* is
+    reported as a distinct outcome according to whether chiero rejected it too — a
+    missing diagnostic is a finding, not an unmeasured row.
