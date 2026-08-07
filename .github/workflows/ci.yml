@@ -10,13 +10,64 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
+  # **Both solver configurations, because both are contracts.**
+  #
+  # 022 §4 discovers a backend on `PATH` at *run* time, through a subprocess, and 001 §6
+  # requires the build to link none. So there are two behaviours to keep honest and they are
+  # different claims:
+  #
+  #   solver: none  — 022 contract 2. A machine with no z3 must behave exactly as `LiteOnly`:
+  #                   answer what tier 1 can answer and say `Unknown` for the rest, never a
+  #                   wrong answer. This is the configuration a reader gets by default, and
+  #                   until now it was the *only* one CI ran — by accident rather than design.
+  #   solver: z3    — the solver-dependent half of the suite. Five `chiero-check` tests assert
+  #                   what a complete solver decides about forced overflow; with no backend
+  #                   they have nothing to decide against and now skip, and a skip in the one
+  #                   place that runs on every commit is 070 §4's "a gate nobody runs is a gate
+  #                   that is already failing".
+  #
+  # The `none` job pins `CHIERO_SMT_SOLVER` at a path that does not exist rather than trusting
+  # the runner image to lack z3: a configuration that depends on an unstated assumption is not
+  # a configuration, and the day the image ships a solver this job would quietly stop testing
+  # what it is named for.
   build-and-test:
+    name: "build-and-test (solver: ${{ matrix.solver }})"
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        solver: [none, z3]
+    # ⚠️ **`none` does not gate yet, and that is a statement about the repository rather than
+    # about this file.** Measured 2026-08-06 on a machine with `$CHIERO_SMT_SOLVER` pointed at
+    # nothing: roughly a dozen suites fail there, every one of them a test that asserts a
+    # *proof* — a line proven unreachable, 390 arithmetic identities proven equal, an offset
+    # proven able to leave its object. Tier 1 cannot produce any of those, so `Unknown` is the
+    # correct answer and the assertions are measuring the absence of z3.
+    #
+    # Four were fixed to skip or to accept either cause before this landed; the rest need the
+    # same judgement one at a time, and rushing that is how a test gets weakened into passing.
+    # Until then this leg reports and does not block, so the gap is visible on every run
+    # instead of being invisible the way it was before the matrix existed.
+    #
+    # **It becomes a gate the day it is green** — delete this line then, not before.
+    continue-on-error: ${{ matrix.solver == 'none' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+
+      - name: Install z3
+        if: matrix.solver == 'z3'
+        run: |
+          sudo apt-get update && sudo apt-get install -y z3
+          z3 --version
+
+      # Belt and braces: `discover()` consults `$CHIERO_SMT_SOLVER` first, so pointing it at
+      # nothing is "no solver" whatever the image happens to carry.
+      - name: Pin the solverless configuration
+        if: matrix.solver == 'none'
+        run: echo "CHIERO_SMT_SOLVER=/nonexistent/no-solver-in-this-job" >> "$GITHUB_ENV"
 
       - name: Format
         run: cargo fmt --all --check
@@ -25,6 +76,8 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       # 001 contract 6 / 022 contract 1: the minimal build must link no external solver.
+      # **Run in both jobs on purpose** — this is the step that says installing z3 above
+      # changed what the tests can decide and not what the build depends on.
       - name: Build (no default features)
         run: cargo build --workspace --no-default-features
 

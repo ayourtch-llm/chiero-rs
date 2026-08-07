@@ -33,6 +33,12 @@ path = "src/main.rs"
 
 [dev-dependencies]
 serde_json.workspace = true
+# **Test-only, and for one question**: is there a backend on `PATH`? The tutorial transcripts
+# were taken with one and pin `solver: z3` in their own text, so on a machine without one they
+# are checked against an answer the tool correctly does not give. Asking `SmtLib::discover`
+# rather than re-deriving 022 §4's search order here — a second implementation of discovery
+# would drift from the first the day the order changes.
+chiero-solver.workspace = true
 
 [lints]
 workspace = true

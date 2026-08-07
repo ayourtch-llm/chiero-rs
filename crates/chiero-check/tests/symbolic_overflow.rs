@@ -100,6 +100,28 @@ fn findings_tier(m: &Module, tier: Option<chiero_exec::SolverTier>) -> Vec<Strin
     e.run(&mut a).findings()
 }
 
+/// **A backend, or an honest skip** — 022 contract 2's other half.
+///
+/// Every test below is about what a *complete* solver decides: whether every value a path
+/// admits overflows is a query tier 1 cannot settle, and `Unknown` is the right answer from a
+/// machine with no z3 on it. So without one there is nothing here to be right or wrong about,
+/// and the assertions would be measuring the absence of a solver.
+///
+/// **This is why CI installs z3** rather than leaving five tests to skip there: a skip in the
+/// one place that runs on every commit is 070 §4's "a gate nobody runs is a gate that is
+/// already failing", wearing a different hat. The skip exists for a contributor's machine, not
+/// for the build.
+///
+/// It was missing, and the five tests below failed on GitHub — where there is no solver —
+/// while passing on every developer machine that has one.
+fn backend_or_skip(what: &str) -> bool {
+    if chiero_solver::SmtLib::discover().is_some() {
+        return true;
+    }
+    eprintln!("skipping {what}: no SMT-LIB backend on PATH (022 contract 2)");
+    false
+}
+
 /// `x = Fresh`, then `cmp x, bound` and a branch; the true block does `x op rhs`.
 fn guarded(op: BinOp, cmp: CmpOp, bound: i128, rhs: i128) -> Module {
     guarded_as(op, cmp, bound, rhs, true)
@@ -164,6 +186,9 @@ fn guarded_as(op: BinOp, cmp: CmpOp, bound: i128, rhs: i128, signed: bool) -> Mo
 /// alone is the shape this project keeps finding: one arm guarded and not its siblings.
 #[test]
 fn an_overflow_the_path_forces_is_reported() {
+    if !backend_or_skip("an_overflow_the_path_forces_is_reported") {
+        return;
+    }
     for (what, m) in [
         // x > 2147483640, so x is one of seven values and every one of them overflows at +10.
         ("Add", guarded(BinOp::Add, CmpOp::SGt, 2_147_483_640, 10)),
@@ -252,6 +277,9 @@ fn an_overflow_the_path_forbids_is_not_reported() {
 /// the whole file. The smallest overflow there is is the one that pins the constant.
 #[test]
 fn an_overflow_of_exactly_one_past_the_maximum_is_reported() {
+    if !backend_or_skip("an_overflow_of_exactly_one_past_the_maximum_is_reported") {
+        return;
+    }
     let f = findings(&guarded(BinOp::Add, CmpOp::SGt, 2_147_483_646, 1));
     assert!(
         f.iter().any(|s| s.starts_with("signed-overflow")),
@@ -309,6 +337,9 @@ fn a_result_of_exactly_the_minimum_is_not_an_overflow() {
 /// only worth something in a crate that can speak.
 #[test]
 fn an_undecided_overflow_is_not_reported() {
+    if !backend_or_skip("an_undecided_overflow_is_not_reported") {
+        return;
+    }
     let m = guarded(BinOp::Add, CmpOp::SGt, 2_147_483_640, 10);
     assert!(
         !findings(&m).is_empty(),
@@ -344,6 +375,9 @@ fn an_undecided_overflow_is_not_reported() {
 /// **An overflow the path admits is reported when asked for.**
 #[test]
 fn an_admitted_overflow_is_reported_when_the_caller_asks() {
+    if !backend_or_skip("an_admitted_overflow_is_reported_when_the_caller_asks") {
+        return;
+    }
     let m = module(vec![block(
         0,
         vec![
@@ -394,6 +428,9 @@ fn an_admitted_overflow_is_reported_when_the_caller_asks() {
 /// kinds exist for.
 #[test]
 fn the_knob_does_not_weaken_a_forced_overflow() {
+    if !backend_or_skip("the_knob_does_not_weaken_a_forced_overflow") {
+        return;
+    }
     let m = guarded(BinOp::Add, CmpOp::SGt, 2_147_483_640, 10);
     let mut a = TermArena::new();
     let mut e = Engine::new(&m).with_admitted_overflow(true);

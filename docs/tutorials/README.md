@@ -28,6 +28,12 @@ is the machinery that makes the difference impossible to miss.
 1–3 are the coverage-and-selection story and build on each other. 4, 6, 7 and 8 each stand
 alone and use the symbolic engine. 5 applies to all of them.
 
+**The transcripts assume a solver.** They were taken on a machine with `z3` on `PATH`, which
+chiero discovers at run time (it never links one — see the README's "no build dependencies").
+Without a solver the symbolic pages answer `unknown` with a reason instead of a proof or a
+counterexample, which is 022 contract 2 working as designed and what
+[tutorial 4](04-prove-equivalent.md#what-it-will-not-pretend-to-know) tells you to expect.
+
 ## Two things worth knowing before you start
 
 **Start anywhere, not at `main`.** Every symbolic operation takes `--entry <fn>`, and a

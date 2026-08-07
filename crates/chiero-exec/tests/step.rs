@@ -4412,6 +4412,14 @@ fn the_default_havoc_covers_every_pointer_argument_at_depth_one() {
 /// Same refusal to fabricate an address; a reason a reader can act on.
 #[test]
 fn a_symbolic_ptr_add_offset_is_a_gap() {
+    // **The finding below is a proof, and tier 1 cannot produce it.** That the unconstrained
+    // offset *can* leave a 16-byte object is a satisfiability question; with no backend the
+    // engine says so — `Bounded`, enumeration stopped — which is the honest answer and not the
+    // one this test is about. 022 contract 2, and the same guard the tests below it use.
+    if chiero_solver::SmtLib::discover().is_none() {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    }
     let mut caller = defined(
         0,
         "main",

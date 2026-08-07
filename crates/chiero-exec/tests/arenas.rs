@@ -191,9 +191,25 @@ fn without_an_arena_a_buffer_access_is_an_unresolvable_pointer() {
         .iter()
         .flat_map(|st| st.assumptions().iter().map(|a| a.detail.clone()))
         .collect();
+    // **Either cause, because the claim is that it did not resolve — not which tier failed
+    // to.** 021 §5.1 keeps the two apart deliberately: `NoInformation` says the value is
+    // unconstrained, `SolverUnknown` says the tier could not decide, and only the second tells
+    // a reader to install a solver rather than to strengthen the program. Which one arrives
+    // here depends on whether there is a backend on `PATH`, which is what this test is *not*
+    // about — it pinned the first and went red on a machine with no z3, which is every CI
+    // runner until one installs it.
+    //
+    // Both strings in full, rather than a shared substring: `contains("pointer")` also matches
+    // the aliasing assumption every entry with two pointer parameters carries, and an
+    // assertion a passing run satisfies by accident is not a negative control.
+    let unresolved = |d: &String| {
+        d.contains("a symbolic pointer with no constraint")
+            || d.contains("could not decide a pointer's object set")
+    };
     assert!(
-        why.iter().any(|d| d.contains("symbolic pointer")),
-        "an `IntToPtr` over an unconstrained symbol does not resolve: {why:?}"
+        why.iter().any(unresolved),
+        "an `IntToPtr` over an unconstrained symbol does not resolve, under either cause: \
+         {why:?}"
     );
     assert_ne!(
         r.fidelity(),

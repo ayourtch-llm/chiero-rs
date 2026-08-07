@@ -145,6 +145,21 @@ fn transcripts(md: &str) -> Vec<(String, String)> {
 
 #[test]
 fn every_tutorial_transcript_reproduces() {
+    // **The transcripts were taken on a machine with a backend, and say so in their own text**
+    // — `solver: z3` appears in tutorial 6's findings, and tutorial 4's `differs` verdict is a
+    // distinguishing input that tier 1 cannot produce. Without one, `prove-equivalent` answers
+    // `unknown` with a reason, which is 022 contract 2 working exactly as specified and is
+    // what tutorial 4's "no solver installed" section already tells the reader to expect.
+    //
+    // So this is a skip rather than a failure, and it is announced: CI runs the suite in both
+    // configurations, and the job that has z3 is the one that keeps these pages honest.
+    if chiero_solver::SmtLib::discover().is_none() {
+        eprintln!(
+            "skipping: the tutorial transcripts were taken with an SMT backend on PATH, and \
+             there is none here (022 contract 2)"
+        );
+        return;
+    }
     let dir = fixtures();
     let (mut checked, mut elided) = (0, 0);
     let mut files: Vec<PathBuf> = std::fs::read_dir(tutorials())

@@ -1175,6 +1175,19 @@ typing the paths ever would.
 >
 > ### ⏭️ What to do next, in order
 >
+> 0. **The solverless CI leg is red, and it is a real gap rather than a CI accident.** GitHub
+>    has no z3, which is how five `chiero-check` tests were found asserting what a complete
+>    solver decides without checking whether there was one. CI now runs a **matrix** —
+>    `solver: none` and `solver: z3` — and the `none` leg is `continue-on-error` because about
+>    a dozen suites fail there: `chiero-lower`'s symbolic memory tests, `chiero-tool`'s
+>    `check_reachable`, and others that assert a **proof** tier 1 cannot produce. Each needs the
+>    same judgement, one at a time: *skip* when the test is about what a complete solver
+>    decides (`symbolic_overflow`, `differential`, `a_symbolic_ptr_add_offset_is_a_gap`), or
+>    *accept either cause* when the claim survives both tiers (`arenas`, where the pointer does
+>    not resolve either way and only the recorded reason differs). **Do not weaken an assertion
+>    to make it pass** — that is the failure this whole file is about. When the list is empty,
+>    delete the `continue-on-error` line and the leg becomes a gate.
+>
 > 1. **The 11 `failed` plugin entries, which are now one-line diagnoses** (§7.6 has the table).
 >    Seven are one cause: `frontend::predefines` asks gcc for its macros with **no `-march`**,
 >    while VPP builds `-march=x86-64-v2`, so `__SSE4_2__` is undefined and `vppinfra/crc32.h`
