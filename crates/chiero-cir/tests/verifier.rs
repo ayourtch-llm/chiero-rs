@@ -2029,11 +2029,20 @@ fn a_non_integer_size_operand_is_rejected() {
 /// simplicity beats Lengauer-Tarjan here."* That is an assumption about the input written as a
 /// justification, and nothing ever measured it. §11.3 — a plausible rationale is not evidence.
 ///
-/// The bound here is deliberately generous. The claim is that the cost is not super-quadratic,
-/// not that this machine is fast.
+/// **Raised to 12 001 blocks on the second pass, because fixing `dominators` left the whole
+/// function still quadratic** — 3001 blocks went 11.5 s → 270 ms, and the *ratio* stayed at
+/// about 4x per doubling, which is what says the shape had not changed. Reading the file for
+/// the same pattern found **six more** `Vec::contains` scans in a loop over blocks:
+/// `check_structural_identity`'s three duplicate-id checks, `check_block_refs`'s `known`,
+/// `check_reachability`'s and `check_ssa_and_types`' `reachable`, `reachable_blocks`' own
+/// `seen`, and the phi checker's predecessor scan — the last being the *same* defect as
+/// `dominators`', one function away.
+///
+/// The bound here is deliberately generous. The claim is that the cost is not quadratic, not
+/// that this machine is fast.
 #[test]
-fn a_function_with_three_thousand_blocks_verifies_promptly() {
-    let n = 1000u32;
+fn a_function_with_twelve_thousand_blocks_verifies_promptly() {
+    let n = 4000u32;
     let mut blocks = Vec::new();
     for i in 0..n {
         let b = i * 3;
@@ -2064,7 +2073,7 @@ fn a_function_with_three_thousand_blocks_verifies_promptly() {
     assert!(d.is_empty(), "the module is well-formed: {d:#?}");
     assert!(
         took < std::time::Duration::from_secs(5),
-        "3001 blocks took {took:?}; the verifier is super-quadratic in the block count and \
+        "12001 blocks took {took:?}; the verifier is still quadratic in the block count and \
          no engine budget can reach it, because it runs before execution"
     );
 }
