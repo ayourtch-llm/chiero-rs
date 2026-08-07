@@ -519,3 +519,17 @@ fn a_macros_recorded_variadic_kind_matches_how_it_was_written() {
         "an object-like macro has no parameter list at all"
     );
 }
+
+/// 011 contract 15, the half that only the preprocessor can show: **a macro whose name contains
+/// a universal character name is definable and invocable.**
+///
+/// This is why UCN support belongs in the lexer rather than in later analysis — macros are
+/// looked up by token text, so a name the lexer splits into `M`, `\`, `u00C0` is a macro that
+/// can never be called, and no amount of downstream repair recovers it.
+#[test]
+fn a_macro_name_may_contain_a_universal_character_name() {
+    let src = "#define M\\u00C0 7\nM\\u00C0\n";
+    let tu = preprocess_str("m.c", src, Config::default());
+    let texts: Vec<_> = tu.token_texts().collect();
+    assert_eq!(texts, vec!["7"], "diagnostics: {:?}", tu.diagnostics);
+}
