@@ -1584,13 +1584,14 @@ typing the paths ever would.
 > panics on the C standard's own worked example, after four consecutive widenings of VPP-shaped
 > corpora had begun returning honest zeros. §11.3 carries the general form.
 >
-> **State: 2026-08-07 — `./check.sh` GREEN at 2226 passed across 264 suites, fmt and clippy
+> **State: 2026-08-07 — `./check.sh` GREEN at 2227 passed across 264 suites, fmt and clippy
 > clean.** That is the first run verified against all three CI legs; the tree had been **red in
 > CI** (26 fmt diffs, 2 clippy errors) while the old one-leg script called it green. Closed this
-> session: `MemFault::BadRange`, 023 §8's `max_solver_rlimit`, `--solver-rlimit` on the three
-> commands that run a solver, and — the biggest of them — **the CIR verifier's super-quadratic
-> `dominators`**, which was what VPP's last two `timeout` rows actually were. The plugin sweep
-> now has **zero** `timeout` rows.
+> session: `MemFault::BadRange`; 023 §8's `max_solver_rlimit` and `max_memory_objects` — with
+> which **every budget in that sketch is built**; `--solver-rlimit` on the three commands that
+> run a solver; and — the biggest of them — **the CIR verifier's super-quadratic `dominators`**,
+> which was what VPP's last two `timeout` rows actually were. The plugin sweep now has **zero**
+> `timeout` rows.
 >
 > *Earlier in the session, at 2215/263, measured after the `BadRange` closure:* Up from 2154 at the previous session's start and 2193/258 before the
 > last two preprocessor closures. Earlier in the session: §7.11's seven waves over the
@@ -1731,7 +1732,16 @@ typing the paths ever would.
    child** and `pkill -INT` it from a background subshell —
    `gdb -batch -x cmds --args ./target/release/chiero …` with `run` then `bt 18`.
 
-   *Still open from the original entry:* 023 §8's `max_memory_objects` is unbuilt.
+   ✅ *And the original entry's last leftover closes too:* **`max_memory_objects` is built**
+   (2026-08-07), so **every field in 023 §8's budget sketch now exists** — the first time that
+   has been true. It bounds one *path* where `max_states` bounds paths.
+
+   ⚠️ **Enforced between steps, deliberately, and the enumeration is why.** Objects are minted
+   from eleven sites in `chiero-exec` *and* from every model in `chiero-model` via
+   `ModelCtx::mem`, which `chiero-vpp` extends — no call site sees them all, so a check at the
+   allocations would be a check at some of them. The cost is that the count can pass the limit
+   by one step's worth (measured: 13 against 12), which is `max_forks`'s shape and is stated in
+   the spec rather than glossed.
 
 5b. 🆕 **Audit `Vec` + `.contains()` on paths that scale — the shape, not the site.** The
    verifier fix above is the **second** time this exact defect class has been found in
@@ -1816,9 +1826,9 @@ typing the paths ever would.
      reports as "backend gave no usable answer". Honest, and a different sentence from the one
      under test. Use 2000.
 
-   **Left here:** 023 §8's `max_memory_objects` is still unbuilt beside it, and the three
-   `timeout` rows in the plugin sweep have not been re-measured against the new bound — which is
-   the measurement that would say whether the feature earns its keep on real code.
+   **Both leftovers are closed.** `max_memory_objects` shipped the same day, and the plugin
+   sweep's `timeout` rows were re-measured — they had nothing to do with the solver, which is
+   the entry two above this one.
 
    *The measurements that shaped it, kept because they are about z3 rather than about chiero:*
    `UnknownReason::ResourceLimit` existed and was **constructed nowhere**; nothing read
