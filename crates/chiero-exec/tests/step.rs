@@ -5447,13 +5447,22 @@ fn misalignment_is_not_a_finding_by_default() {
     );
 }
 
-/// **A wide load must not kill the process.** `<4 x i64>` is thirty-two bytes — an AVX
-/// vector VPP uses — and the term API had no width limit, so the arena asserted. Reaching
-/// it needed nothing exotic: a load out of `memset`-initialized memory. An abort is not
-/// something a caller can contain, which is why 021 keeps `BadRange` distinct from
-/// `OutOfBounds`: the object is big enough and chiero still cannot answer.
+/// **A wide load must not kill the process — and must not be reported as a defect either.**
+/// `<4 x i64>` is thirty-two bytes — an AVX vector VPP uses — and the term API had no width
+/// limit, so the arena asserted. Reaching it needed nothing exotic: a load out of
+/// `memset`-initialized memory. An abort is not something a caller can contain, which is why
+/// 021 keeps `BadRange` distinct from `OutOfBounds`: the object is big enough and chiero
+/// still cannot answer.
+///
+/// **And that last clause is the whole of it.** "chiero cannot carry a 32-byte access" is a
+/// sentence about chiero, not about the program — there is no C program of which it is true
+/// or false, so it cannot be a finding. It degrades: `Fidelity::Unknown` and an assumption
+/// that names the limit, which is 023 §7's rule and exactly what `SymbolicByte` already did.
+/// The assertion has both halves because the dangerous half is the *absence*: a reader
+/// scanning `find-bugs` output cannot act on this line, and 021 measured twenty-one of them
+/// on one VPP file.
 #[test]
-fn a_load_wider_than_chiero_can_carry_faults_rather_than_aborting() {
+fn a_load_wider_than_chiero_can_carry_degrades_rather_than_aborting_or_reporting() {
     let mut caller = defined(
         0,
         "main",
@@ -5499,13 +5508,21 @@ fn a_load_wider_than_chiero_can_carry_faults_rather_than_aborting() {
     let mut a = TermArena::new();
     let r = Engine::new(&m).run(&mut a);
     assert!(
-        r.findings()
+        !r.findings()
             .iter()
             .any(|f| f.contains("unsupported-access-width")),
-        "{:#?}",
+        "a limit of chiero's is not a defect of the program's: {:#?}",
         r.findings()
     );
-    assert_ne!(r.fidelity(), Fidelity::Exact);
+    assert!(
+        degradations(&r)
+            .iter()
+            .any(|d| d.contains("unsupported-access-width")
+                && d.contains("limit of chiero's memory model")),
+        "and the reader is told why the answer is weaker: {:#?}",
+        degradations(&r)
+    );
+    assert_eq!(r.fidelity(), Fidelity::Unknown);
 }
 
 /// **`scanf` must skip an argument *position*, not a surviving pointer.** The model takes
