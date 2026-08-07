@@ -69,5 +69,22 @@ unreachable_pub = "warn"
 # break it: iterating a HashMap/HashSet into an output path.
 disallowed_types = "deny"
 
+# **Optimised tests, with every debug check kept.**
+#
+# Measured 2026-08-07: `chiero-sema`'s `conversions` corpus test takes **53.7 s** built by the
+# default dev profile and **7.95 s** built by release — 6.7x, and `cargo test` uses the former.
+# §9.1's corpus-runtime item was written around the 53 s figure and proposed serialising the
+# analyses to disk, which is real design work; this is the config line that has to be ruled out
+# first.
+#
+# `debug-assertions` and `overflow-checks` are set **explicitly** rather than left to the
+# profile's defaults. They are what make a debug test run mean something — a wrapping add that
+# panics here is a defect this project wants to hear about — and `opt-level` is exactly the
+# knob whose neighbours a reader would assume it changed.
+[profile.dev]
+opt-level = 2
+debug-assertions = true
+overflow-checks = true
+
 [profile.release]
 debug = 1
