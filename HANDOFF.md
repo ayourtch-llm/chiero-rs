@@ -1487,9 +1487,9 @@ typing the paths ever would.
 >
 > Read **§8.3** first: it is the loop, its yield table, and the trap that let a defect survive
 > for months (*a green gate is evidence about the corpus, not about the tree*). Then §9.1 for
-> the next target. **The simplecpp corpus is harvested** (§7.11, §9.1 item 1) — the next
-> high-value work is the **find-bugs breadth widening**, a different subsystem and a different
-> failure mode. The `-march` item stays parked.
+> the next target. **§9.1 leads with what is closed and why**, then eight live items; the most
+> ready is **`MemFault::BadRange`** (item 6), whose stated blocker turns out to have a route.
+> The `-march` item stays parked for the owner.
 >
 > 🆕 **The newest entry in the yield table is the most useful one: change the *kind* of corpus,
 > not its size.** 141 preprocessor torture cases found three defects in a session, two of them
@@ -1513,226 +1513,19 @@ typing the paths ever would.
 
 ### 9.1 The queue
 
-1. ### ✅ **DONE 2026-08-07 — the preprocessor conformance corpus is built and has paid.**
-   See **§7.11** for the wave: the gate, three defects, two spec gaps, and the numbers.
-   `cargo run -p xtask -- pp-gate`, checkout at `/home/ubuntu/simplecpp` (`74a5a63`).
+> ✅ **Closed 2026-08-07** — the preprocessor conformance corpus and everything it led to
+> (**§7.11**, seven waves, nine defects), the compiler persona (012 §4.1 is normative), GNU
+> comma-swallow, 014 contract 11's lowering half (an honest zero), `vnet/ip/` swept (**§7.17**,
+> an honest zero), and 010 contract 11 (**§7.18**, an honest zero). The simplecpp corpus is
+> **harvested** — see §7.11's assessment; keep `pp-gate` as a two-minute standing check.
+>
+> ⚠️ **Two consecutive honest zeros before this file was last written.** §8.3's yield table shows
+> the pattern's returns flattening on the surfaces that remain. That is a signal to act on, not
+> to rediscover: prefer the concrete items below over another widening, and if you do widen,
+> **read the corpus first** (§8.3 step 1) — a wave was mis-scoped today by asserting an edge
+> without checking what was already covered.
 
-   ### ⚖️ **Assessment after seven waves: this corpus is largely harvested. Move on.**
-   §8.3's table exists to say when a pattern stops paying, and this is that entry. Of the **14**
-   findings left, **none affects VPP**:
-
-   | class | files | why it is not the next wave |
-   |---|---|---|
-   | `__VA_OPT__` | 1 | out of v1 scope by measurement (012 §2.3); changing it is an owner call |
-   | UCN spelling | 2 | a **declared** divergence (011 §2.0), not a defect |
-   | `x######x` UB | 2 | gcc and clang disagree with each other; there is no answer to match |
-   | `_Pragma` / `push_macro` | 3 | gcc and clang agree, so these are real — but **VPP uses `push_macro` zero times** and `/usr/include` once |
-   | comma-swallow / backslash corners | 5 | real conformance corners; simplecpp fails them too |
-   | clang-only attribute names | 1 | persona-table rows for attributes gcc itself lacks |
-
-   The first seven waves each found something that mattered to the actual target codebase. What
-   is left is conformance polish on constructs VPP does not contain. **The next high-value work
-   is the find-bugs breadth widening** (`vnet/ip*`, plugins beyond one function per file), which
-   has yielded *engine* defects on every previous run — see the unwidened-surfaces item.
-
-   Keep `pp-gate` as a standing regression check; it costs two minutes and it is now the only
-   thing watching the preprocessor's dark corners.
-
-   **What is left in it, as of 2026-08-07 — 14 findings, 100 agree, and the residue is named:**
-   - **`_Pragma` and `#pragma push_macro`/`pop_macro`** — 3 files. `_Pragma` is C11, not an
-     extension, and chiero records pragmas rather than acting on them.
-   - ~~**`__has_c_attribute`**, **scoped operands**, **`__has_cpp_attribute`**~~ — **all done
-     (§7.11); `pr63831-1/2` have left the findings list.** Historical detail follows.
-   - ~~**`__has_c_attribute`**~~ — **done (§7.11).** The two files now reach token 73 instead of
-     token 4. What is left in them is **scoped attribute names** (`__has_attribute(gnu::noreturn)`)
-     and `__has_cpp_attribute`. ⚠️ **I wrote here that gcc does not define `__has_cpp_attribute`
-     in C. That is wrong — gcc 13 defines it in C and returns version numbers from it**
-     (`__has_cpp_attribute(noreturn)` is `202202`). Measured, after writing the opposite from
-     memory; the note survived one commit. Verified rules:
-
-     | operand | `__has_attribute` | `__has_c_attribute` | `__has_cpp_attribute` |
-     |---|---|---|---|
-     | `noreturn` (standard) | 202202 | 202202 | 202202 |
-     | `deprecated` | 201904 | 201904 | 201904 |
-     | `packed` (GNU only) | 1 | 0 | 0 |
-     | `gnu::noreturn` (**scoped**) | **1** | **1** | **1** |
-     | `gnu::nonesuch` | 0 | 0 | 0 |
-
-     **A scoped operand answers 1, never a version** — a vendor-scoped attribute has no standard
-     version — which is the rule the table must encode, not a special case to hard-code.
-     ⚠️ And C has no `::` punctuator, so `gnu::noreturn` lexes as **four** tokens (`gnu`, `:`,
-     `:`, `noreturn`); `answer_feature_queries` matches a single identifier between the parens
-     and will need to accept that shape.
-   - **More comma-swallow corners** — 2 files (`macro_fn_comma_swallow2`, `macro_paste_commaext`),
-     same family as §7.11 and different shapes.
-   - **`__VA_OPT__`** — 1 file, out of v1 scope by measurement (012 §2.3), diagnosed not guessed.
-   - **UCN spelling** — 2 files, a **declared** divergence (§7.11, 011 §2.0), not a defect.
-   - **UB where gcc and clang disagree** — 2 files (`pr58844-1/2`, `x######x`). No single answer.
-   - `_Pragma-dependency2.c` and `diagnostic-pragma-1.c` accept what both compilers reject —
-     both pragma-driven, both on simplecpp's own skip/todo lists.
-
-   *(historical, from the first run:)*
-   - **18 findings remain and 17 are on `Skipped`/`Todo` priors.** The one `Expected` is
-     `macro_fn_va_opt.c` — `__VA_OPT__`, out of v1 scope by measurement (012 §2.3), so it is a
-     scope decision for the owner and not a defect.
-   - **The `Todo` list is the difficulty gradient and 6 of 15 still diverge.** simplecpp fails
-     these too, so each is a real conformance question rather than a slip: comma-swallowing
-     corners (`macro_fn_comma_swallow`/`2`, `macro_paste_commaext`), `macro_backslash`,
-     `macro_expand`, `c99-6_10_3_4_p6`. **Chiero already passes one that simplecpp does not.**
-   - **`MATCHED NEITHER`, 7 cases.** These are where gcc and clang *themselves* disagree, so
-     there is no single right answer and the row records which side each took. Worth reading
-     once to see whether chiero is near either.
-   - ⚠️ **Not yet a gate.** `pp-gate` exits 0 unconditionally, deliberately: §8.3 step 3 says the
-     first run's count is the measurement, and a threshold picked before that number exists is a
-     threshold picked to pass. It can be made to gate on `Expected`-prior findings now that the
-     number is 1 — but note that would make CI depend on a checkout it does not have, so the
-     honest form is "gate when `$SIMPLECPP` exists, and say NOTHING WAS MEASURED when it does not".
-
-   *Original brief, kept because the reasoning is what made the design right:*
-
-   <https://github.com/cppcheck-opensource/simplecpp>, pinned at **`74a5a63`** (2026-08-04).
-   This is §8.3's pattern pointed at a **new kind of edge**: every corpus so far is real VPP
-   code, which exercises macros as people write them, never the dark corners (`#`/`##` edge
-   cases, recursive expansion, `__VA_ARGS__`, `#line`, GNU `args...` with `##`).
-
-   **⚠️ Two earlier plans in this file were superseded — do not restart either.**
-
-   - ❌ *"Extract `ASSERT_EQUALS` pairs out of `test.cpp`."* Built and measured, then dropped.
-     For the record, because it was measured three times and only the last is right: `test.cpp`
-     holds **869** `ASSERT_EQUALS`; **244** are a literal expectation against `preprocess(`;
-     **115** extract usable as-is; 116 need an include-map/predefines harness; 13 build their
-     fixture some other way. 115+116+13 = 244 **accounts for all of them**.
-     ⚠️ **The "fix the function splitter first" job is CLOSED and its premise was false.** The
-     old splitter's body regex ended at the first line starting with `}`, and I recorded that as
-     losing assertions to nested blocks. A brace-balanced splitter (`$SCRATCH/extract3.py`,
-     skipping strings/chars/comments) extracts **exactly the same 115 cases, byte-identical**.
-     The 304 I had called an upper bound was a *loose whole-file scan* that over-counted; it was
-     never evidence of loss. **A discrepancy between two counts is not yet a defect in the
-     smaller one.**
-   - ❌ *"Take `test.cpp` and NOT `testsuite/`, on licensing."* The licence facts are right and
-     the conclusion did not follow. `testsuite/clang-preprocessor-tests/` is **211 verbatim
-     clang files** (Apache-2.0-with-LLVM-exception, still carrying `// RUN: %clang_cc1`) and
-     `testsuite/gcc-preprocessor-tests/` is **26 gcc ones** (GPL). Neither may be **vendored**
-     into an MIT-OR-Apache-2.0 repo — but vendoring was never the only option. **Point the gate
-     at a checkout, exactly as every VPP gate reads `/home/ubuntu/vpp` rather than a copy.**
-     That is this repo's existing precedent and it dissolves the problem entirely.
-
-   **The design, and it is better than the one it replaces.** The `testsuite/` files carry **no
-   expected output at all** — simplecpp's own `run-tests.py` runs each file through clang *and*
-   gcc and through simplecpp, and passes if simplecpp matches **either** compiler. So the oracle
-   question the old plan agonized over does not arise: **gcc and clang are the oracle directly**,
-   which is what this project wanted anyway, and simplecpp stops being a claimed authority and
-   becomes only the source of *inputs*. Mirror its method:
-
-   - **Flags** come from the `// RUN: %clang_cc1 …` line; its runner takes **only `-E` and
-     `-D*`** off it and ignores the rest. gcc files are plain `-E`.
-   - **Normalisation** is `cleanup()`: drop every line beginning with `#` (linemarkers), then
-     strip **all** whitespace and concatenate. Coarse, but it is what makes three independent
-     preprocessors comparable at all. Prefer chiero's existing token-sequence comparison
-     (`compiler_oracle.rs` already lexes gcc's `-E` output through `chiero_lex` and compares
-     `token_texts`) — it is strictly sharper than whitespace-stripping, and the machinery exists.
-   - **Pass if chiero matches either clang or gcc**, and record the disagreements where the two
-     compilers themselves differ — those are the interesting rows and simplecpp just picks whichever.
-   - ⚠️ **Take simplecpp's `skip` and `todo` lists as priors, not as truth.** 24 files it skips
-     (`_Pragma`, `__has_attribute`, locale-dependent `\u` output, `-march` features) and 16 it
-     lists as `todo` — the todo list is a **ready-made difficulty gradient**: it is where a good
-     hand-written preprocessor still fails, so it is where chiero's own gaps are most likely.
-     A chiero pass on a simplecpp `todo` file is a real result worth recording.
-   - **Record what it rejects BEFORE fixing anything** (§8.3 step 3). That first count is the
-     number this wave is judged by.
-
-   Checkout for this session is at `$SCRATCH/simplecpp` (copied forward; `git log -1` → `74a5a63`).
-   Clone it to a stable path outside the repo before wiring a gate to it — a scratchpad is
-   per-session and this must survive.
-
-2. ### ✅ **DONE 2026-08-07 — the compiler persona.** See **§7.11**; 012 §4.1 is normative.
-   `__has_attribute`/`__has_builtin` now answer from `features::TABLE` (163 rows measured from
-   gcc, 46 `false`), in `#if` **and** in program text, **after** expansion, with an unknown name
-   answering 0 and saying so once per distinct name. `__GNUC_MINOR__` joined the baked persona.
-
-   **What is left of it, and it is small:**
-   - The table is a fact about **gcc 13.3 on this machine**, baked. `chiero-cli`'s frontend
-     already captures `cc -dM` at run time; the same upgrade path would let the *table* be
-     probed per configuration rather than baked. Not worth building until a second toolchain is
-     in play — but note the table's test would then need to follow the persona, not `gcc`.
-   - `__has_c_attribute`, `__has_extension`, `__has_feature` are still unregistered. gcc 13 has
-     `__has_c_attribute`; the other two are clang's. A header using them takes the undefined
-     path, which for `__has_feature` is what gcc does too.
-
-   *The finding as it was written, kept because the decision rests on it:*
-
-   `Engine::new` registers both with `add_predefined_query`, which is a function-like macro with
-   an **empty body**. So:
-
-   | | chiero | gcc 13.3 |
-   |---|---|---|
-   | `#ifdef __has_attribute` | defined | defined |
-   | `#if __has_attribute(packed)` | **0**, no diagnostic | 1 |
-   | `#if __has_builtin(__builtin_expect)` | **0**, no diagnostic | 1 |
-   | `#if __has_attribute(no_such_attr)` | 0 | 0 |
-
-   ⚠️ **The recurring confusion in a new place** (§11.3): chiero not knowing something is being
-   reported as the answer. Here it is not memory but a feature query, and the `#ifdef`
-   succeeding is what makes it worse than silence.
-
-   ⚠️ **I first wrote that this diverges "in every TU that reaches a system header". That was
-   wrong, and the corrected measurement is the point** (§11.2). On *this* machine every one of
-   the 17 `__glibc_has_attribute` uses in `sys/cdefs.h` is shielded by a `__GNUC_PREREQ(<=4.9) ||`
-   — 39 `__GNUC_PREREQ` guards in that header — so for a real `chiero-cli` run, which captures
-   `__GNUC_MINOR__` from `cc -dM`, the PREREQ decides and the query answer is **dead**. The
-   unshielded reachable sites are `wchar.h`'s `__has_builtin(__builtin_fclose)`, where gcc also
-   answers NO and chiero's 0 *agrees*, and one recorded-and-ignored attribute via `ucontext.h`.
-   VPP contains **zero** direct queries. The defect is real and currently mostly disarmed; a
-   newer glibc, which drops the shields, re-arms it silently.
-
-   #### The sibling defect, which is live *now* and makes this one maximal
-
-   `Engine::new` bakes `__GNUC__ 13` and **not `__GNUC_MINOR__`**. `features.h` defines
-   `__GNUC_PREREQ(maj,min)` as constant `0` unless *both* are defined — so for any consumer whose
-   `config.defines` is not cc-populated (the library used directly, as every test does), every
-   shield above collapses and every guard falls through to the has_attribute answer. **Fix it in
-   the same commit**, and state which compiler the baked set is impersonating.
-
-   #### The decision, taken 2026-08-07 after an independent `fable` review
-
-   **Implement the queries in the `#if` preparer, beside `__has_include`, answered from a name
-   table that is part of the modeled-compiler persona.** Not from §4.12b's list, and not dropped.
-
-   - **`__has_attribute(x)` is not a question about chiero.** chiero's predefine set is an
-     *impersonation of the build compiler*, not a self-report: `__GNUC__ 13` is baked and
-     `frontend.rs` captures the full `cc -dM` at run time ("the answer is a property of the
-     machine"). Answering from chiero's own four-attribute semantic list would analyse a
-     configuration no compiler produces — and by that logic `__GNUC__` should be undefined too.
-   - ⚠️ **Dropping them is not the safe one-line option, it is actively worse, and gcc says so.**
-     Verified: with `__has_attribute` undefined, `#if defined __has_attribute && __has_attribute
-     (packed)` is a hard **error** (`missing binary operator before token "("`), because `#if`
-     parses the whole expression whatever short-circuiting would do. That is the exact idiom
-     `sys/cdefs.h`'s own comment warns about. It trades silent wrong answers for loud wrong
-     errors on a widespread pattern.
-   - **The error asymmetry settles the direction.** 0-where-gcc-says-1 silently swaps the
-     analysed program for one that never ships — invisible, and fatal for a tool whose verdicts
-     are anchored to the artifact gcc built. 1-where-chiero-cannot-model is *loud* by
-     construction: the parser takes any `__attribute__((...))` and an unmodeled builtin hits
-     §4.13b's havoc-loudly path with `Approximated` and a named assumption. **A loud
-     approximation of the shipped program beats an exact analysis of an unshipped one.**
-   - **`__has_include` is the same in kind, not different** — it answers from configured include
-     paths that mirror the build. Both ask "what would the build see". Same place, same mechanism.
-   - **"Did not look" keeps its channel** (§11.3): `#if` must yield a number, so ignorance cannot
-     ride in-band — but a name *in* the table answered 0 is knowledge (gcc agrees on
-     `no_such_xyz`, and on `__init_priority__`, a real NO that a table must be able to record),
-     while a name *absent* from the table is ignorance and earns one deduplicated diagnostic per
-     distinct name per TU. Expected volume here is zero, which is what makes it a regression
-     signal rather than noise.
-   - Normalize `__x__` to `x`; gcc treats them identically (verified on `packed`, `__unused__`).
-   - The table is verified by a **gcc differential test over every entry**, plus every name the
-     reachable headers actually query, so drift and gaps both fail.
-   - **012 §4 must state the persona**, since the current behaviour is written nowhere.
-
-   Reproduce in ten seconds: `printf '#if __has_attribute(packed)\nYES\n#else\nNO\n#endif\n' |
-   gcc -E -P -x c -` beside the same source through `preprocess_str` with gcc's predefines.
-
-
-3. **⏸️ PARKED at the owner's request 2026-08-07 — `-march`.** Do not start without checking in;
+1. **⏸️ PARKED at the owner's request 2026-08-07 — `-march`.** Do not start without checking in;
    the owner asked to discuss the design first. What was agreed: the *flag propagation* half is a
    bug regardless (chiero probes the compiler with no flags while the sweep replays real ninja
    lines, so it preprocesses a different configuration than the one that ships), and the
@@ -1744,63 +1537,7 @@ typing the paths ever would.
    `-march=x86-64-v2`, so `__SSE4_2__` is undefined and `vppinfra/crc32.h` never defines
    `clib_crc32c_with_init`. The other four are two parser/sema gaps in generated API headers.
 
-4. ### ✅ **DONE 2026-08-07 — GNU comma-swallow.** See **§7.11**. Two opposite defects behind one
-   guard, and the gate had named the wrong row. What follows is the entry as filed, kept because
-   **the diagnosis in it was wrong** and correcting it took measuring every row of the fixture:
-
-   *(filed diagnosis, superseded — the divergence was `X2`, not `X5`, and `X5`'s tokens were
-   already right)*
-
-   From the pp-gate's `Todo` cluster (§7.11) — `macro_fn_comma_swallow.c`, and **gcc and clang
-   agree on every row**, so this is not one of the UB rows where the oracles split:
-
-   ```c
-   #define X5(x,...) x##,##__VA_ARGS__
-   5: X5(1)                              /* both compilers: `5: 1` */
-   ```
-
-   chiero answers with a diagnostic — ``token paste `1,` is not one preprocessing token`` — and
-   a wrong stream. It pastes left to right, so `x ## ,` fuses `1` with the comma **before** the
-   second `##` is considered; but that comma is the left operand of a GNU `, ## __VA_ARGS__`,
-   and with an empty variadic argument it is supposed to be *deleted*, leaving `1`.
-
-   So the rule is about **which `##` owns the comma**, and the ordinary left-to-right sweep
-   answers it wrongly by arriving first. Note `paste()` already has a `left is Comma` branch —
-   this session gave it a `!right.paste_op` guard — so the machinery is present and the
-   *sequencing* is what is wrong.
-
-   ⚠️ **Verify the other three rows in the same file before touching anything** (`X2`, `X3`,
-   `X4` above): the gate reports only the first divergence per file, so one fix may or may not
-   move the rest, and §11.2's "a dominant finding is a lid, not a summary" applies to a
-   per-file first-divergence report exactly as it did to the sweep.
-
-   Reproduce: `/home/ubuntu/simplecpp/testsuite/clang-preprocessor-tests/macro_fn_comma_swallow.c`,
-   or the four `#define`s above through `gcc -E -P` beside `preprocess_str`.
-
-5. ### ✅ **DONE 2026-08-07 — 014 contract 11's other half. Zero defects, and a mis-scoped wave.**
-   Lowering already calls `truth_of` per operand and gets every case right. Three rows landed in
-   `differential.rs` that were genuinely absent — an operand wider than `int`, operands of
-   different types, and four-way short-circuiting with a side effect — and the rest of what I
-   had queued **was already covered by earlier waves**, including the `-0.0` case I had named as
-   the killer discriminator. ⚠️ **Read the corpus before asserting its edge.**
-
-   *(the entry as filed, kept because its premise was wrong:)*
-   `chiero-sema`'s conversion census says in a comment what it cannot see — that lowering must
-   insert a compare-against-zero per operand of `&&`/`||`, which is contract 11's actual
-   subject. **Lowering does do this correctly** (`truth_of` per operand, checked), so this is a
-   guard, not a fix — but it guards a failure mode that has already bitten: a comparison emitted
-   at the *result* type made the verifier reject the function, so every `x && <double>` in every
-   program lowered to nothing.
-
-   It belongs in `crates/chiero-lower/tests/differential.rs`, which owns the gcc oracle — no
-   shape assertion can answer it, because what makes a wrong compare-against-zero wrong is the
-   number. Fixtures must discriminate (§10); these do, and gcc's answers are already measured:
-   `-0.0 && 1` → **0** (a bit-pattern comparison says 2), `(1LL<<32) && 1` → **1** (32-bit
-   narrowing says 0), `(2 && 4) + (2 || 4) * 10` → **11** (forwarding an operand says 44), plus
-   short-circuiting asserted in *both* directions, since the negative rows alone are passed by
-   an implementation that never evaluates the right operand at all.
-
-6. **Unwidened surfaces, in rough order of expected yield** (§8.3 is the loop):
+2. **Unwidened surfaces, in rough order of expected yield** (§8.3 is the loop):
    - ~~The sema corpus gate's contract 11 and contract 19~~ — **both wrong, and both closed.**
      They are **010**'s contracts, not sema's. 19 was already covered by
      `chiero-span/tests/config_sites.rs`; 11 genuinely had no test and now does (§7.18), and it
@@ -1815,7 +1552,7 @@ typing the paths ever would.
    - `vnet/ip*` and `plugins/*/` beyond one function per file are untouched by the find-bugs
      sweep; `pick_entries.py --per-file N <files>` takes a list.
 
-7. **⚠️ Settle the corpus runtime before widening much further.** Every corpus-consuming test
+3. **⚠️ Settle the corpus runtime before widening much further.** Every corpus-consuming test
    preprocesses, parses and analyses all 22 seeds. Sharing one `PreprocessorSession` across seeds
    bought ~15% (`conversions` 62→53 s, `vpp_layout_gate` 62→58 s, `vpp_corpus` 16→13 s) — **less
    than hoped, and it says where the cost is**: not lexing, but parse and analyse, which no cache
@@ -1825,17 +1562,17 @@ typing the paths ever would.
    and reloaded — a real design question, and **020's CIR text format may already be most of the
    answer**.
 
-8. **A step that outlives the clock.** Three find-bugs entries still need the outer `timeout`; one
+4. **A step that outlives the clock.** Three find-bugs entries still need the outer `timeout`; one
    ran 10 s against a 5 s budget inside a symbolic-offset enumeration. The clock is only checked
    *between* steps, and 022 §8's `max_solver_rlimit` — deterministic work units — is specified and
    unimplemented. That is the principled bound for the solver half.
 
-9. **`InstKind::Call` carries no result type**, so an indirect call's result width is whatever
+5. **`InstKind::Call` carries no result type**, so an indirect call's result width is whatever
    candidate ran. The arity and parameter-type filters cut the wildest cases and cannot close it;
    the engine survives the rest by degrading. The real fix is a CIR change — **135 sites**
    construct `InstKind::Call`, and the text format needs syntax for it.
 
-10. ### **`MemFault::BadRange`** — ready to do, and the blocker has a route the note missed.
+6. ### **`MemFault::BadRange`** — ready to do, and the blocker has a route the note missed.
    "unsupported-access-width" on a 32-byte AVX load is a sentence about **chiero**, not about the
    program, so it belongs in `is_chiero_limit` beside `SymbolicByte`. It is held back because
    three tests in `chiero-exec/tests/step.rs` use it as their probe for `FindingKey`'s
@@ -1855,12 +1592,12 @@ typing the paths ever would.
    into `is_chiero_limit` and re-run `measure.sh` — §7.6's wide sweep had
    `unsupported-access-width` in its findings list.
 
-11. **032 contract 18's corpus still has no `observed` entry** and the gate correctly exits 1
+7. **032 contract 18's corpus still has no `observed` entry** and the gate correctly exits 1
    saying "NOT MEASURED". Method, learned the hard way (§7.1): **revert a historical fix's `src/`
    diff onto HEAD and run the suite** rather than hunting for a commit whose parent happens to
    fail. Two builds and ~40 minutes bought one rejected candidate the other way.
 
-12. **`:0` bit-fields in `layout`, deliberately left open** (§7.9). A record declaring a
+8. **`:0` bit-fields in `layout`, deliberately left open** (§7.9). A record declaring a
    zero-width bit-field still gets no padding number, because a `:0`-terminated run's cost depends
    on where the run is placed and this arithmetic sums constants. Closing it needs the run's
    allocation unit in the field description — `Field` would carry `unit_bits`, and the ideal
