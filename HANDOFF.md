@@ -1485,6 +1485,41 @@ That guard was the right answer to the wrong question — it named two things th
 *not* apply to, where the rule is what it **does** apply to. A guard that enumerates exclusions
 is a guard waiting for the next one.
 
+### 7.14 Universal character names, 2026-08-07 — chiero was rejecting valid C11
+
+Fifth wave from the simplecpp corpus, and the first that fixes a **correctness** statement rather
+than a conformance corner: C11 6.4.2.1 puts *universal-character-name* in `identifier-nondigit`,
+so `À` in an identifier is a character. chiero lexed `int À = 1;` as
+`int`, `\`, `u00C0`, `=`, `1`, `;` and reported *stray `\` in program*.
+
+**The raw UTF-8 spelling of the same identifier already worked** — `byte >= 0x80` admits it — so
+the gap was only ever the escaped form, and that control is in the test file to show the fix
+touched one path.
+
+⚠️ **Three rules, and gcc distinguishes all three where I had merged two.** The *fixture* is what
+failed, which is the good direction for that mistake:
+
+| input | gcc | rule |
+|---|---|---|
+| `aA` | "is not a valid universal character" | 6.4.3p2 — basic set or surrogate |
+| `a@` | "is not valid **in an identifier**" | a valid UCN naming a non-identifier character |
+| `̀` initially | "not valid at the start of an identifier" | Annex D.2, initial position only |
+| `à` | accepted | the same code point, continuing — a fix that rejects the range everywhere is wrong here |
+| `a\u12` | accepted | **not a UCN at all**; phase 3 invents no diagnosis phase 7 might |
+
+`$` is the one 6.4.3p2 carve-out that reaches an identifier, by the same GNU extension that
+already admits a literal `$`.
+
+**51 spurious diagnostics on valid C11, gone**: `normalize-3.c` 44 → 0, `ucnid-2011-1.c` 7 → 1,
+and that remaining one is the Annex D.2 error gcc gives too.
+
+⚠️ **Both files stay in the gate's findings list, and that is correct.** `gcc -E` **normalizes**
+UCN spelling in its output (`ª` → `\U000000aa`, `$` → `$`) and chiero preserves what
+was written, because 010 contract 11 requires a token's byte range to re-lex to its own spelling
+and a normalized spelling is a byte range that exists in no file. **011 §2.0 declares this**, so
+the next reader does not spend a wave chasing it. The two rows differ **by spelling, not by
+identity**.
+
 ### 7.5 How to check the workspace is green — `./check.sh`
 
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
@@ -1536,6 +1571,7 @@ This has now paid out three times in a row, each time on the first run after a w
 | *reading what that gate left behind*, rather than what it failed on | one wave | §7.12: the compiler-persona defect — `__has_attribute` claimed the capability and answered 0 to everything, silently. **The residue of a gate is a corpus too** |
 | the same gate, one `Todo` row — but **measuring every row of the file, not the one it named** | one wave | §7.13: **two opposite defects behind one guard**. The gate had pointed at the wrong row; the reported one was already correct |
 | `differential.rs`'s logical-operator rows: `int`-only → wider-than-`int`, mixed types, four-way short-circuit | one wave | **zero defects — and the wave was mis-scoped.** Most of what I "widened" was already covered, including the exact `-0.0` case I had picked as the discriminator. §8.3 step 1 says *ask what the corpus cannot contain*; I asked what I imagined it could not |
+| the same gate's **remaining findings, read as a to-do list** rather than as noise | one wave | §7.14: chiero was rejecting **valid C11** — a UCN in an identifier. **51 spurious diagnostics gone.** The corpus paid a fifth time, in a fifth different way |
 
 The loop, and it is deliberately mechanical:
 
@@ -1633,7 +1669,21 @@ typing the paths ever would.
    See **§7.11** for the wave: the gate, three defects, two spec gaps, and the numbers.
    `cargo run -p xtask -- pp-gate`, checkout at `/home/ubuntu/simplecpp` (`74a5a63`).
 
-   **What is left in it, in order of value:**
+   **What is left in it, as of 2026-08-07 — 16 findings, 100 agree, and the residue is named:**
+   - **`_Pragma` and `#pragma push_macro`/`pop_macro`** — 3 files. `_Pragma` is C11, not an
+     extension, and chiero records pragmas rather than acting on them.
+   - **`__has_c_attribute`** — 2 files (`pr63831-1/2`). gcc 13 has it and chiero does not register
+     it. ⚠️ It returns a **version number** (`202202`), not `1`, so `features::answer`'s
+     `Option<bool>` is the wrong shape for it — that is the work, not the table.
+   - **More comma-swallow corners** — 2 files (`macro_fn_comma_swallow2`, `macro_paste_commaext`),
+     same family as §7.13 and different shapes.
+   - **`__VA_OPT__`** — 1 file, out of v1 scope by measurement (012 §2.3), diagnosed not guessed.
+   - **UCN spelling** — 2 files, a **declared** divergence (§7.14, 011 §2.0), not a defect.
+   - **UB where gcc and clang disagree** — 2 files (`pr58844-1/2`, `x######x`). No single answer.
+   - `_Pragma-dependency2.c` and `diagnostic-pragma-1.c` accept what both compilers reject —
+     both pragma-driven, both on simplecpp's own skip/todo lists.
+
+   *(historical, from the first run:)*
    - **18 findings remain and 17 are on `Skipped`/`Todo` priors.** The one `Expected` is
      `macro_fn_va_opt.c` — `__VA_OPT__`, out of v1 scope by measurement (012 §2.3), so it is a
      scope decision for the owner and not a defect.
@@ -2118,6 +2168,12 @@ doubles the wake-ups.
   people write them*, which is a systematically biased sample — the dark corners are never in it,
   and no amount of widening within it reaches them. **When the yield table flattens, change the
   kind rather than the size.**
+- ⚠️ **When a compiler has one message you expect, check whether it has two.** gcc distinguishes
+  "is not a valid universal character" from "is not valid *in an identifier*" — a well-formed
+  UCN naming a character that is not an identifier character — and a third for the initial
+  position. I merged the first two, and the **fixture** failed rather than the code, which is the
+  good direction. Enumerating a compiler's messages for the feature costs one command
+  (`for` over the cases, read stderr) and settles the shape of the rule before any code is written.
 - ⚠️ **A guard that enumerates exclusions is waiting for the next exclusion.** The GNU comma
   branch was guarded with `!right.paste_op` — true, useful, and the wrong shape: it named two
   things the extension does not apply to, when the rule is what it **does** apply to
