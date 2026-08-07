@@ -82,7 +82,24 @@ LIST=/tmp/plugins.tsv TIMEOUT=20 ./measure.sh --entry-ptr-nonnull
 | | |
 |---|---|
 | 477 entries, 92 plugins | `ok` 408, `cut` 20, `timeout` 3, `noinc` 35, `failed` 11 |
+| **retaken 2026-08-07** | `ok` **410**, `cut` 21, `timeout` **0**, `noinc` 35, `failed` 11 |
 | findings | **18**, of which **1** is `Exact` |
+
+**The `timeout` rows are gone, and finding out why they existed is the interesting part.** They
+were `plugins/unittest/fib_test.c` and `llist_test.c` — **named here for the first time**, which
+is the point: the 2026-08-06 numbers recorded a *count* of 3 and no rows, so nobody could act on
+them. `KEEP` and this table are the fix for that.
+
+023 §8 said they were "a single long solver query… for exactly this reason", and
+`max_solver_rlimit` was specified as the bound for them. **Neither `--solver-rlimit` nor
+`--time-budget` moved them at any value.** A stack sample said why: the time was in
+`chiero_cir::verify::dominators`, which runs before a single instruction executes — no clock, no
+solver, so no engine budget could ever have reached it. The verifier was super-quadratic in the
+block count (11.5 s for 3001 blocks, release); fixed, and both entries now finish.
+
+⚠️ **`ok` went 408 → 410 and `findings` did not move.** Two functions that had been measuring
+nothing now measure something, and that something is *no defects*. A row that was `timeout` was
+never evidence about the code.
 
 **It found two source-triggerable panics**, which is what a sweep is for — both recorded as
 `failed`, the same row a file that will not preprocess gets, so two crashes on real code looked
