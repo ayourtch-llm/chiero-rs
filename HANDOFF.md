@@ -1600,29 +1600,66 @@ typing the paths ever would.
    | `#if __has_builtin(__builtin_expect)` | **0**, no diagnostic | 1 |
    | `#if __has_attribute(no_such_attr)` | 0 | 0 |
 
-   **This is the worst of the three available answers.** Not defining them at all would put
-   glibc on its documented fallback path — `sys/cdefs.h` has `#if defined __has_attribute` for
-   exactly that reason, and `__glibc_has_attribute(attr)` then becomes `0`, a configuration the
-   header explicitly supports. Answering honestly would match gcc. Advertising the capability
-   and then denying every attribute and every builtin is neither, and it is **silent**: every TU
-   that reaches a system header takes a different configuration branch than gcc does, and
-   nothing in the suite can see it because the VPP gates check that a TU preprocesses, not
-   which branch it took.
+   ⚠️ **The recurring confusion in a new place** (§11.3): chiero not knowing something is being
+   reported as the answer. Here it is not memory but a feature query, and the `#ifdef`
+   succeeding is what makes it worse than silence.
 
-   ⚠️ **It is the recurring confusion in a new place** (§11.3, eighth-plus instance): chiero not
-   knowing something is being reported as the answer. Here it is not memory but a feature query,
-   and the `#ifdef` succeeding is what makes it worse than silence.
+   ⚠️ **I first wrote that this diverges "in every TU that reaches a system header". That was
+   wrong, and the corrected measurement is the point** (§11.2). On *this* machine every one of
+   the 17 `__glibc_has_attribute` uses in `sys/cdefs.h` is shielded by a `__GNUC_PREREQ(<=4.9) ||`
+   — 39 `__GNUC_PREREQ` guards in that header — so for a real `chiero-cli` run, which captures
+   `__GNUC_MINOR__` from `cc -dM`, the PREREQ decides and the query answer is **dead**. The
+   unshielded reachable sites are `wchar.h`'s `__has_builtin(__builtin_fclose)`, where gcc also
+   answers NO and chiero's 0 *agrees*, and one recorded-and-ignored attribute via `ucontext.h`.
+   VPP contains **zero** direct queries. The defect is real and currently mostly disarmed; a
+   newer glibc, which drops the shields, re-arms it silently.
 
-   **The fix needs a decision, so take it deliberately.** `__has_attribute(x)` means "will this
-   compiler accept the attribute", and chiero has that list already — §4.12b's measured table
-   and 013's accepted GNU extensions. Answering from it is honest *and* moves header
-   configuration towards gcc's, which is what the differential oracle wants. The alternative,
-   dropping both from the predefine set, is one line and strictly better than today. Do not
-   invent a third answer, and whichever is chosen, **012 §4 must say so** — the current
-   behaviour is written nowhere.
+   #### The sibling defect, which is live *now* and makes this one maximal
+
+   `Engine::new` bakes `__GNUC__ 13` and **not `__GNUC_MINOR__`**. `features.h` defines
+   `__GNUC_PREREQ(maj,min)` as constant `0` unless *both* are defined — so for any consumer whose
+   `config.defines` is not cc-populated (the library used directly, as every test does), every
+   shield above collapses and every guard falls through to the has_attribute answer. **Fix it in
+   the same commit**, and state which compiler the baked set is impersonating.
+
+   #### The decision, taken 2026-08-07 after an independent `fable` review
+
+   **Implement the queries in the `#if` preparer, beside `__has_include`, answered from a name
+   table that is part of the modeled-compiler persona.** Not from §4.12b's list, and not dropped.
+
+   - **`__has_attribute(x)` is not a question about chiero.** chiero's predefine set is an
+     *impersonation of the build compiler*, not a self-report: `__GNUC__ 13` is baked and
+     `frontend.rs` captures the full `cc -dM` at run time ("the answer is a property of the
+     machine"). Answering from chiero's own four-attribute semantic list would analyse a
+     configuration no compiler produces — and by that logic `__GNUC__` should be undefined too.
+   - ⚠️ **Dropping them is not the safe one-line option, it is actively worse, and gcc says so.**
+     Verified: with `__has_attribute` undefined, `#if defined __has_attribute && __has_attribute
+     (packed)` is a hard **error** (`missing binary operator before token "("`), because `#if`
+     parses the whole expression whatever short-circuiting would do. That is the exact idiom
+     `sys/cdefs.h`'s own comment warns about. It trades silent wrong answers for loud wrong
+     errors on a widespread pattern.
+   - **The error asymmetry settles the direction.** 0-where-gcc-says-1 silently swaps the
+     analysed program for one that never ships — invisible, and fatal for a tool whose verdicts
+     are anchored to the artifact gcc built. 1-where-chiero-cannot-model is *loud* by
+     construction: the parser takes any `__attribute__((...))` and an unmodeled builtin hits
+     §4.13b's havoc-loudly path with `Approximated` and a named assumption. **A loud
+     approximation of the shipped program beats an exact analysis of an unshipped one.**
+   - **`__has_include` is the same in kind, not different** — it answers from configured include
+     paths that mirror the build. Both ask "what would the build see". Same place, same mechanism.
+   - **"Did not look" keeps its channel** (§11.3): `#if` must yield a number, so ignorance cannot
+     ride in-band — but a name *in* the table answered 0 is knowledge (gcc agrees on
+     `no_such_xyz`, and on `__init_priority__`, a real NO that a table must be able to record),
+     while a name *absent* from the table is ignorance and earns one deduplicated diagnostic per
+     distinct name per TU. Expected volume here is zero, which is what makes it a regression
+     signal rather than noise.
+   - Normalize `__x__` to `x`; gcc treats them identically (verified on `packed`, `__unused__`).
+   - The table is verified by a **gcc differential test over every entry**, plus every name the
+     reachable headers actually query, so drift and gaps both fail.
+   - **012 §4 must state the persona**, since the current behaviour is written nowhere.
 
    Reproduce in ten seconds: `printf '#if __has_attribute(packed)\nYES\n#else\nNO\n#endif\n' |
    gcc -E -P -x c -` beside the same source through `preprocess_str` with gcc's predefines.
+
 
 3. **⏸️ PARKED at the owner's request 2026-08-07 — `-march`.** Do not start without checking in;
    the owner asked to discuss the design first. What was agreed: the *flag propagation* half is a
