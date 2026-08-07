@@ -319,10 +319,15 @@ pub fn prove_equivalent(before: &Module, after: &Module, cfg: &EquivCfg) -> Equi
         }
     }
 
+    // **The run's budget, on the run's solver** (023 §8). This is a *third* place a solver is
+    // built, after `Engine::new_solver` and `chiero-tool`'s witness solver, and the first
+    // attempt at `max_solver_rlimit` reached only the first — so a budget the caller set was
+    // honoured for feasibility queries and silently ignored for equivalence ones.
     let mut solver = match cfg.backend.clone() {
         Some(b) => TieredSolver::with_backend(b),
         None => TieredSolver::new(),
-    };
+    }
+    .with_rlimit(cfg.budget.max_solver_rlimit);
 
     // Every divergence found, each with its minimized witness. Collected rather than
     // returned at the first hit so the reported one can be chosen canonically (contract 13).

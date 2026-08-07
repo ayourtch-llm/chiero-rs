@@ -80,6 +80,13 @@ OPTIONS:
                     limit, as in timeout(1). Default 60. A run that ends here is
                     marked `nondeterministic_abort`: where it stopped depends on
                     the machine, so the answer is a measurement.  (023 §8.1)
+    --solver-rlimit <units>
+                    Stop any single solver query after that many of z3's work
+                    units. 0 (the default) is no limit. Unlike --time-budget this
+                    is deterministic — work units do not move with machine speed
+                    or thread count — so a run cut by it is an ordinary answer
+                    rather than a measurement, and it is the only bound that
+                    reaches inside one long query.  (023 §8)
     --entry-ptr-nonnull
                     Assume the pointer parameters of --entry are not null. For a
                     helper whose callers check, the null path is one the program
@@ -175,6 +182,10 @@ struct Options {
     /// `None` is "the caller said nothing" and takes [`Options::wall_clock`]'s default; an
     /// explicit `0` is "no limit", which is a different thing and has to stay tellable apart.
     time_budget: Option<f64>,
+    /// 023 §8's deterministic solver budget, in z3 work units. `0` — and the default — is no
+    /// limit, so `Option` buys nothing here: unlike the clock, saying nothing and saying zero
+    /// mean the same run, and the test that pins that is the point of the field.
+    solver_rlimit: u64,
 }
 
 fn define(d: &str) -> (String, String) {
@@ -208,6 +219,10 @@ impl Options {
                 }
                 "--time-budget" => {
                     o.time_budget = Some(secs(&need(i, args, "--time-budget")?)?);
+                    i += 1;
+                }
+                "--solver-rlimit" => {
+                    o.solver_rlimit = units(&need(i, args, "--solver-rlimit")?)?;
                     i += 1;
                 }
                 "--entry" => {
@@ -314,6 +329,18 @@ fn secs(s: &str) -> Result<f64, Fault> {
     }
 }
 
+/// Solver work units, as a whole number.
+///
+/// Not `secs`: these are not a duration and rounding one to a float would be the *last* thing
+/// to do to a value whose only virtue is reproducibility.
+fn units(s: &str) -> Result<u64, Fault> {
+    s.parse().map_err(|_| {
+        Fault::Usage(format!(
+            "--solver-rlimit wants a whole number of solver work units, got `{s}`"
+        ))
+    })
+}
+
 fn num(s: &str, what: &str) -> Result<u32, Fault> {
     s.parse()
         .map_err(|_| Fault::Usage(format!("{what} wants a number, got `{s}`")))
@@ -334,7 +361,10 @@ fn prove_equivalent(o: &Options) -> Result<chiero_tool::Envelope, Fault> {
         .ok_or_else(|| Fault::Usage("prove-equivalent needs --entry <fn>".into()))?;
     let before = lower(&f[0], &read(&f[0])?, o.frontend()).map_err(Fault::Failed)?;
     let after = lower(&f[1], &read(&f[1])?, o.frontend()).map_err(Fault::Failed)?;
-    let cfg = chiero_opt::EquivCfg::new(entry.clone());
+    let mut cfg = chiero_opt::EquivCfg::new(entry.clone());
+    // **Every command that runs a solver honours the budget.** `prove-equivalent` accepted
+    // `--solver-rlimit` and ignored it, which is the same defect the flag was written to end.
+    cfg.budget.max_solver_rlimit = o.solver_rlimit;
     if !o.replay {
         return Ok(chiero_tool::prove_equivalent(&before, &after, &cfg));
     }
@@ -401,6 +431,7 @@ fn find_bugs(o: &Options) -> Result<chiero_tool::Envelope, Fault> {
     cfg.entry_ptr_nonnull = o.entry_ptr_nonnull;
     cfg.report_invented_bounds = o.report_invented_bounds;
     cfg.budget.wall_clock = o.wall_clock();
+    cfg.budget.max_solver_rlimit = o.solver_rlimit;
     if o.replay {
         cfg.source = Some(chiero_tool::ReplaySources {
             before: f[0].clone(),
@@ -438,6 +469,7 @@ fn check_reachable(o: &Options) -> Result<chiero_tool::Envelope, Fault> {
     let mut cfg = chiero_tool::BugCfg::new(entry);
     cfg.entry_ptr_nonnull = o.entry_ptr_nonnull;
     cfg.budget.wall_clock = o.wall_clock();
+    cfg.budget.max_solver_rlimit = o.solver_rlimit;
     Ok(chiero_tool::check_reachable(&m, &cfg, line))
 }
 

@@ -1315,7 +1315,12 @@ pub fn check_reachable(module: &chiero_cir::Module, cfg: &BugCfg, line: u32) -> 
         // merely arrived somewhere has none, so the path condition is solved here. 022 §3.1
         // makes `Sat` self-certifying, which is exactly what "here is an input that gets
         // there" needs.
-        let witness = witness_for_path(s, &mut arena, cfg.backend.clone());
+        let witness = witness_for_path(
+            s,
+            &mut arena,
+            cfg.backend.clone(),
+            cfg.budget.max_solver_rlimit,
+        );
         // **The arrival has to be a fact, and here is where that is checked.**
         //
         // This used to return `Exact` unconditionally, reasoning that "a path that arrived is a
@@ -1445,12 +1450,18 @@ fn witness_for_path(
     s: &chiero_exec::State,
     arena: &mut chiero_solver::TermArena,
     backend: Option<chiero_solver::SmtLib>,
+    rlimit: u64,
 ) -> Vec<serde_json::Value> {
     use chiero_solver::CheckResult;
+    // **The run's budget travels with the backend, not with the engine.** This solver is built
+    // outside `Engine`, so `Engine::new_solver` does not reach it — and on the `find-bugs` path
+    // it is the one that actually talks to z3, which is how `--solver-rlimit` came to be
+    // plumbed, tested, and completely ineffective from a command line.
     let mut solver = match backend {
         Some(b) => chiero_solver::TieredSolver::with_backend(b),
         None => chiero_solver::TieredSolver::new(),
-    };
+    }
+    .with_rlimit(rlimit);
     let mut pc =
         chiero_solver::PathCondition::from_parts(s.path.clone(), s.path_possibly_infeasible());
     let model = match solver.check_path(arena, &mut pc, &[]) {

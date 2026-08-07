@@ -1078,63 +1078,101 @@ fn a_frontend_error_says_where_it_is() {
     );
 }
 
-/// **023 §8's deterministic solver budget, reachable from a command line.**
+/// **023 §8's deterministic solver budget, reachable from a command line — and biting.**
 ///
 /// The engine gained `Budget::max_solver_rlimit` and nothing could set it, which is the state
-/// §8 called "specified and not built" wearing a different hat: the field existed, the wire
-/// format existed, and no user of chiero could arm either.
+/// §8 called "specified and not built" wearing a different hat.
 ///
-/// The contrast with `--time-budget` is the whole reason it is a second flag rather than a
-/// smaller value of the first. A clock **is** the thing 023 §8.1 forbids from gating output —
-/// a run cut by one is `nondeterministic_abort`, and 001 §5's byte-identical-output requirement
-/// does not apply to it. A run cut by work units is cut in the same place on every machine, so
-/// it stays an ordinary answer, and this asserts exactly that difference.
+/// ⚠️ **The first version of this test asserted only that the flag was accepted and that the
+/// answer stayed deterministic, and a mutant deleting the two lines that carry the value into
+/// the run survived it.** The neighbouring `--time-budget` test warns about exactly that in its
+/// own comment — "without it the test passes on a build where `--time-budget` is parsed and
+/// ignored" — and this one was written anyway. So the assertion is now about an answer that
+/// *changes*: a budget too small to decide the path leaves the finding unwitnessed and
+/// `Unknown`, a generous one solves it, and the difference is visible from a terminal.
+///
+/// The contrast with `--time-budget` is why this is a second flag and not a smaller value of
+/// the first. A clock is precisely what 023 §8.1 forbids from gating output — a run cut by one
+/// is `nondeterministic_abort`. Work units do not move with load, so a run cut by them stays an
+/// ordinary answer, asserted here directly.
 #[test]
 fn the_solver_budget_is_reachable_and_stays_deterministic() {
-    // Nonlinear on two symbols, so the queries actually reach a backend rather than being
-    // settled by tier 1's interval domain.
+    // Nested rather than `&&`, and dividing by zero at the bottom: the finding's witness is
+    // what needs a solver, so the budget has something to bite on. A flatter fixture was
+    // decided by tier 1 alone and the flag could not have changed anything.
     let p = write(
         "hard.c",
         "int f (unsigned a, unsigned b)\n\
          {\n\
-         \x20 if (a * b == 7u && a > 1u && b > 1u) return 1;\n\
+         \x20 unsigned p = a * b;\n\
+         \x20 if (p == 7u) { if (a > 1u) { if (b > 1u) { int z = 0; return 5 / z; } } }\n\
          \x20 return 0;\n\
          }\n",
     );
-    let args = |extra: &[&str]| {
-        let mut v = vec![
+    let at = |budget: &str| {
+        let path = p.to_str().expect("utf-8 path").to_string();
+        let owned = [
             "find-bugs".to_string(),
-            p.to_str().expect("utf-8 path").to_string(),
+            path,
             "--entry".to_string(),
             "f".to_string(),
+            "--solver-rlimit".to_string(),
+            budget.to_string(),
             "--json".to_string(),
         ];
-        v.extend(extra.iter().map(|s| (*s).to_string()));
-        v
+        let borrowed: Vec<&str> = owned.iter().map(String::as_str).collect();
+        run(&borrowed)
     };
-    let owned = args(&["--solver-rlimit", "5000"]);
-    let borrowed: Vec<&str> = owned.iter().map(String::as_str).collect();
-    let r = run(&borrowed);
-    assert_eq!(
-        r.code, 0,
-        "a spent budget is an answer, not a failure:\n{}",
-        r.err
-    );
-    let v = json(&r);
-    for key in ["result", "fidelity", "proven", "assumptions", "blind_spots"] {
-        assert!(!v[key].is_null(), "the envelope is missing `{key}`: {v}");
+
+    let generous = at("50000");
+    assert_eq!(generous.code, 0, "{}", generous.err);
+    let g = json(&generous);
+    let gf = &g["result"]["findings"][0];
+    if gf["fidelity"] != "Exact" {
+        // No backend on PATH: tier 1 answers everything and no budget can change that, so
+        // there is nothing here to measure. Saying so beats a green tick over an unasked
+        // question.
+        eprintln!("SKIP: no SMT backend, so the solver budget has nothing to bite on");
+        return;
     }
+    assert!(
+        gf["witness"].is_array(),
+        "a generous budget solves the witness: {g}"
+    );
+
+    // **2000, not 1.** Measured: at `:rlimit 1` z3 is too starved to run `(push 1)` and
+    // answers with an `(error ...)` line instead, which chiero reports as a backend that gave
+    // no usable answer -- honest, and a different sentence from the one this test is about.
+    let tight = at("2000");
+    assert_eq!(
+        tight.code, 0,
+        "a spent budget is an answer, not a failure:\n{}",
+        tight.err
+    );
+    let t = json(&tight);
+    for key in ["result", "fidelity", "proven", "assumptions", "blind_spots"] {
+        assert!(!t[key].is_null(), "the envelope is missing `{key}`: {t}");
+    }
+    let tf = &t["result"]["findings"][0];
+    assert_eq!(
+        tf["fidelity"], "Unknown",
+        "the budget stopped the solver, so the finding cannot claim exactness: {t}"
+    );
+    assert!(
+        tf["unwitnessed"]
+            .as_str()
+            .is_some_and(|w| w.contains("ResourceLimit")),
+        "and it names the budget rather than blaming the backend: {t}"
+    );
     // **The half `--time-budget` cannot satisfy.** Work units do not move with load, so a run
     // cut by them is reproducible and must not be branded a measurement.
     assert_eq!(
-        v["nondeterministic_abort"], false,
-        "a deterministic budget is not a clock: {v}"
+        t["nondeterministic_abort"], false,
+        "a deterministic budget is not a clock: {t}"
     );
-
-    // And twice is the same answer, which is what "deterministic" is worth asserting for.
-    let again = run(&borrowed);
     assert_eq!(
-        r.out, again.out,
+        tight.out,
+        at("2000").out,
         "the same budget cuts the same query in the same place"
     );
 }
@@ -1186,5 +1224,142 @@ fn the_solver_budget_is_off_unless_asked_for_and_refuses_nonsense() {
         bad.err.contains("--solver-rlimit"),
         "and the message names the flag: {}",
         bad.err
+    );
+}
+
+/// **The budget reaches `prove-equivalent` too, which it did not.**
+///
+/// A solver is built in three places — `Engine::new_solver`, `chiero-tool`'s witness solver,
+/// and `chiero-opt`'s equivalence solver — and the first attempt at `max_solver_rlimit` reached
+/// only the first. `prove-equivalent` accepted `--solver-rlimit` and ignored it, which is the
+/// same accepted-and-ignored defect the flag exists to end, one command over.
+///
+/// ⚠️ The fixture is nonlinear on purpose. `x * 2` against `x << 1` — 041's own headline
+/// example — is settled by tier 1 without a backend, so a budget has nothing to bite on and a
+/// test built on it passes whatever the plumbing does. Confirmed by counting dumped queries
+/// before writing this: seven for the pair below, and the difference in verdict is real.
+#[test]
+fn the_solver_budget_reaches_prove_equivalent() {
+    let before = write(
+        "eq_before.c",
+        "unsigned f (unsigned x) { if (x * x == 49u) return 1u; return 0u; }\n",
+    );
+    let after = write(
+        "eq_after.c",
+        "unsigned f (unsigned x) { if (x == 7u || x == 4294967289u) return 1u; return 0u; }\n",
+    );
+    let at = |budget: &str| {
+        let owned = [
+            "prove-equivalent".to_string(),
+            before.to_str().expect("utf-8 path").to_string(),
+            after.to_str().expect("utf-8 path").to_string(),
+            "--entry".to_string(),
+            "f".to_string(),
+            "--solver-rlimit".to_string(),
+            budget.to_string(),
+            "--json".to_string(),
+        ];
+        let borrowed: Vec<&str> = owned.iter().map(String::as_str).collect();
+        run(&borrowed)
+    };
+
+    let generous = at("50000000");
+    assert_eq!(generous.code, 0, "{}", generous.err);
+    let g = json(&generous);
+    if g["proven"] != true {
+        eprintln!("SKIP: no SMT backend, so the solver budget has nothing to bite on");
+        return;
+    }
+    assert_eq!(
+        g["result"]["verdict"], "differs",
+        "a generous budget decides it: {g}"
+    );
+
+    let tight = at("2000");
+    assert_eq!(
+        tight.code, 0,
+        "a spent budget is an answer, not a failure:\n{}",
+        tight.err
+    );
+    let t = json(&tight);
+    assert_eq!(
+        t["result"]["verdict"], "unknown",
+        "and a budget too small to decide must say so rather than guess: {t}"
+    );
+    assert_eq!(t["proven"], false, "nothing was proven under it: {t}");
+    assert_eq!(
+        t["nondeterministic_abort"], false,
+        "work units are not a clock: {t}"
+    );
+}
+
+/// **And it reaches `check-reachable`'s own witness solver, the third of the three.**
+///
+/// `chiero-tool::witness_for_path` builds a solver outside `Engine`, because a state that
+/// merely *arrived* somewhere carries no finding and therefore no witness — so the path
+/// condition is solved there instead. `Engine::new_solver` cannot reach it, and the first two
+/// tests in this group cannot see it: on the `find-bugs` path the engine has already produced
+/// the witness, so zeroing this site changed nothing and the mutant survived them both.
+///
+/// What it is worth is visible in the tight run: the witness comes back **unpinned** rather
+/// than zeros presented as the solver's answer, which is the distinction 023 §9's `Witness`
+/// exists to make.
+#[test]
+fn the_solver_budget_reaches_check_reachables_witness() {
+    let p = write(
+        "reach.c",
+        "int f (unsigned a, unsigned b)\n\
+         {\n\
+         \x20 unsigned p = a * b;\n\
+         \x20 if (p == 7u) { if (a > 1u) { if (b > 1u) { int z = 0; return 5 / z; } } }\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    let at = |budget: &str| {
+        let owned = [
+            "check-reachable".to_string(),
+            p.to_str().expect("utf-8 path").to_string(),
+            "--entry".to_string(),
+            "f".to_string(),
+            "--line".to_string(),
+            "4".to_string(),
+            "--solver-rlimit".to_string(),
+            budget.to_string(),
+            "--json".to_string(),
+        ];
+        let borrowed: Vec<&str> = owned.iter().map(String::as_str).collect();
+        run(&borrowed)
+    };
+
+    let generous = at("50000000");
+    assert_eq!(generous.code, 0, "{}", generous.err);
+    let g = json(&generous);
+    if g["result"]["verdict"] != "reachable" {
+        eprintln!("SKIP: no SMT backend, so the solver budget has nothing to bite on");
+        return;
+    }
+    assert!(
+        g["result"]["witness"]
+            .as_array()
+            .expect("witness")
+            .iter()
+            .all(|b| b["pinned"] == true),
+        "a generous budget solves every input: {g}"
+    );
+
+    let tight = at("2000");
+    assert_eq!(tight.code, 0, "{}", tight.err);
+    let t = json(&tight);
+    assert_eq!(
+        t["result"]["verdict"], "not_shown_reachable",
+        "the budget stopped the solver, so arrival is not shown: {t}"
+    );
+    assert!(
+        t["result"]["witness"]
+            .as_array()
+            .expect("witness")
+            .iter()
+            .all(|b| b["pinned"] == false),
+        "and the inputs are unpinned rather than zeros wearing the solver's authority: {t}"
     );
 }
