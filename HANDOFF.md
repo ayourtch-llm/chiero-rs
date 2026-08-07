@@ -1481,6 +1481,7 @@ This has now paid out three times in a row, each time on the first run after a w
 | following the **diagnostics the tool itself emitted** — three names it said it did not know | one wave | §7.11: scoped operands + `__has_cpp_attribute`; findings 16 → **14**, and `pr63831-1/2` leave the list. The honesty mechanism turned the next fix into a mechanical one |
 | find-bugs to a **new subsystem**: `vnet/ip/`, 152 entries (never swept) | one sweep, ~20 min | **zero chiero defects — 0 failed, 0 `Exact`.** 143 ok, 7 cut, 9 `Unknown` findings, all one known class. See §7.17 |
 | **010 contract 11**, the one contract with no test anywhere — verified by reading, not by trusting §9's note | one wave | **zero defects.** The round trip holds over twelve fixtures incl. splices, macro-body/argument spans and the session's new UCN identifiers |
+| *not a widening* — **re-measuring the pinned 40 and asking why nothing moved** | one retake + one `grep` | the corpus **cannot reach** a 32-byte access: `__AVX2__` is undefined in every configuration chiero compiles, so every AVX2/AVX512 path in vppinfra is invisible to every measurement this project has published. New evidence for the parked `-march` item, and it came from an *unchanged* number |
 
 The loop, and it is deliberately mechanical:
 
@@ -1509,6 +1510,16 @@ The loop, and it is deliberately mechanical:
    the commit until then, and §9 carries the recipe so an unfinished one costs five minutes.
 6. **Record the yield** in the table above, so the next reader can see whether the pattern is
    still paying and stop when it is not.
+
+⚠️ **And its twin: an *unchanged* number is evidence about the corpus too.** Retaking the pinned
+40 after `BadRange` left the defect list gave byte-identical numbers. The tempting readings are
+"the change did nothing" and "the change was safe"; the true one is that the string
+`unsupported-access-width` occurs **zero** times in all forty envelopes, because `__AVX2__` is
+undefined in every configuration chiero compiles and every 32-byte type in VPP is behind it. A
+number that does not move has said nothing until you know whether it *could* have moved — and
+the only reason that took one command rather than a wave is that `measure.sh` now keeps its
+residue (`KEEP=<dir>`). **When a re-measurement comes back identical, go and find the thing you
+expected to change.**
 
 ⚠️ **The trap: a green gate is evidence about the corpus, not about the tree.** `vpp_layout_gate`
 passed for months while 014 mis-aligned every unnamed bit-field, because no seed had one. Before
@@ -1609,6 +1620,24 @@ typing the paths ever would.
    are one cause: `frontend::predefines` asks gcc for macros with **no `-march`** while VPP builds
    `-march=x86-64-v2`, so `__SSE4_2__` is undefined and `vppinfra/crc32.h` never defines
    `clib_crc32c_with_init`. The other four are two parser/sema gaps in generated API headers.
+
+   🆕 **Measured 2026-08-07, and it makes the item bigger than those seven entries.** Retaking the
+   pinned 40 after `BadRange` left the defect list gave byte-identical numbers, and the kept
+   envelopes say why: `unsupported-access-width` occurs **zero** times in all forty — the corpus
+   cannot produce a 32-byte access at all.
+
+   | | |
+   |---|---|
+   | every 32-byte type in VPP is in `vppinfra/vector_avx2.h` | `vector.h:197`, under `#if defined (__AVX2__)` |
+   | `__AVX2__` needs `-march=x86-64-v3` or `-mavx2` | `gcc -dM -E`: defined at `v3`, **not** at `v2`, not with no `-march` |
+   | VPP's baseline is `-march=x86-64-v2` | so even VPP's own default build has none of it |
+   | the AVX2/AVX512 paths are the **multiarch variants** | which is exactly this item's per-TU target configuration |
+
+   So it is not only that seven entries fail to preprocess. **Every AVX2 and AVX512 vector path
+   in vppinfra has never once been compiled by any chiero measurement** — including the code
+   021 §5 cites when it says "vppinfra uses `u8x32`/`u8x64` throughout". Every "0 findings" this
+   project has published over VPP is silent about that half of the tree. Worth putting to the
+   owner when the item is unparked; it does not change the recommendation to design first.
 
 2. **Unwidened surfaces, in rough order of expected yield** (§8.3 is the loop):
    - ~~The sema corpus gate's contract 11 and contract 19~~ — **both wrong, and both closed.**
