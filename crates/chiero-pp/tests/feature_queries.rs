@@ -1,0 +1,226 @@
+//! `__has_attribute` / `__has_builtin` — 012 §4, and the persona they answer for.
+//!
+//! chiero's predefine set is an **impersonation of the build compiler**, not a self-report:
+//! `__GNUC__` is baked at 13 and `chiero-cli`'s `frontend` captures the whole `cc -dM` at run
+//! time so that headers configure for the code that actually ships. `__has_attribute(x)` is a
+//! question in that same register — *does the compiler being impersonated recognise `x`* — so
+//! the only correct answer is gcc's, and every assertion here asks gcc rather than asserting a
+//! remembered one.
+//!
+//! Before this, both queries were registered as function-like macros with an **empty body**. So
+//! `#ifdef __has_attribute` succeeded — chiero claimed the capability — and then every query
+//! expanded to nothing, which `#if` reads as `0`. chiero answered "this compiler has no
+//! attributes and no builtins at all", silently, while calling itself gcc 13.
+//!
+//! # Why not simply drop the two macros
+//!
+//! Because gcc does not survive it either. With `__has_attribute` undefined,
+//! `#if defined __has_attribute && __has_attribute (packed)` is a hard error —
+//! *missing binary operator before token "("* — since `#if` parses the whole expression whatever
+//! short-circuiting would do at run time. That is the exact idiom `sys/cdefs.h`'s own comment
+//! warns about, so dropping them trades silent wrong answers for loud wrong errors on a pattern
+//! that is everywhere.
+//!
+//! # The direction of error, which is what settled the design
+//!
+//! Answering 0 where gcc answers 1 silently swaps the analysed program for one that never ships.
+//! Answering 1 for something chiero cannot model is loud by construction — the parser takes any
+//! `__attribute__((...))` and an unmodeled builtin hits the havoc-loudly path with
+//! `Approximated` and a named assumption. **A loud approximation of the shipped program beats an
+//! exact analysis of an unshipped one**, so the table errs towards gcc, never towards chiero's
+//! own capabilities.
+
+use chiero_pp::{Config, preprocess_str};
+use std::process::Command;
+
+/// gcc's answer, asked directly. The oracle for every case in this file.
+///
+/// ⚠️ **The scratch file is named per query.** Keying it on the pid alone is not unique — every
+/// test in one binary shares it, cargo runs them in parallel, and the first version of this
+/// raced: `every_table_entry_still_matches_gcc` failed in the suite and passed on its own,
+/// reporting a table mismatch that did not exist. An oracle that answers a different question
+/// than the one asked is worse than no oracle.
+fn gcc_says(query: &str, name: &str) -> bool {
+    let source = format!("#if {query}({name})\n1\n#else\n0\n#endif\n");
+    let dir = std::env::temp_dir().join(format!("chiero-fq-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let safe: String = format!("{query}-{name}")
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .collect();
+    let path = dir.join(format!("{safe}.c"));
+    std::fs::write(&path, source).unwrap();
+    let output = Command::new("gcc")
+        .args(["-E", "-P"])
+        .arg(&path)
+        .output()
+        .expect("gcc is required for the feature-query oracle");
+    let text = String::from_utf8(output.stdout).unwrap();
+    let answer = text.split_whitespace().collect::<String>();
+    let _ = std::fs::remove_file(&path);
+    match answer.as_str() {
+        "1" => true,
+        "0" => false,
+        other => panic!("gcc gave neither 1 nor 0 for {query}({name}): {other:?}"),
+    }
+}
+
+fn chiero_answer(query: &str, name: &str) -> (bool, Vec<String>) {
+    let source = format!("#if {query}({name})\n1\n#else\n0\n#endif\n");
+    let tu = preprocess_str("q.c", &source, Config::default());
+    let texts: Vec<_> = tu.token_texts().collect();
+    let diagnostics = tu
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.message.clone())
+        .collect();
+    assert_eq!(texts.len(), 1, "expected one token, got {texts:?}");
+    (texts[0] == "1", diagnostics)
+}
+
+/// The two names that made the defect visible, plus the two forms of one attribute — gcc treats
+/// `packed` and `__packed__` alike and a table that knows one and not the other is half a table.
+#[test]
+fn a_supported_attribute_and_builtin_answer_the_way_gcc_does() {
+    for (query, name) in [
+        ("__has_attribute", "packed"),
+        ("__has_attribute", "__packed__"),
+        ("__has_attribute", "aligned"),
+        ("__has_attribute", "always_inline"),
+        ("__has_builtin", "__builtin_expect"),
+        ("__has_builtin", "__builtin_unreachable"),
+        ("__has_builtin", "__builtin_clz"),
+    ] {
+        let expected = gcc_says(query, name);
+        assert!(expected, "fixture assumes gcc supports {query}({name})");
+        let (ours, _) = chiero_answer(query, name);
+        assert_eq!(ours, expected, "{query}({name})");
+    }
+}
+
+/// **A known `0` is knowledge and must not diagnose.** These are real names gcc answers NO to —
+/// clang attributes and clang builtins — and getting them right is what distinguishes a table
+/// from a rubber stamp. `__init_priority__` in particular is queried by a real header.
+#[test]
+fn a_known_absent_name_answers_zero_without_complaint() {
+    for (query, name) in [
+        ("__has_attribute", "__init_priority__"),
+        ("__has_attribute", "enable_if"),
+        ("__has_attribute", "minsize"),
+        ("__has_builtin", "__builtin_debugtrap"),
+        ("__has_builtin", "__builtin_fclose"),
+    ] {
+        let expected = gcc_says(query, name);
+        assert!(!expected, "fixture assumes gcc lacks {query}({name})");
+        let (ours, diagnostics) = chiero_answer(query, name);
+        assert_eq!(ours, expected, "{query}({name})");
+        assert!(
+            diagnostics.is_empty(),
+            "a name the table knows the answer for is knowledge, not ignorance: \
+             {query}({name}) said {diagnostics:?}"
+        );
+    }
+}
+
+/// **An unknown name is ignorance and must say so.** `#if` has to yield a number, so "I do not
+/// know" cannot ride in-band — it rides in `diagnostics` instead. This is §11.3's "did not look
+/// must stay distinct from found nothing", in the one place where the in-band answer is forced
+/// to be a lie in one direction or the other.
+#[test]
+fn an_unknown_name_answers_zero_and_records_that_it_guessed() {
+    let (ours, diagnostics) = chiero_answer("__has_attribute", "no_such_attribute_xyzzy");
+    assert!(!ours);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.contains("no_such_attribute_xyzzy")),
+        "the diagnostic must name the name, so a reader can extend the table: {diagnostics:?}"
+    );
+}
+
+/// The dedup, because `sys/cdefs.h` alone queries many times per TU and a per-query diagnostic
+/// would drown the channel it is reported in.
+#[test]
+fn one_diagnostic_per_distinct_unknown_name() {
+    let source = "#if __has_attribute(unknown_aaa)\n#endif\n\
+                  #if __has_attribute(unknown_aaa)\n#endif\n\
+                  #if __has_attribute(unknown_bbb)\n#endif\n";
+    let tu = preprocess_str("q.c", source, Config::default());
+    let named: Vec<_> = tu
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("unknown_"))
+        .collect();
+    assert_eq!(named.len(), 2, "expected one per distinct name: {named:?}");
+}
+
+/// The idiom `sys/cdefs.h` is built around, and the reason dropping the macros is not an option.
+#[test]
+fn the_guarded_idiom_from_sys_cdefs_h_works() {
+    let source = "#if (defined __has_attribute \\\n  && (!defined __clang_minor__ \\\n  || 3 < __clang_major__ + (5 <= __clang_minor__)))\n\
+                  # define HAS(a) __has_attribute (a)\n\
+                  #else\n\
+                  # define HAS(a) 0\n\
+                  #endif\n\
+                  #if HAS(packed)\nPACKED\n#else\nNOT\n#endif\n";
+    let tu = preprocess_str("q.c", source, Config::default());
+    let texts: Vec<_> = tu.token_texts().collect();
+    assert_eq!(texts, vec!["PACKED"], "diagnostics: {:?}", tu.diagnostics);
+}
+
+/// `#ifdef __has_attribute` must stay true — gcc defines both names, and a header that checks
+/// before querying is the common case rather than the exception.
+#[test]
+fn the_query_names_are_still_defined() {
+    for name in ["__has_attribute", "__has_builtin", "__has_include"] {
+        let source = format!("#ifdef {name}\nYES\n#else\nNO\n#endif\n");
+        let tu = preprocess_str("q.c", &source, Config::default());
+        let texts: Vec<_> = tu.token_texts().collect();
+        assert_eq!(texts, vec!["YES"], "{name} must be defined, as gcc has it");
+    }
+}
+
+/// **The whole table, re-asked of gcc.** This is the instrument, not a spot check: every entry
+/// is a claim about gcc 13 on this machine, and a claim nobody re-checks is a claim that drifts.
+/// A gcc upgrade that changes one answer fails here rather than silently changing which branch
+/// every system header takes.
+#[test]
+fn every_table_entry_still_matches_gcc() {
+    let mut checked = 0;
+    for &(query, name, expected) in chiero_pp::features::TABLE {
+        let actual = gcc_says(query, name);
+        assert_eq!(
+            actual, expected,
+            "the table says {query}({name}) = {expected}, gcc 13 on this machine says {actual}"
+        );
+        checked += 1;
+    }
+    assert!(
+        checked > 50,
+        "the table is meant to cover what real headers query; only {checked} entries"
+    );
+}
+
+/// `__GNUC_PREREQ` must not be constant zero.
+///
+/// The sibling defect, found in the same review: `__GNUC__` was baked and `__GNUC_MINOR__` was
+/// not, and `features.h` defines `__GNUC_PREREQ(maj,min)` as `0` unless **both** exist. Every
+/// version shield in every glibc header therefore collapsed for any consumer that does not
+/// populate `Config::defines` from a real compiler — which is every test in this workspace, and
+/// which is what made the query defect maximal exactly where it was least visible.
+#[test]
+fn the_baked_persona_supports_gnuc_prereq() {
+    let source = "#if defined __GNUC__ && defined __GNUC_MINOR__\n\
+                  # define PREREQ(a,b) ((__GNUC__ << 16) + __GNUC_MINOR__ >= ((a) << 16) + (b))\n\
+                  #else\n\
+                  # define PREREQ(a,b) 0\n\
+                  #endif\n\
+                  #if PREREQ(4,9)\nNEW\n#else\nOLD\n#endif\n";
+    let tu = preprocess_str("q.c", source, Config::default());
+    let texts: Vec<_> = tu.token_texts().collect();
+    assert_eq!(
+        texts,
+        vec!["NEW"],
+        "a persona claiming __GNUC__ 13 must satisfy __GNUC_PREREQ(4,9)"
+    );
+}

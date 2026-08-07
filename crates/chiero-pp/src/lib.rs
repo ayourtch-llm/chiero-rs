@@ -1,5 +1,7 @@
 //! C preprocessing (translation phase 4) with macro provenance.
 
+pub mod features;
+
 use chiero_lex::{EncPrefix, LexConfig, LexSession, PpToken, PpTokenKind, Punct, Symbol};
 use chiero_span::{ExpnCtx, ExpnKind, FileId, MacroId, SourceMap, Span};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
