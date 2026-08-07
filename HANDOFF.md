@@ -1294,9 +1294,13 @@ The loop, and it is deliberately mechanical:
 4. **Fix red-green, one defect at a time**, checking each answer against gcc rather than
    against arithmetic. Re-run the gate after each: the list shrinks, and sometimes *grows*,
    which is information — §7.10's 1 became 11 because the first fix let later assertions run.
-5. **Land the widening only when the gate is green.** A widening committed red makes every
-   later run unreadable. Keep the corpus copy out of the commit until then; §9 carries the
-   recipe so an unfinished one costs five minutes, not a session.
+5. **Land the widening only when the *whole suite* is green — not the gate you widened.**
+   ⚠️ Learned by getting it wrong on 2026-08-07: the contract-12 gate was green, the widening
+   was committed, and `./check.sh` then went red on 014 contract 11's conversion census, which
+   reads the **same corpus** and had never seen an `&&` mixing signedness. A corpus is shared
+   by every test that consumes it, so widening it is never local to one gate. Wait for the full
+   run. A widening committed red makes every later run unreadable; keep the corpus copy out of
+   the commit until then, and §9 carries the recipe so an unfinished one costs five minutes.
 6. **Record the yield** in the table above, so the next reader can see whether the pattern is
    still paying and stop when it is not.
 
