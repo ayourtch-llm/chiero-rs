@@ -60,8 +60,15 @@ measurement has never once compiled.
 `timeout` used to be the whole story and told none of it: a killed process prints nothing, so
 a function chiero could not finish and a function with nothing to report produced the same
 row. `--time-budget` (023 §8.1) makes the run end by its own decision with the envelope
-intact; the harness keeps an outer `timeout` at `+30 s` so that the residue — a *single step*
-that overruns, which is where the three remaining ones are — stays visible as a different word.
+intact; the harness keeps an outer `timeout` at `+30 s` so that the residue stays visible as a
+different word rather than as silence.
+
+That outer limit earned its keep on 2026-08-07 and then emptied: the residue it was catching
+turned out not to be an engine step at all but a super-quadratic `verify::dominators`, running
+before execution where no engine budget could reach it. **Zero `timeout` rows now.** Keep the
+word and keep the outer limit — its value is that it makes "chiero did not finish" a different
+answer from "chiero found nothing", and this is the second time that distinction has led
+straight to a real defect.
 
 `nofn` exists because one of the pinned 40 was `VLIB_CLI_COMMAND`. `pick_entries.py` read
 VPP's registration macros as function definitions, `find-bugs` answered "no function named

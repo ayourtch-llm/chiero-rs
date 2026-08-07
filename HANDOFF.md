@@ -1703,9 +1703,51 @@ typing the paths ever would.
    and reloaded — a real design question, and **020's CIR text format may already be most of the
    answer**.
 
-5. **A step that outlives the clock.** Three find-bugs entries still need the outer `timeout`; one
-   ran 10 s against a 5 s budget inside a symbolic-offset enumeration. The clock is only checked
-   *between* steps, and 023 §8's `max_solver_rlimit` was the principled bound for the solver half.
+5. ✅ **CLOSED 2026-08-07 — "a step that outlives the clock" had the wrong cause, and the sweep
+   now has zero `timeout` rows.** The entry said three find-bugs entries needed the outer
+   `timeout` because "the clock is only checked *between* steps", and 023 §8 named
+   `max_solver_rlimit` as the bound for them.
+
+   ⚠️ **Neither `--solver-rlimit` nor `--time-budget` moved them at any value.** The two rows —
+   `plugins/unittest/fib_test.c` and `llist_test.c`, named for the first time because the old
+   numbers recorded only a count — were spending their time in `chiero_cir::verify::dominators`,
+   which runs **before a single instruction executes**. No clock, no solver, so nothing 023 §8
+   defines could ever have reached it. `chiero layout` on the same file, frontend only, finished
+   in 1.3 s, which is what said the frontend was innocent too.
+
+   The verifier was super-quadratic in the block count: **11.5 s for 3001 blocks** in a release
+   build, 158 s in a debug one, each doubling costing about six times the previous. `dominators`
+   rebuilt the predecessor list *inside* the fixpoint loop and met dominator sets with
+   `retain(|x| dom[p].contains(x))` — linear in a set that starts as every block in the function.
+   Now 270 ms at 3001 blocks; both VPP entries are `ok`; 023 §8's attribution is **retracted in
+   the spec**, not quietly edited.
+
+   **How it was found, because the method is the reusable part:** the stated cause was *tested*
+   (does the proposed bound cut these rows? no), then a stack sample under `gdb` named the
+   function. ⚠️ `ptrace_scope=1` on this machine blocks `gdb -p`; run the program **as gdb's
+   child** and `pkill -INT` it from a background subshell —
+   `gdb -batch -x cmds --args ./target/release/chiero …` with `run` then `bt 18`.
+
+   *Still open from the original entry:* 023 §8's `max_memory_objects` is unbuilt.
+
+5b. 🆕 **Audit `Vec` + `.contains()` on paths that scale — the shape, not the site.** The
+   verifier fix above is the **second** time this exact defect class has been found in
+   `crates/chiero-cir/src/verify.rs`. Seven hundred lines above `dominators`,
+   `check_module_identity` already carries: *"Sets, not vectors. These were `Vec` with
+   `contains`, which is O(n^2) — invisible while a module held dozens of entities… one measured
+   673 s against ~1 s before. The scaling was the giveaway."* Methodology and all. **The fix went
+   to the function where the symptom appeared and its neighbour in the same file had the same
+   flaw.**
+
+   `grep -rn "\.contains(&" --include=*.rs crates/*/src xtask/src | grep -vE "IndexSet|IndexMap|BTreeSet|HashSet|BTreeMap|HashMap"`
+   returns **87** sites. Most are ranges (`(0x300..=0x36F).contains`) or genuinely small fixed
+   lists; the dangerous ones are where the receiver **grows with the input** and the call is in a
+   loop. Spot-checked `chiero-gcov`'s four (`note_test`, `note_variant`, the per-line dedupes):
+   all bounded by *test count* rather than line count, so O(T²) at worst and not obviously the
+   next 673-second bug — ⚠️ but that is a reading, not a measurement, and this file's record on
+   readings is poor. **Do it with a growth curve** (`/tmp/benchdom`-style: time the operation at
+   10/40/160/320/640 and look at the ratio per doubling — 4x is quadratic, 6x is worse), because
+   the ratio is what makes it undeniable and a single timing never is.
 
    ✅ **`max_solver_rlimit` is BUILT, 2026-08-07.** `Budget::max_solver_rlimit` reaches the backend
    as `(set-option :rlimit N)`; a query that spends it answers `Unknown(ResourceLimit)`.
