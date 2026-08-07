@@ -3599,7 +3599,7 @@ impl Cx<'_> {
         let mut align: u64 = 1;
         let mut flexible_member = None;
         // Set where the `w == 0` case is handled, which is the only place a `:0` is seen.
-        let has_zero_width_bitfield = false;
+        let mut has_zero_width_bitfield = false;
 
         for &m in members {
             let DeclKind::Var {
@@ -3913,6 +3913,7 @@ impl Cx<'_> {
                     // `RecordLayout::has_zero_width_bitfield`: the boundary survives only as a
                     // gap in the neighbours' offsets, and a consumer proposing a reorder must
                     // be able to tell that gap from alignment padding.
+                    has_zero_width_bitfield = true;
                     if !member_packed {
                         bit_cursor = round_up(bit_cursor, unit_align_bits);
                     }
@@ -3934,7 +3935,10 @@ impl Cx<'_> {
                     // `struct { char c; unsigned :0; char d; }` was 8 with alignment 4 where
                     // gcc says 5 and 1. It reached the surface as a wrong `chiero layout`
                     // number, which is how a reviewer found it, but the error was here.
-                    align = align.max(unit_align_bits / 8).max(requested.unwrap_or(1));
+                    if name.is_some() {
+                        align = align.max(unit_align_bits / 8);
+                    }
+                    align = align.max(requested.unwrap_or(1));
                 } else if let Some(r) = requested {
                     align = align.max(r);
                 }

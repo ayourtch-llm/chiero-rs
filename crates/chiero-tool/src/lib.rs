@@ -1798,7 +1798,9 @@ pub fn layout_envelope(
     } else {
         env.with_blind_spot(&format!(
             "no padding proposal was computed for {} record(s) whose field list this \
-             analysis cannot state in full — a member chiero could not size at all, so a \
+             analysis cannot state in full — a member chiero could not size, or a \
+             zero-width bit-field, which declares no member and leaves behind a unit \
+             boundary that follows its run rather than a gap a reorder recovers — so a \
              padding number summed over the members that are left is not a smaller number \
              but a wrong one: {}",
             partial.len(),

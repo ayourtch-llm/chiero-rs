@@ -168,6 +168,18 @@ against `gcc -E` / `clang -E` output.
 2. `struct __attribute__((packed)) { char a; int b; }` → size 5, offsets 0 and 1.
 3. `struct { int a:3; int b:5; }` → size 4, with `b` at bit offset 3.
 4. `struct { int a:3; int :0; int b:5; }` → `b` starts at the next allocation unit.
+4a. **An unnamed bit-field contributes no alignment.** `struct { char c; unsigned :0;
+    char d; }` → size 5, align 1, `d` at offset 4; `struct { char c; unsigned :4; char
+    d; }` → size 3, align 1. The declared type still sets the allocation unit either
+    way — give the same field a name and `struct { char c; unsigned n:4; char d; }` is
+    4/4, which is the discriminator. Applying the unit's alignment to both inflated
+    every record with an unnamed bit-field.
+4b. **A record that declares a `:0` says so** (`has_zero_width_bitfield`), because
+    `fields` cannot hold one: it declares no member, and C 6.7.9 has initializers skip
+    unnamed bit-fields while the initializer check indexes `fields` positionally. Its
+    effect survives only as a gap in its neighbours' offsets, which a consumer cannot
+    tell from alignment padding — and [041 §3.1](041-optimization-analysis.md) needs
+    exactly that distinction, since this gap is not recoverable by any reorder.
 5. A bitfield that would straddle an allocation unit boundary is placed per gcc rules,
    verified by `_Static_assert` against gcc.
 6. `struct { char a; int b:24; }` unpacked vs packed differ, both matching gcc.

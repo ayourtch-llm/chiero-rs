@@ -285,7 +285,7 @@ pub(crate) fn records(path: &Path, src: &str, f: Frontend) -> Result<Vec<Record>
         // unsigned :0; char d; }`: 12 bytes, and summing the members that are visible said it
         // "would be 4" — `proven`, not advisory. gcc's floor over every order that keeps each
         // run together is 8.
-        let mut fields_complete = true;
+        let mut fields_complete = !l.has_zero_width_bitfield;
         let mut fields: Vec<Field> = Vec::new();
         for fl in &l.fields {
             // **A bit-field's extent is bits, so it is passed as bits** — 041 §3.1. It used to

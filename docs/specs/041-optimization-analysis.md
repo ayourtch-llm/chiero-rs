@@ -197,6 +197,22 @@ the record, and width in bits, [014 §3](014-semantics-and-types.md)'s `BitField
 A record with a member the frontend could not size at all is still partial and still gets
 no padding number; a bit-field is no longer one of those cases.
 
+**A zero-width bit-field is, and it has to be.** `:0` declares no member, forces the next
+allocation to a unit boundary, and appears in no field list — [014 §3](014-semantics-and-types.md)
+contract 4b explains why it cannot. What it leaves behind is a gap in its neighbours'
+offsets that reads exactly like alignment padding and is not: **the boundary follows its
+run wherever the run is moved**, so no declaration order recovers those bytes. Measured, on
+`struct Q { unsigned a:1; unsigned :0; char c; unsigned b:1; unsigned :0; char d; }` — 12
+bytes, floor 8 over all 24 orders that keep each run together, and the sum of the visible
+members says 4.
+
+The run model cannot express it, because a `:0`-terminated run's cost is not a constant: it
+depends on where the run is placed, and this arithmetic is a sum of constant member sizes.
+So such a record is one this analysis cannot state in full, and gets §7.7's answer for a
+partial field list — no number, and the envelope names the record. That loses a real finding
+on structs where the `:0` sits last and costs nothing; losing a finding is the direction to
+err in.
+
 ## 4. What this crate will not do
 
 No auto-patching, ever — proposals are text. No performance *measurement*; chiero is not a
@@ -285,3 +301,9 @@ explicit advisory label.
     to recover, and **no** blind spot saying the record could not be judged: the two must
     stay distinguishable. A record holding a member the caller could not size at all still
     yields neither the number nor silence about it.
+26. **A zero-width bit-field makes the field list partial** (§3.1). `struct Q { unsigned
+    a:1; unsigned :0; char c; unsigned b:1; unsigned :0; char d; }` — 12 bytes, gcc —
+    yields **no** padding proposal, and the envelope **names `Q`**: both halves, because a
+    silent skip and a measured tight struct are the pair contract 25 exists to keep apart.
+    The check that this is not merely an opinion: gcc's minimum over every permutation that
+    keeps each run together is 8, and summing the visible members gives 4.
