@@ -6338,154 +6338,139 @@ fn a_models_fault_in_a_loop_is_one_finding() {
     assert_eq!(oob.len(), 1, "{:#?}", r.findings());
 }
 
-/// **Two objectless faults in two functions are two findings.** `FindingKey` had no
-/// function component, and `object()` is `None` for `NullDeref`, `WildPointer` and
-/// `BadRange` — so with `Span::DUMMY` everywhere the key was identical for all of them and
-/// distinct bugs merged. The commit that added the object component argued exactly this
-/// for the faults that *have* an object and left the three that do not uncovered.
+/// **The `func` component of the finding key, pinned.** `FindingKey` had no function
+/// component, and every fixture here uses `Span::DUMMY`, so two findings that agree on
+/// kind and object merged across a call — a *dropped* finding, which is the direction
+/// deduplication must never fail in. Found by review.
 ///
-/// Merging is the dangerous direction: a duplicate is noise, a dropped finding is a missed
-/// bug. `BadRange` is the usable probe because it is not fatal, so both can happen on one
-/// path. Found by review.
+/// The probe is one alloca copied onto itself in the callee and again in the caller: same
+/// kind, same `Span::DUMMY`, **same object**, two functions. Two different buffers would be
+/// told apart by `object` alone, which is how the first version of this case passed while
+/// `func` was still droppable.
+///
+/// ⚠️ **This used to be a `BadRange` fixture**, because the component was argued for from
+/// the three *objectless* faults (`NullDeref`, `WildPointer`, `BadRange`) whose keys agree
+/// on `object` by construction — and `BadRange` was the only non-fatal one of the three, so
+/// the only one that can happen twice on one path. `BadRange` is now a chiero limit and
+/// degrades instead of reporting, so no objectless finding is left to probe with. A shared
+/// object reaches the same component: what `func` defends against is two findings agreeing
+/// on the other three, and how they came to agree on `object` does not matter.
+///
+/// `overlapping-copy` is the fault that makes it work — non-fatal, so both copies happen on
+/// one path, and *repeatable*, unlike `uninitialized-read`, whose invented value is written
+/// back so the second read of the same bytes reports nothing.
 #[test]
-fn objectless_faults_in_two_functions_do_not_merge() {
-    let wide_load = |v: u32| {
-        vec![
-            inst(InstKind::Assign {
-                dst: ValueId(v),
-                rv: RValue::AddrOfLocal {
-                    alloca: AllocaId(0),
-                },
-            }),
-            inst(InstKind::Assign {
-                dst: ValueId(v + 1),
-                rv: RValue::Load {
-                    addr: Operand::Value(ValueId(v)),
-                    ty: CTy::Vector {
-                        elem: Box::new(CTy::Int(64)),
-                        lanes: 4,
-                    },
-                    align: 32,
-                    vol: Volatility::Normal,
-                },
-            }),
-        ]
-    };
-    let mut caller = defined(
-        0,
-        "main",
-        vec![block(
-            0,
-            {
-                let mut v = vec![inst(InstKind::Call {
-                    dst: None,
-                    callee: Callee::Direct(FuncId(1)),
-                    args: vec![],
-                })];
-                v.extend(wide_load(0));
-                v
-            },
-            Terminator::Return(Some(i32c(0))),
-        )],
-        CTy::Int(32),
-    );
-    caller.allocas = vec![AllocaDecl {
-        align: 32,
-        ..alloca(0, CTy::Int(8), 32)
-    }];
-    let mut callee = defined(
-        1,
-        "other",
-        vec![block(0, wide_load(0), Terminator::Return(Some(i32c(0))))],
-        CTy::Int(32),
-    );
-    callee.allocas = vec![AllocaDecl {
-        align: 32,
-        ..alloca(0, CTy::Int(8), 32)
-    }];
-    let m = Module {
-        funcs: vec![caller, callee],
-        ..Default::default()
-    };
+fn the_same_fault_on_one_object_in_two_functions_does_not_merge() {
+    let m = one_object_copied_onto_itself(&[(FuncId(1), 5)], &[5]);
     let mut a = TermArena::new();
     let r = Engine::new(&m).run(&mut a);
-    let wide: Vec<_> = r
+    let overlaps: Vec<_> = r
         .findings()
         .into_iter()
-        .filter(|f| f.contains("unsupported-access-width"))
+        .filter(|f| f.contains("overlapping-copy"))
         .collect();
-    assert_eq!(wide.len(), 2, "two functions, two reports: {:#?}", wide);
+    assert_eq!(
+        overlaps.len(),
+        2,
+        "two functions, two reports: {overlaps:#?}"
+    );
 }
 
 /// **The `span` component of the finding key, pinned.** Two identical faults on the same
 /// object in the same function, at *different* source locations, are two bugs. Nearly
 /// every fixture in this file uses `Span::DUMMY`, so dropping `span` from the key changed
 /// nothing and the mutation survived — the fixture, not the assertion, was the gap.
+///
+/// Same fault kind and same reason as its neighbour above; see the note there for why this
+/// is no longer written with `BadRange`.
 #[test]
 fn the_same_fault_at_two_places_is_two_findings() {
+    let m = one_object_copied_onto_itself(&[], &[10, 20]);
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    let overlaps: Vec<_> = r
+        .findings()
+        .into_iter()
+        .filter(|f| f.contains("overlapping-copy"))
+        .collect();
+    assert_eq!(overlaps.len(), 2, "two places, two reports: {overlaps:#?}");
+}
+
+/// A module whose every `overlapping-copy` is on **one** object — a 16-byte local of
+/// `main`, whose address is passed to each callee — so the finding key's `object`
+/// component is constant across the whole run and cannot be what tells two reports apart.
+///
+/// `callees` is one `(id, span)` per extra function to define and call, `here` the spans
+/// of the copies `main` performs itself.
+fn one_object_copied_onto_itself(callees: &[(FuncId, u32)], here: &[u32]) -> Module {
+    // `dst` overlaps `src` by four of its six bytes, which `memcpy` forbids (024 §2).
+    // `ValueId(0)` is the object's base — the parameter in a callee, the `AddrOfLocal` in
+    // `main` — so one body serves both.
+    let copy_over_self = |v: u32, lo: u32| {
+        vec![
+            inst(InstKind::Assign {
+                dst: ValueId(v),
+                rv: RValue::PtrAdd {
+                    base: Operand::Value(ValueId(0)),
+                    off: Operand::Const(Const::Int { bits: 64, val: 2 }),
+                },
+            }),
+            inst_at(
+                InstKind::CopyMem {
+                    dst: Operand::Value(ValueId(v)),
+                    src: Operand::Value(ValueId(0)),
+                    size: Operand::Const(Const::Int { bits: 64, val: 6 }),
+                    align: 1,
+                },
+                lo,
+            ),
+        ]
+    };
+
+    let mut funcs = Vec::new();
+    let mut body = vec![inst(InstKind::Assign {
+        dst: ValueId(0),
+        rv: RValue::AddrOfLocal {
+            alloca: AllocaId(0),
+        },
+    })];
+    for &(id, lo) in callees {
+        body.push(inst(InstKind::Call {
+            dst: None,
+            callee: Callee::Direct(id),
+            args: vec![Operand::Value(ValueId(0))],
+        }));
+        let mut callee = defined(
+            id.0,
+            "other",
+            vec![block(
+                0,
+                copy_over_self(1, lo),
+                Terminator::Return(Some(i32c(0))),
+            )],
+            CTy::Int(32),
+        );
+        callee.params = vec![Param {
+            value: ValueId(0),
+            ty: CTy::Ptr,
+        }];
+        funcs.push(callee);
+    }
+    for (n, &lo) in here.iter().enumerate() {
+        body.extend(copy_over_self(1 + n as u32, lo));
+    }
     let mut caller = defined(
         0,
         "main",
-        vec![block(
-            0,
-            vec![
-                inst(InstKind::Assign {
-                    dst: ValueId(0),
-                    rv: RValue::AddrOfLocal {
-                        alloca: AllocaId(0),
-                    },
-                }),
-                inst_at(
-                    InstKind::Assign {
-                        dst: ValueId(1),
-                        rv: RValue::Load {
-                            addr: Operand::Value(ValueId(0)),
-                            ty: CTy::Vector {
-                                elem: Box::new(CTy::Int(64)),
-                                lanes: 4,
-                            },
-                            align: 32,
-                            vol: Volatility::Normal,
-                        },
-                    },
-                    10,
-                ),
-                inst_at(
-                    InstKind::Assign {
-                        dst: ValueId(2),
-                        rv: RValue::Load {
-                            addr: Operand::Value(ValueId(0)),
-                            ty: CTy::Vector {
-                                elem: Box::new(CTy::Int(64)),
-                                lanes: 4,
-                            },
-                            align: 32,
-                            vol: Volatility::Normal,
-                        },
-                    },
-                    20,
-                ),
-            ],
-            Terminator::Return(Some(i32c(0))),
-        )],
+        vec![block(0, body, Terminator::Return(Some(i32c(0))))],
         CTy::Int(32),
     );
-    caller.allocas = vec![AllocaDecl {
-        align: 32,
-        ..alloca(0, CTy::Int(8), 32)
-    }];
-    let m = Module {
-        funcs: vec![caller],
+    caller.allocas = vec![alloca(0, CTy::Int(8), 16)];
+    funcs.insert(0, caller);
+    Module {
+        funcs,
         ..Default::default()
-    };
-    let mut a = TermArena::new();
-    let r = Engine::new(&m).run(&mut a);
-    let wide: Vec<_> = r
-        .findings()
-        .into_iter()
-        .filter(|f| f.contains("unsupported-access-width"))
-        .collect();
-    assert_eq!(wide.len(), 2, "two places, two reports: {:#?}", wide);
+    }
 }
 
 /// **The `kind` component, pinned.** Two *different* faults on the same object at the same
