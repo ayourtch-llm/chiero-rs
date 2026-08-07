@@ -584,6 +584,24 @@ pub struct Attr {
     pub name: Symbol,
     pub args: Vec<ExprId>,
     pub span: Span,
+    /// Whether this attribute was written on the **declarator** rather than on the type
+    /// specifier — `typedef struct S {…} T __attribute__((aligned(16)));` against
+    /// `struct S {…} __attribute__((aligned(16)));`.
+    ///
+    /// **The two land on the same node and mean different things.** A declarator with no
+    /// derivations shares the specifier's `TypeId`, so the parser clones it (`unshare`) before
+    /// writing — and for a record definition that clone *is* the definition, attributes and
+    /// all. Nothing distinguished them, so 014's layout honoured an attribute C gives to the
+    /// declared name: `struct S` came out 112/16 where gcc says 104/8, and glibc's
+    /// `__pthread_unwind_buf_t` with it.
+    ///
+    /// gcc's rule, checked rather than assumed: a post-declarator attribute belongs to the
+    /// *name*. `aligned` there raises the typedef's alignment and leaves the struct alone;
+    /// `packed` there is ignored outright, with a warning.
+    ///
+    /// So a consumer asking "what does this record's *definition* say" must filter on this,
+    /// while one asking "what does this declaration ask for" must not.
+    pub from_declarator: bool,
 }
 
 /// The arena. Ids index these vectors directly; nothing is ever removed, so an id stays

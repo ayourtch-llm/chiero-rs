@@ -3504,12 +3504,12 @@ impl Cx<'_> {
         //
         // Read from the AST node, like `packed` on a record: it is a specifier attribute and
         // never reaches the interned type.
-        let packed = self
-            .ast
-            .ty(node)
-            .attrs
-            .iter()
-            .any(|a| matches!(self.text(a.name), Some("packed" | "__packed__")));
+        // **Declarator attributes are not the definition's** — see `Attr::from_declarator`.
+        // gcc is explicit about this one: `typedef struct S {…} T __attribute__((packed));`
+        // compiles with `warning: 'packed' attribute ignored` and leaves `struct S` alone.
+        let packed = self.ast.ty(node).attrs.iter().any(|a| {
+            !a.from_declarator && matches!(self.text(a.name), Some("packed" | "__packed__"))
+        });
         let bits = if packed {
             // Smallest first; `long_bits` is the last resort and the existing answer for a range
             // that needs it, so an over-wide enumeration is unaffected by the attribute.
@@ -3587,10 +3587,11 @@ impl Cx<'_> {
         // flag is read here beside `packed` because both are attributes of the definition.
         let transparent = is_union
             && self.ast.ty(node).attrs.iter().any(|a| {
-                matches!(
-                    self.text(a.name),
-                    Some("transparent_union" | "__transparent_union__")
-                )
+                !a.from_declarator
+                    && matches!(
+                        self.text(a.name),
+                        Some("transparent_union" | "__transparent_union__")
+                    )
             });
 
         let mut fields: Vec<FieldLayout> = Vec::new();
@@ -4018,7 +4019,11 @@ impl Cx<'_> {
                 .unwrap_or(1);
             align = requested_max.max(1);
         }
-        if let Some(r) = self.aligned_attr(node) {
+        // **The definition's, not the declarator's.** `typedef struct S {…} T
+        // __attribute__((aligned(16)))` aligns `T` and leaves `struct S` alone — and gcc does
+        // not round even `T`'s size up to it. Reading both here made `struct S` 112/16 where
+        // gcc says 104/8, glibc's `__pthread_unwind_buf_t` among them.
+        if let Some(r) = self.definition_aligned_attr(node) {
             align = align.max(r);
         }
         // **A flexible array member needs a member before it** (C 6.7.2.1p18), asked *after* the
@@ -4139,9 +4144,26 @@ impl Cx<'_> {
 
     /// The `n` of `__attribute__((aligned(n)))` on a syntactic type node.
     fn aligned_attr(&mut self, ty: TypeId) -> Option<u64> {
+        self.aligned_attr_where(ty, false)
+    }
+
+    /// The same, restricted to attributes the **type specifier** carries.
+    ///
+    /// A record's own layout may only read these: `typedef struct S {…} T
+    /// __attribute__((aligned(16)))` aligns `T`, not `struct S`, and the two attributes reach
+    /// the same node. See `Attr::from_declarator`. Every other caller wants both, because
+    /// `struct S x __attribute__((aligned(32)));` really does over-align `x`.
+    fn definition_aligned_attr(&mut self, ty: TypeId) -> Option<u64> {
+        self.aligned_attr_where(ty, true)
+    }
+
+    fn aligned_attr_where(&mut self, ty: TypeId, definition_only: bool) -> Option<u64> {
         let attrs = self.ast.ty(ty).attrs.clone();
         let mut best: Option<u64> = None;
         for a in attrs {
+            if definition_only && a.from_declarator {
+                continue;
+            }
             if !matches!(
                 self.text(a.name),
                 Some("aligned" | "__aligned__" | "_Alignas")

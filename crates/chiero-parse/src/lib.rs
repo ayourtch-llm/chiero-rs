@@ -1250,6 +1250,8 @@ impl<'a> Parser<'a> {
                         args,
                         // Covers `_Alignas(…)` entire, which is what the alignment rules point at.
                         span: self.span_from(astart),
+                        // Set by `declarator`, which is the only place that knows.
+                        from_declarator: false,
                     });
                 }
                 TokKind::Kw(Kw::Signed) => {
@@ -1676,7 +1678,13 @@ impl<'a> Parser<'a> {
                     self.expect_punct(Punct::RParen, "to close an attribute's arguments");
                 }
                 let span = self.span_from(start);
-                out.push(Attr { name, args, span });
+                out.push(Attr {
+                    name,
+                    args,
+                    span,
+                    // Set by `declarator`, which is the only place that knows.
+                    from_declarator: false,
+                });
                 if !self.eat_punct(Punct::Comma) {
                     break;
                 }
@@ -1754,7 +1762,10 @@ impl<'a> Parser<'a> {
             let (name, ty) = self.declarator(ty, abstract_ok);
             self.pos = after;
             if !attrs.is_empty() {
-                self.ast.ty_mut(ty).attrs.extend(attrs);
+                self.ast
+                    .ty_mut(ty)
+                    .attrs
+                    .extend(attrs.into_iter().map(mark_declarator));
             }
             return (name, ty);
         }
@@ -1810,7 +1821,14 @@ impl<'a> Parser<'a> {
         attrs.extend(post);
         if !attrs.is_empty() {
             ty = self.unshare(ty, base);
-            self.ast.ty_mut(ty).attrs.extend(attrs);
+            // **Marked as the declarator's**, because `unshare` may have cloned a node that
+            // *defines* a record and 014 must not read these as the definition's. See
+            // `Attr::from_declarator`: `typedef struct S {…} T __attribute__((aligned(16)))`
+            // aligns `T`, and chiero was aligning `struct S` and rounding its size up too.
+            self.ast
+                .ty_mut(ty)
+                .attrs
+                .extend(attrs.into_iter().map(mark_declarator));
         }
         (name, ty)
     }
@@ -3300,5 +3318,18 @@ fn punct_text(p: Punct) -> &'static str {
         Punct::Star => "*",
         Punct::Ellipsis => "...",
         _ => "token",
+    }
+}
+
+/// An attribute written on a declarator rather than on the type specifier.
+///
+/// See [`Attr::from_declarator`]: a declarator with no derivations shares the specifier's
+/// node, so the parser clones it before writing — and when the specifier *defines* a record,
+/// that clone is the definition. Without this mark 014 read
+/// `typedef struct S {…} T __attribute__((aligned(16)))` as an attribute of `struct S`.
+fn mark_declarator(a: Attr) -> Attr {
+    Attr {
+        from_declarator: true,
+        ..a
     }
 }
