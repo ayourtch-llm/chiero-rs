@@ -382,46 +382,30 @@ fn the_subsumption_index_is_bypassed_while_the_flag_is_set() {
     );
 }
 
-/// **Slicing must not get slower as the arena fills up.**
+/// **Slicing must not do more work as the arena fills up.**
 ///
 /// 022 §6.2 makes independence slicing required rather than optional, so `components` runs on
 /// **every** backend query, and it calls `vars_of` once per constraint. `vars_of` allocated and
 /// zeroed `vec![false; nodes.len()]` on each of those calls — a bool for every term the arena
 /// has *ever* held, whether or not the constraint mentions it. A `TermArena` only grows, so the
-/// cost of slicing a fixed path condition grew with everything the run had done beforehand.
+/// cost of slicing a fixed path condition grew with everything the run had done beforehand:
+/// 8.3 µs at a thousand nodes, 699 µs at 256 000, for the same forty one-variable constraints.
 ///
 /// Found by sampling a real VPP run under `gdb`, not by reading: two of eight samples were
-/// inside `TermArena::vars_of`, reached through `TieredSolver::components`. Measured after,
-/// slicing forty one-variable constraints:
+/// inside `TermArena::vars_of`, reached through `TieredSolver::components`.
 ///
-/// ```text
-///     1 000 nodes     8.3 µs
-///    16 000 nodes    29.8 µs
-///    64 000 nodes   171.2 µs
-///   256 000 nodes   698.7 µs
-/// ```
+/// ⚠️ **This asserted a ratio of two durations first, and that was the wrong instrument.** It
+/// passed run alone and failed under the full workspace run, because the two measurements were
+/// taken at different machine loads — §11.3's own corollary, that only a full run puts enough
+/// load on to expose this. An intermittently red suite is worse than no test.
 ///
-/// Eighty-four times the work for terms that never changed. Afterwards, steady state:
-///
-/// ```text
-///     1 000 nodes     3.5 µs
-///    64 000 nodes     4.1 µs
-///   256 000 nodes     3.9 µs
-/// ```
-///
-/// ⚠️ "Steady state" is load-bearing in that sentence. The scratch buffer still grows once to
-/// match the arena, and a measurement that builds a large arena and immediately times one pass
-/// charges the whole growth to that pass — 26x rather than 1.1x. A real run grows the arena
-/// incrementally and amortises it, which is why the test below repeats.
-///
-/// **The assertion is a ratio, not a duration** — §11.2's rule, and the only form that says
-/// anything about the shape. The bound is generous: the defect is 84x and a correct
-/// implementation is about 1x, so anything under 10x distinguishes them on any machine.
+/// `vars_of_visits` counts nodes stamped. It is identical on every machine and under any load,
+/// so the assertion is about the algorithm rather than about the afternoon — and it is *exact*,
+/// which a timing bound can never be: forty one-variable constraints must cost the same walk
+/// whether the arena around them holds two thousand nodes or two hundred thousand.
 #[test]
-fn slicing_cost_does_not_grow_with_unrelated_arena_size() {
-    // 40 constraints, each mentioning exactly one variable, so the *answer* is identical at
-    // both sizes and only the arena around them differs.
-    let build = |pad: u32| {
+fn slicing_work_does_not_grow_with_unrelated_arena_size() {
+    let walked = |pad: u32| {
         let mut a = TermArena::new();
         let mut path = Vec::new();
         for i in 0..40u32 {
@@ -429,39 +413,56 @@ fn slicing_cost_does_not_grow_with_unrelated_arena_size() {
             let k = a.bv(32, u128::from(i));
             path.push(a.ult(v, k));
         }
+        // Unrelated terms: the rest of a run's history, which `vars_of` must not look at.
         let base = a.var(Sort::BitVec(32), "pad");
         for i in 0..pad {
             let k = a.bv(32, u128::from(i));
             let _ = a.add(base, k);
         }
-        (a, path)
-    };
-    let measure = |pad: u32| {
-        let (a, path) = build(pad);
-        // Repeated, because one pass over 40 tiny terms is close to the clock's resolution.
-        let started = std::time::Instant::now();
-        let mut seen = 0usize;
-        for _ in 0..20 {
-            for c in &path {
-                let mut vs = Vec::new();
-                a.vars_of(*c, &mut vs);
-                seen += vs.len();
-            }
+        // **Warm-up, outside the measurement.** The scratch grows once to match the arena, and
+        // a real run pays that incrementally as the arena itself grows. Charging it to the
+        // first call here would measure the allocation rather than the query — which is the
+        // same distinction the benchmark that found this defect had to make.
+        {
+            let mut w = Vec::new();
+            a.vars_of(path[0], &mut w);
         }
-        assert_eq!(
-            seen,
-            20 * 40,
-            "each constraint mentions exactly one variable"
-        );
-        started.elapsed()
+        let before = (a.vars_of_visits(), a.vars_of_scratch_init());
+        let mut seen = 0usize;
+        for c in &path {
+            let mut vs = Vec::new();
+            a.vars_of(*c, &mut vs);
+            seen += vs.len();
+        }
+        assert_eq!(seen, 40, "each constraint mentions exactly one variable");
+        (
+            a.vars_of_visits() - before.0,
+            a.vars_of_scratch_init() - before.1,
+        )
     };
 
-    let small = measure(2_000);
-    let large = measure(200_000);
-    // A hundredfold arena for the same forty constraints.
-    assert!(
-        large.as_nanos() < small.as_nanos().saturating_mul(10),
-        "slicing a fixed path cost {small:?} at 2 000 nodes and {large:?} at 200 000 — the \
-         work is proportional to the arena rather than to the terms being sliced"
+    let (small, small_init) = walked(2_000);
+    let (large, large_init) = walked(200_000);
+    // **The assertion that can see the defect.** Forty calls against a 200 000-node arena
+    // initialised the whole buffer *each time* before — eight million entries. Reusing it means
+    // the growth is one-time, and by the time these forty calls run it has already happened, so
+    // the honest number here is zero.
+    assert_eq!(
+        (small_init, large_init),
+        (0, 0),
+        "the scratch is initialised per growth, not per call"
     );
+    assert_eq!(
+        small, large,
+        "a hundredfold arena around the same forty constraints changed the walk from {small} \
+         nodes to {large}: the work is proportional to the arena rather than to the terms \
+         being sliced"
+    );
+    // And the walk is the terms themselves, not something that merely happens to be constant.
+    //
+    // ⚠️ Written as 160 first — "the ult, the var, the const, and the root" — and the fixture
+    // said 120. There is no separate root: `ult(var, const)` *is* the root, so it is three
+    // nodes. The fixture failing rather than the code is the good direction, and a count I had
+    // to correct is worth more than one I happened to guess right.
+    assert_eq!(small, 120, "40 constraints x (ult, var, const) = 120 nodes");
 }

@@ -344,6 +344,25 @@ pub struct TermArena {
     seen: std::cell::RefCell<Vec<u32>>,
     /// Which generation `seen` is stamped with. Wraps to 1 and re-zeroes; 0 is "never visited".
     seen_gen: std::cell::Cell<u32>,
+    /// How many nodes [`TermArena::vars_of`] has stamped, across every call.
+    ///
+    /// **A counter rather than a stopwatch.** The property worth pinning is that `vars_of` does
+    /// work proportional to the *subterm*, not to the arena — and the first test of it compared
+    /// two durations, which passed alone and failed under a full workspace run because the two
+    /// measurements were taken at different machine loads. An intermittently red suite is worse
+    /// than no test. This number is identical on every machine and under any load, so the
+    /// assertion is about the algorithm instead of about the afternoon.
+    ///
+    /// One `Cell` increment per node already being walked, hash-consed and pattern-matched.
+    visits: std::cell::Cell<u64>,
+    /// How many scratch entries have had to be **initialised**, across every call.
+    ///
+    /// ⚠️ **This is the counter that can see the defect, and `visits` is not.** The original
+    /// `vars_of` allocated and zeroed `vec![false; nodes.len()]` per call but still stamped only
+    /// the nodes it walked — so a visit counter is *identical* on both implementations, and the
+    /// first deterministic test written here passed against the very code it was written to
+    /// catch. What changed is initialisation: once per growth here, once per **call** before.
+    scratch_init: std::cell::Cell<u64>,
 }
 
 impl TermArena {
@@ -1051,10 +1070,27 @@ impl TermArena {
     /// Iterative, for the same reason `postorder` is: a deep term aborts the process
     /// otherwise, and this runs on *every* term immediately before serialization — so
     /// making only the serializer iterative moved the failure rather than removing it.
+    /// Nodes stamped by [`vars_of`](TermArena::vars_of) since this arena was created.
+    ///
+    /// Exists so a test can assert the *shape* of that walk without a stopwatch — see the
+    /// field's own note for why a duration was the wrong instrument.
+    pub fn vars_of_visits(&self) -> u64 {
+        self.visits.get()
+    }
+
+    /// Scratch entries [`vars_of`](TermArena::vars_of) has initialised since this arena was
+    /// created. See the field's note: this is the number that distinguishes a per-call
+    /// whole-arena buffer from a reused one, and `vars_of_visits` is not.
+    pub fn vars_of_scratch_init(&self) -> u64 {
+        self.scratch_init.get()
+    }
+
     pub fn vars_of(&self, t: Term, out: &mut Vec<VarId>) {
         let mut seen = self.seen.borrow_mut();
         if seen.len() < self.nodes.len() {
+            let grew = self.nodes.len() - seen.len();
             seen.resize(self.nodes.len(), 0);
+            self.scratch_init.set(self.scratch_init.get() + grew as u64);
         }
         // **Wrapping means re-zeroing, once every four billion calls.** Skipping it would let a
         // stale stamp from the previous cycle read as visited and silently drop a variable —
@@ -1064,6 +1100,8 @@ impl TermArena {
             Some(g) => g,
             None => {
                 seen.iter_mut().for_each(|x| *x = 0);
+                self.scratch_init
+                    .set(self.scratch_init.get() + seen.len() as u64);
                 1
             }
         };
@@ -1074,6 +1112,7 @@ impl TermArena {
                 continue;
             }
             seen[n.0 as usize] = stamp;
+            self.visits.set(self.visits.get() + 1);
             if let Node::Var(v, _) = &self.nodes[n.0 as usize]
                 && !out.contains(v)
             {
