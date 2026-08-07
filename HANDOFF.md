@@ -2012,6 +2012,17 @@ doubles the wake-ups.
   people write them*, which is a systematically biased sample — the dark corners are never in it,
   and no amount of widening within it reaches them. **When the yield table flattens, change the
   kind rather than the size.**
+- ⚠️ **The harness is defective more often than you expect, and it fails *flatteringly*.** In one
+  session: a gcc oracle that raced on a shared scratch path (**twice** — the second key was still
+  a guess about which callers exist), a probe comparing whitespace-split words instead of tokens
+  and reporting four false divergences, and a `pgrep -f` waiter that matched itself and reported
+  a run as live for over an hour when it had never started. **Every one reported something
+  impossible**, and two were read past before being checked. §11.2's rule is not a footnote about
+  profilers — it is the most frequently-earned rule in this file.
+  Corollaries, each paid for: **parallel tests must not share mutable filesystem state at all**
+  (a per-call counter, never a "unique enough" key); **a per-crate run cannot see a race** — only
+  the full-workspace run put enough load on to expose the second one; and when a measurement
+  looks wrong, reproduce the *instrument* before reasoning about the subject.
 - **The residue of a gate is a corpus.** Two of this session's three defects came from the
   pp-gate *failing*; the third came from reading the rows it had already written off — 21 cases
   filed as "neither compiler ran it" turned out to be the corpus's error-recovery half, and the
