@@ -113,3 +113,23 @@ fn an_ordinary_comma_is_untouched() {
     matches_gcc("#define X(Y) foo{A, Y}\n1: X()\n");
     matches_gcc("#define X(Y) foo{A, Y}\n1: X(z)\n");
 }
+
+/// **Absent is not the same as empty.** The comma is swallowed only when the variadic parameter
+/// received *no argument at all* — not when it received one that happens to be empty.
+///
+/// `debug(V)` has no variadic argument and loses the comma; `debug(Y, )` and `debug(Z,)` supply
+/// one, and it stays. gcc and clang agree on all four rows of `macro_paste_commaext.c`, and
+/// chiero swallowed in every case — the emptiness of the *tokens* is not the question, the
+/// presence of the *argument* is.
+#[test]
+fn the_comma_survives_a_supplied_but_empty_variadic_argument() {
+    let m = "#define debug(format, ...) format, ## __VA_ARGS__)\n";
+    matches_gcc(&format!("{m}debug(V);\n"));
+    matches_gcc(&format!("{m}debug(W, 1, 2);\n"));
+    matches_gcc(&format!("{m}debug(Y, );\n"));
+    matches_gcc(&format!("{m}debug(Z,);\n"));
+    // The GNU named-variadic spelling takes the same rule.
+    let n = "#define d(f, a...) g(f, ##a)\n";
+    matches_gcc(&format!("{n}d(V);\n"));
+    matches_gcc(&format!("{n}d(Y, );\n"));
+}

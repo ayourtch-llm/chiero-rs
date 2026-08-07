@@ -2036,6 +2036,11 @@ impl Engine {
             args.clear();
         }
         let fixed = def.params.len();
+        // **Absent is not empty.** `debug(V)` supplies no variadic argument and the GNU comma is
+        // swallowed; `debug(Y, )` supplies one that happens to be empty and the comma **stays**.
+        // gcc and clang agree on both, and the emptiness of the *tokens* is not what decides it —
+        // the presence of the *argument* is, which is knowable only here, from the arity.
+        let variadic_supplied = args.len() > fixed;
         let mut raw_by_name: BTreeMap<String, Vec<Tok>> = BTreeMap::new();
         for (index, name) in def.params.iter().enumerate() {
             raw_by_name.insert(name.clone(), args.get(index).cloned().unwrap_or_default());
@@ -2131,7 +2136,12 @@ impl Engine {
                         text: String::new(),
                         hide: HideSet::default(),
                         paste_op: false,
-                        from_variadic: is_variadic_param,
+                        // ⚠️ **Only the placemarker carries the absent-vs-supplied distinction.**
+                        // The substituted *tokens* stay marked (below) so the non-empty GNU form
+                        // — `debug(W, 1, 2)` — still takes the comma branch and is not reported
+                        // as an invalid paste. Putting the condition on `is_variadic_param`
+                        // instead broke exactly those rows.
+                        from_variadic: is_variadic_param && !variadic_supplied,
                     });
                 }
                 for (index, mut arg) in selected.into_iter().enumerate() {
