@@ -381,3 +381,76 @@ fn the_subsumption_index_is_bypassed_while_the_flag_is_set() {
          was answered from the index anyway"
     );
 }
+
+/// **Slicing must not get slower as the arena fills up.**
+///
+/// 022 §6.2 makes independence slicing required rather than optional, so `components` runs on
+/// **every** backend query, and it calls `vars_of` once per constraint. `vars_of` allocated and
+/// zeroed `vec![false; nodes.len()]` on each of those calls — a bool for every term the arena
+/// has *ever* held, whether or not the constraint mentions it. A `TermArena` only grows, so the
+/// cost of slicing a fixed path condition grew with everything the run had done beforehand.
+///
+/// Found by sampling a real VPP run under `gdb`, not by reading: two of eight samples were
+/// inside `TermArena::vars_of`, reached through `TieredSolver::components`. Measured after,
+/// slicing forty one-variable constraints:
+///
+/// ```text
+///     1 000 nodes     8.3 µs
+///    16 000 nodes    29.8 µs
+///    64 000 nodes   171.2 µs
+///   256 000 nodes   698.7 µs
+/// ```
+///
+/// Eighty-four times the work for terms that never changed.
+///
+/// **The assertion is a ratio, not a duration** — §11.2's rule, and the only form that says
+/// anything about the shape. The bound is generous: the defect is 84x and a correct
+/// implementation is about 1x, so anything under 10x distinguishes them on any machine.
+#[test]
+fn slicing_cost_does_not_grow_with_unrelated_arena_size() {
+    // 40 constraints, each mentioning exactly one variable, so the *answer* is identical at
+    // both sizes and only the arena around them differs.
+    let build = |pad: u32| {
+        let mut a = TermArena::new();
+        let mut path = Vec::new();
+        for i in 0..40u32 {
+            let v = a.var(Sort::BitVec(32), &format!("v{i}"));
+            let k = a.bv(32, u128::from(i));
+            path.push(a.ult(v, k));
+        }
+        let base = a.var(Sort::BitVec(32), "pad");
+        for i in 0..pad {
+            let k = a.bv(32, u128::from(i));
+            let _ = a.add(base, k);
+        }
+        (a, path)
+    };
+    let measure = |pad: u32| {
+        let (a, path) = build(pad);
+        // Repeated, because one pass over 40 tiny terms is close to the clock's resolution.
+        let started = std::time::Instant::now();
+        let mut seen = 0usize;
+        for _ in 0..20 {
+            for c in &path {
+                let mut vs = Vec::new();
+                a.vars_of(*c, &mut vs);
+                seen += vs.len();
+            }
+        }
+        assert_eq!(
+            seen,
+            20 * 40,
+            "each constraint mentions exactly one variable"
+        );
+        started.elapsed()
+    };
+
+    let small = measure(2_000);
+    let large = measure(200_000);
+    // A hundredfold arena for the same forty constraints.
+    assert!(
+        large.as_nanos() < small.as_nanos().saturating_mul(10),
+        "slicing a fixed path cost {small:?} at 2 000 nodes and {large:?} at 200 000 — the \
+         work is proportional to the arena rather than to the terms being sliced"
+    );
+}
