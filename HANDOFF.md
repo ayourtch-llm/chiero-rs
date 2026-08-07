@@ -1254,6 +1254,126 @@ compensating error only shows itself when its partner is removed. Had the gate n
 widened that morning, defect 1 would have been "fixed" and defect 2 would have silently
 started mis-laying every struct containing a `clib_longjmp_t`.
 
+### 7.11 The preprocessor conformance corpus, 2026-08-07 — a new kind of edge, and it paid immediately
+
+§9.1 item 1, built as designed. `cargo run -p xtask -- pp-gate` reads a **simplecpp checkout**
+(`$SIMPLECPP`, default `/home/ubuntu/simplecpp`, pinned `74a5a63`) rather than a copy — 211
+verbatim clang files (Apache-2.0-with-LLVM-exception) and 26 gcc ones (GPL) may not be vendored
+into an MIT-OR-Apache-2.0 repo, and pointing a gate at a checkout is this repo's existing
+precedent. **gcc and clang are the oracle directly**; simplecpp is the source of *inputs* and
+never an authority, and its skip/todo lists are carried as priors.
+
+⚠️ **The checkout is at `/home/ubuntu/simplecpp`, beside `/home/ubuntu/vpp`** — copied out of a
+scratchpad deliberately, per §9.2's lesson. It must not go back to one.
+
+**Why it is a different edge, and this is the transferable part.** Every corpus before it is
+real VPP code, which exercises macros *as people write them*. It never reaches `#`/`##` edge
+cases, rescanning across an argument-list boundary, or `__VA_ARGS__` corners — so a decade of
+green VPP gates said nothing about them.
+
+| run | findings | note |
+|---|---|---|
+| first, before any fix | **22** | of which **2 panics** |
+| after the paste-operator fix | 19 | both panics gone, agreement 92 → 95 of 141 |
+| after splitting the refused bucket | 21 | +2 *seen for the first time*, §7.10's shape again |
+| after the hide-set intersection | **18** | agreement **97 of 141**; `Expected`-prior divergences **4 → 1** |
+
+**The one `Expected` divergence left is `__VA_OPT__`**, which 012 §2.3 declares out of scope for
+v1 by measurement (VPP uses it zero times) and diagnoses rather than passing through. The rest
+of the 18 are `Skipped`/`Todo` priors — and chiero now passes one file simplecpp itself still
+lists as `todo`, which is the result that says the corpus is worth keeping.
+
+#### Defect 1 — a `##` that arrives by substitution was treated as the paste operator
+
+C11 6.10.3.3 identifies the operator in a macro's **replacement list**, at definition time. A
+`##` reaching a substituted sequence any other way — spelled at a call site, or produced by an
+earlier paste, as `# ## #` does — is an ordinary punctuator. **chiero panicked on the standard's
+own worked example**, 6.10.3.3p4:
+
+```c
+#define hash_hash # ## #
+#define mkstr(a) # a
+#define in_between(a) mkstr(a)
+#define join(c, d) in_between(c hash_hash d)
+char p[] = join(x, y);            /* "x ## y" */
+```
+
+Three routes to the one rule, and the quiet ones are worse than the crash: `FOO(##)` answered
+`AB` — it pasted `A` to `B` using the *argument's* `##` — and `m(hh)` answered `[ ]`, the token
+simply gone. A crash is loud; a dropped token is a wrong answer nobody is told about.
+
+Fixed at the rule: `Tok::paste_op`, set by `mark_paste_operators` on every `StoredMacro` body
+(including `-D` ones, since `-D'CAT(a,b)=a##b'` pastes too), and `paste` branches on the flag
+rather than the token kind. **The flag rides on the token because that is the level the rule
+lives at** — `substitute` interleaves replacement-list tokens with argument tokens, and by the
+time `paste` walks the result, where each came from is exactly what it can no longer see. A
+fourth route (`macro_paste_simple.c`) was fixed without being in the RED, which is the evidence
+the fix was at the right level.
+
+⚠️ **And then an adversarial `fable` review found the panic still reachable, one commit after I
+had quoted §7.4's "I kept fixing the door" in the commit message.** The fix was correct at the
+flag's *source* and unbounded at its *exit*: `paste()`'s two error-recovery branches push the
+operator token back into the output **still armed**, it rides the rescan into a later macro's
+sequence and fires there.
+
+```c
+#define bad a ## ## b
+#define m(x) [x]
+m(bad)                  /* panicked; gcc processes it silently, clang errors, neither aborts */
+```
+
+The real rule is one sentence and one place: **`paste()`'s output is a substituted sequence,
+not a replacement list, so nothing leaving it is an operator.** Disarming at the exit covers
+both branches and any third one added later. The review's second finding was the quieter half —
+`#define w x , ## ## y` answered `[x , y]` with **zero diagnostics** where both compilers
+hard-error, because the GNU `, ## args` branch fired on an operand the extension does not cover;
+it now requires `!right.paste_op`, which says what the extension applies to instead of guarding
+where the symptom showed. Its third finding was a pure test gap: the `-D` marking existed and
+nothing exercised it, so deleting that one call passed the entire suite in silence.
+
+**The transferable part: "fix the rule, not the site" is not a fix you apply once.** Setting the
+flag and clearing it are two different rules, and getting the first right says nothing about the
+second.
+
+#### Defect 2 — the invocation hide set was a union where C99 6.10.3.4p2 wants an intersection
+
+Prosser's algorithm: `HS(invocation) = (HS(name) ∩ HS(close-paren)) ∪ {name}`. chiero extends
+the call's hide set into every substituted token and **never consults the closing paren at
+all**. When a macro's name comes out of an earlier expansion but its argument list comes from
+the source that followed, the invocation is only partly inside that expansion — so paint that
+should stop keeps going and expansion stalls early.
+
+Two corpus files exist in clang's own suite to pin this paragraph, and both caught it:
+`macro_rescan2.c` (chiero `2*f(9)`, both compilers `2*9*g`) and `macro_disable.c` (chiero leaves
+`M_0 ( 0 )` in the output, which no compiler produces).
+
+⚠️ **The risk this fix carries is the opposite one**: loosening a hide set is how a preprocessor
+expands a self-referential macro forever. The RED's companion test outnumbers the three changed
+cases — 6.10.3.4p2's `f(f(z))`, the `A B C` triangle, direct self-reference, mutual recursion,
+and the `a:` half of `macro_rescan2.c` where `g` is object-like, there is **no paren to
+intersect at**, and `f` must stay painted.
+
+Fixed with `HideSet::intersect` and one line in `expand_function`. ⚠️ **`intersect` drops words
+past the shorter set rather than resizing** — writing it by analogy to `extend` is the mistake
+available here, and it is wrong because an absent word is all zeros and the intersection with
+zero is zero. The two are opposites and the code says so.
+
+**Both defects were spec gaps, not slips** — the implementation matched what 012 said, and 012
+said nothing. §2.3 described `a ## b` without saying which `##` is the operator; §2.4 described
+the hide set as a bitset without ever giving the combination rule, which is exactly where the
+defect lived. Both sections now carry the rule *and* the worked case that discriminates it,
+plus contracts 20, 21 and 22. Contract 21 names contracts 2 and 3 as its non-termination guard
+rather than trusting them to still be there.
+
+#### What the gate also established, by splitting a bucket that was answering its own question
+
+21 cases sat in "neither compiler ran it", written off as unmeasured. They are the corpus's
+**error-recovery half** — `#if` with no expression, `#ifdef` with no name, a paste of `/` and
+`*` — and the question they ask is whether chiero notices. Split: **19 rejected by all three**
+(including all 16 `Expected`-prior ones — a real positive result that was being reported as
+nothing) and **2 accepted what both rejected**, a missing-diagnostic class that had been
+invisible. This is `sweep::Bucket::Miss`'s reasoning, one corpus later.
+
 ### 7.5 How to check the workspace is green — `./check.sh`
 
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
@@ -1301,6 +1421,7 @@ This has now paid out three times in a row, each time on the first run after a w
 | the *same* seed, reaching 014 contract 11's conversion census | free | the census was asking `&&`/`||` a question C does not ask; 10 false offenders |
 | 013 contract 19's parse corpus: 6 `vppinfra/` seeds → +1 `vnet/` seed | free, the corpus was already there | **zero defects** — parses clean, 0 diagnostics, memory ratio 1.74x against a 10x bound. Coverage +45% in tokens and a new subsystem. An honest zero, recorded because a table of only wins cannot say when to stop |
 | both corpora → `+ vlib/vlib.h` | **free** — its whole 67-file closure was already there | **zero defects.** Layout gate 8492 → **10248 assertions**, 2238 records; parse 357k tokens, 0 diagnostics. It is the seed that reaches `vlib/trace.h`, so that header is now under the gate rather than only in an error message |
+| **a new *kind* of edge: simplecpp's `testsuite/`, 141 C preprocessor cases** | one wave | **the richest yield yet — see §7.11.** 22 findings on the first run including **2 panics on the C standard's own worked example**. Every corpus before it was real VPP code |
 
 The loop, and it is deliberately mechanical:
 
@@ -1364,10 +1485,13 @@ typing the paths ever would.
 > for months (*a green gate is evidence about the corpus, not about the tree*). Then **item 1**
 > below for the next target.
 >
-> **State: `c94051f`, pushed. 2154 passed across 252 suites, both solver configurations**
-> (measured 2026-08-07; `./check.sh` rc=0 and the same 2154 under
-> `CHIERO_SMT_SOLVER=/nonexistent`). The contract-12 layout gate is 22 seeds / 2238 records /
-> **10248 assertions put to gcc**, up from 5482 this session.
+> **State: the preprocessor conformance wave (§7.11) is committed and the tree is green.**
+> Before it: 2154 passed across 252 suites, both solver configurations. After the paste fix and
+> its tests: **2158 across 253**, `./check.sh` rc=0. The hide-set commit landed after that run —
+> ⚠️ **re-run `./check.sh` and the `CHIERO_SMT_SOLVER=/nonexistent` leg before pushing**, since
+> `expand_function`'s hide set is upstream of every frontend consumer.
+> The contract-12 layout gate is 22 seeds / 2238 records / **10248 assertions put to gcc**.
+> pp-gate: 141 C cases, **97 agree**, 18 findings, 1 on an `Expected` prior.
 >
 > ⏱️ **Budget the clock.** A full both-legs run is over an hour and dominated the last session.
 > Do not start a widening and a full run in the same breath.
@@ -1380,9 +1504,28 @@ typing the paths ever would.
 
 ### 9.1 The queue
 
-1. ### 🎯 **NEXT: a preprocessor conformance corpus from simplecpp's `testsuite/`**
-   *(owner's suggestion 2026-08-07, and the owner corrected the approach twice — take the
-   corrected one, described here.)*
+1. ### ✅ **DONE 2026-08-07 — the preprocessor conformance corpus is built and has paid.**
+   See **§7.11** for the wave: the gate, three defects, two spec gaps, and the numbers.
+   `cargo run -p xtask -- pp-gate`, checkout at `/home/ubuntu/simplecpp` (`74a5a63`).
+
+   **What is left in it, in order of value:**
+   - **18 findings remain and 17 are on `Skipped`/`Todo` priors.** The one `Expected` is
+     `macro_fn_va_opt.c` — `__VA_OPT__`, out of v1 scope by measurement (012 §2.3), so it is a
+     scope decision for the owner and not a defect.
+   - **The `Todo` list is the difficulty gradient and 6 of 15 still diverge.** simplecpp fails
+     these too, so each is a real conformance question rather than a slip: comma-swallowing
+     corners (`macro_fn_comma_swallow`/`2`, `macro_paste_commaext`), `macro_backslash`,
+     `macro_expand`, `c99-6_10_3_4_p6`. **Chiero already passes one that simplecpp does not.**
+   - **`MATCHED NEITHER`, 7 cases.** These are where gcc and clang *themselves* disagree, so
+     there is no single right answer and the row records which side each took. Worth reading
+     once to see whether chiero is near either.
+   - ⚠️ **Not yet a gate.** `pp-gate` exits 0 unconditionally, deliberately: §8.3 step 3 says the
+     first run's count is the measurement, and a threshold picked before that number exists is a
+     threshold picked to pass. It can be made to gate on `Expected`-prior findings now that the
+     number is 1 — but note that would make CI depend on a checkout it does not have, so the
+     honest form is "gate when `$SIMPLECPP` exists, and say NOTHING WAS MEASURED when it does not".
+
+   *Original brief, kept because the reasoning is what made the design right:*
 
    <https://github.com/cppcheck-opensource/simplecpp>, pinned at **`74a5a63`** (2026-08-04).
    This is §8.3's pattern pointed at a **new kind of edge**: every corpus so far is real VPP
@@ -1513,6 +1656,7 @@ they lived only in scratch") and it happened again anyway.
 | `tests/corpus/layout/fixed_diff.py` | ✅ committed — chiero's padding floor vs gcc's minimum over every run-preserving permutation |
 | `tests/corpus/layout/vpp_sizes.py` | ✅ committed — contract-12's method pointed at arbitrary headers |
 | `xtask/src/replay_gate.rs` | ✅ committed — `cargo run -p xtask -- replay-gate`, corpus `tests/corpus/replay/corpus.tsv` |
+| `xtask/src/pp_gate.rs` | ✅ committed — `cargo run -p xtask -- pp-gate`, ~2 min. Reads `$SIMPLECPP` (default `/home/ubuntu/simplecpp`, pinned `74a5a63`); gcc and clang are the oracle. §7.11 |
 | `probe.sh` + `probe_cmds.txt` | ❌ **LOST.** The 7-second five-TU probe that replaced 2-hour sweeps. Rebuild: `cd $VPPBUILD && ninja -t commands <the .o>` for `vlib/main.c`, `vppinfra/format.c`, `vnet/interface.c`, `vlib/node_cli.c`, `vppinfra/mem_dlmalloc.c`, replay each through the release `xtask`, one line of output per TU |
 | `replay-probe.sh` | ❌ **LOST.** Two-checkout historical-replay probe that restored the tree on every exit path |
 | `rev5` (20 fixtures), `replayprobe` (13) | ❌ **LOST.** |
@@ -1671,6 +1815,19 @@ doubles the wake-ups.
   model, a promoted object, a `{:?}` bail-out, an invented bound). 021 §6 settled it in so many
   words and it was re-broken six times. **When you find the ninth, do not fix the site** — ask
   which read path does not end in a symbol.
+- **"Fix the rule, not the site" is not a fix you apply once.** Setting a flag and clearing it
+  are two different rules, and getting the first right says nothing about the second. The
+  `paste_op` commit argued — correctly — that the fix belonged on the token rather than at the
+  paste site, and shipped with the flag unbounded at its exit; a review then reproduced the exact
+  panic the commit was named for. ⚠️ **When a fix introduces a piece of state, ask separately who
+  clears it**, and prefer one place at a boundary ("nothing leaves this pass still armed") over a
+  guard in each branch that happens to leak today.
+- **A corpus of a new *kind* beats a wider slice of the same kind.** Twenty VPP headers became
+  twenty-two and found real defects; 141 preprocessor torture cases found three in one wave,
+  including two panics on the C standard's own worked example. Real code exercises constructs *as
+  people write them*, which is a systematically biased sample — the dark corners are never in it,
+  and no amount of widening within it reaches them. **When the yield table flattens, change the
+  kind rather than the size.**
 - **A catch-all match arm hides a missing feature.** The engine's terminator dispatch had an `_ =>`
   reporting "unsupported terminator" at run time, and `Switch` sat inside it for eight waves.
   Removing the arm makes the *compiler* reject an unhandled variant. `chiero-lower`'s statement and
