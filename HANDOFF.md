@@ -15995,14 +15995,24 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
 ~~Re-verify clang/z3~~ — done, both verified working (§3). `070`'s oracle section can
 assume gcc 13.3 + clang 18.1.3 + z3 4.8.12 are all present.
 
-## 9.9 ⏰ THE HEARTBEAT — **stopped 2026-08-06 at the owner's request; do not re-arm unasked**
+## 9.9 ⏰ THE HEARTBEAT — **running, re-armed 2026-08-07 at the owner's request**
 
-The owner asked for the cron to be stopped ("also: stop the cron please"), and both schedulers
-were cleared — the `CronCreate` job *and* `mcp__tttt__tttt_cron_delete cron-1`, which was the
-one actually firing at a 270-second interval. **The instructions below are how to bring it back
-when asked, not a standing instruction to do so.**
+`mcp__tttt__tttt_cron_create`, **`*/10 * * * *`**, `if_busy=wait`, currently `cron-3`. Its
+standing job is §8.3's widening pattern; it names §9 item 1 as the source of targets and says
+item 2 (`-march`) is parked.
 
-## 9.9b ⏰ How to re-arm it, when the owner asks
+**Ten minutes, not thirty**, and the earlier reasoning here was wrong rather than merely
+superseded. It argued that a short tick "interrupts mid-task more often than it produces work"
+— but `if_busy=wait` *defers* rather than interrupting, so a short interval costs nothing
+during a task and only decides how long the session sits idle after one ends. The owner asked
+for 10 minutes; the cost of a shorter tick is bounded by the deferral, and the benefit is less
+dead time between waves.
+
+Use the **`tttt`** scheduler, not `CronCreate`: §9.9b explains why (a `/clear` destroys
+`CronCreate` jobs, which are session-only). ⚠️ Check `mcp__tttt__tttt_cron_list` before
+creating — a second heartbeat just doubles the wake-ups.
+
+## 9.9b ⏰ How to re-arm it if it is lost
 
 `mcp__tttt__tttt_clear_and_read_handoff_md` does a `/clear`, which **destroys the heartbeat**:
 `CronCreate` jobs are session-only, held in memory, and wiped along with the context. This
@@ -16017,8 +16027,10 @@ already happened once this session — the owner had to point out the heartbeat 
   permission, just continue the queue in red-green TDD and commit. If you are mid-task, ignore
   this and keep going. Before any context refresh, update §7/§9 of HANDOFF.md and commit it."*
 
-30 minutes was chosen deliberately: a cache-cold corpus run is ~30 min and a full workspace run
-2–3 min, so a shorter tick interrupts mid-task more often than it produces work.
+~~30 minutes was chosen deliberately~~ — superseded, see §9.9: with `if_busy=wait` the tick
+cannot interrupt a task at all, so the interval only sets idle time between waves. It is 10
+minutes now, and the `CronCreate` recipe above is the fallback for when the `tttt` scheduler is
+unavailable — prefer `mcp__tttt__tttt_cron_create`, which survives a `/clear`.
 
 ⚠️ **Check `CronList` before creating** — if a heartbeat is already there, a second one just
 doubles the wake-ups.
