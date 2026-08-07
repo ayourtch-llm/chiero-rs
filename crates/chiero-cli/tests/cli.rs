@@ -1077,3 +1077,114 @@ fn a_frontend_error_says_where_it_is() {
         r.err
     );
 }
+
+/// **023 §8's deterministic solver budget, reachable from a command line.**
+///
+/// The engine gained `Budget::max_solver_rlimit` and nothing could set it, which is the state
+/// §8 called "specified and not built" wearing a different hat: the field existed, the wire
+/// format existed, and no user of chiero could arm either.
+///
+/// The contrast with `--time-budget` is the whole reason it is a second flag rather than a
+/// smaller value of the first. A clock **is** the thing 023 §8.1 forbids from gating output —
+/// a run cut by one is `nondeterministic_abort`, and 001 §5's byte-identical-output requirement
+/// does not apply to it. A run cut by work units is cut in the same place on every machine, so
+/// it stays an ordinary answer, and this asserts exactly that difference.
+#[test]
+fn the_solver_budget_is_reachable_and_stays_deterministic() {
+    // Nonlinear on two symbols, so the queries actually reach a backend rather than being
+    // settled by tier 1's interval domain.
+    let p = write(
+        "hard.c",
+        "int f (unsigned a, unsigned b)\n\
+         {\n\
+         \x20 if (a * b == 7u && a > 1u && b > 1u) return 1;\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    let args = |extra: &[&str]| {
+        let mut v = vec![
+            "find-bugs".to_string(),
+            p.to_str().expect("utf-8 path").to_string(),
+            "--entry".to_string(),
+            "f".to_string(),
+            "--json".to_string(),
+        ];
+        v.extend(extra.iter().map(|s| (*s).to_string()));
+        v
+    };
+    let owned = args(&["--solver-rlimit", "5000"]);
+    let borrowed: Vec<&str> = owned.iter().map(String::as_str).collect();
+    let r = run(&borrowed);
+    assert_eq!(
+        r.code, 0,
+        "a spent budget is an answer, not a failure:\n{}",
+        r.err
+    );
+    let v = json(&r);
+    for key in ["result", "fidelity", "proven", "assumptions", "blind_spots"] {
+        assert!(!v[key].is_null(), "the envelope is missing `{key}`: {v}");
+    }
+    // **The half `--time-budget` cannot satisfy.** Work units do not move with load, so a run
+    // cut by them is reproducible and must not be branded a measurement.
+    assert_eq!(
+        v["nondeterministic_abort"], false,
+        "a deterministic budget is not a clock: {v}"
+    );
+
+    // And twice is the same answer, which is what "deterministic" is worth asserting for.
+    let again = run(&borrowed);
+    assert_eq!(
+        r.out, again.out,
+        "the same budget cuts the same query in the same place"
+    );
+}
+
+/// **A budget nobody set stays unset**, and the flag is rejected rather than ignored when it is
+/// nonsense.
+///
+/// The first half matters more than it looks: arming `:rlimit` *displaces* the backend's
+/// `:timeout`, so a default leaking in would quietly disarm half the watchdog for every run.
+#[test]
+fn the_solver_budget_is_off_unless_asked_for_and_refuses_nonsense() {
+    let p = write("triv.c", "int f (int x) { return x / 0; }\n");
+    let bare = run(&[
+        "find-bugs",
+        p.to_str().expect("utf-8 path"),
+        "--entry",
+        "f",
+        "--json",
+    ]);
+    let zero = run(&[
+        "find-bugs",
+        p.to_str().expect("utf-8 path"),
+        "--entry",
+        "f",
+        "--solver-rlimit",
+        "0", // 0 is no limit, the same reading `--time-budget` gives it
+        "--json",
+    ]);
+    assert_eq!(bare.code, 0, "{}", bare.err);
+    assert_eq!(zero.code, 0, "{}", zero.err);
+    assert_eq!(
+        bare.out, zero.out,
+        "an explicit `no limit` and saying nothing are the same run"
+    );
+
+    let bad = run(&[
+        "find-bugs",
+        p.to_str().expect("utf-8 path"),
+        "--entry",
+        "f",
+        "--solver-rlimit",
+        "lots",
+    ]);
+    assert_ne!(
+        bad.code, 0,
+        "a budget that is not a number is a usage error"
+    );
+    assert!(
+        bad.err.contains("--solver-rlimit"),
+        "and the message names the flag: {}",
+        bad.err
+    );
+}
