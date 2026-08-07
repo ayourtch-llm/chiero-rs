@@ -106,12 +106,23 @@ relationship backwards inverts the backtrace, which is contract 7.
 - GNU `, ## __VA_ARGS__` comma-swallowing is supported (§4). The comma is deleted only
   when the variadic argument is **empty**; with a non-empty argument it stays a separate
   token, and fusing it into the argument produces a token that is not a pp-token at all.
-- **`__VA_OPT__` is out of scope for v1**, explicitly rather than by omission. VPP uses
-  `__VA_ARGS__` 230 times across `src/**.h` and `__VA_OPT__` **zero** times (measured),
-  and the C23 feature adds a second, subtler emptiness rule to the one above. A
-  preprocessor that silently passes `__VA_OPT__` through as four literal tokens is worse
-  than one that refuses it, so encountering it is a diagnostic, not a no-op. Revisit when
-  a corpus record needs it.
+- **`__VA_OPT__` is implemented** (C23 6.10.3.1), as of 2026-08-07. It was out of v1 scope by
+  measurement — VPP uses `__VA_ARGS__` 230 times across `src/**.h` and `__VA_OPT__` **zero** —
+  and was *diagnosed* rather than passed through as four literal tokens, on the rule that
+  refusing beats pretending. The owner asked for the preprocessor conformance gap closed, so the
+  scope changed; the "never pass through as itself" property did not.
+
+  ⚠️ **Its condition is the variadic argument's *tokens*, and this is the subtler emptiness rule
+  the old note warned about.** `__VA_OPT__(c)` yields `c` when the variadic argument is present
+  **and non-empty**; `P(1,)` supplies an empty one and yields nothing. That is the **opposite**
+  test from GNU comma-swallowing directly above, which turns on whether an argument was supplied
+  at all — `debug(Y, )` keeps its comma precisely because one *was*. Two neighbouring rules with
+  opposite conditions is how a shared flag ends up wrong, and both are pinned by tests.
+
+  The group is resolved into an *effective replacement list* before substitution, so its contents
+  go through the ordinary parameter walk with no second code path. Parenthesis depth is counted,
+  so `__VA_OPT__(f(a))` keeps its inner pair; an unterminated group is diagnosed and the rest of
+  the body survives (011 §4).
 
 Pasted and stringized tokens have no contiguous source text, so their `lo..hi` is
 zero-width at the operator's position and their real text lives in the side table

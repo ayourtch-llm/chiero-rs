@@ -300,17 +300,23 @@ fn function_expansion_parent_and_operator_locations_are_real() {
 }
 
 #[test]
-fn va_opt_is_out_of_v1_scope_and_diagnosed() {
+fn va_opt_expands_rather_than_being_diagnosed() {
+    // ⚠️ **This test asserted the opposite until 2026-08-07.** 012 §2.3 declared `__VA_OPT__`
+    // out of v1 scope *by measurement* — VPP uses it zero times — and diagnosed it rather than
+    // letting four literal tokens through, which was the right default. The owner asked for the
+    // preprocessor gap closed, so the scope changed and this assertion changed with it. The
+    // property that did **not** change is the one that mattered: `__VA_OPT__` never reaches the
+    // token stream as itself.
     let tu = preprocess_str(
         "fixture.c",
-        "#define F(...) __VA_OPT__(x)\nF(1)\n",
+        "#define F(...) __VA_OPT__(x)\nF(1)\nF()\n",
         Config::default(),
     );
-    assert_eq!(tu.diagnostics.len(), 1);
-    assert!(tu.diagnostics[0].message.contains("__VA_OPT__"));
+    assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
+    assert_eq!(tu.token_texts().collect::<Vec<_>>(), vec!["x"]);
     assert!(
         !tu.token_texts().any(|text| text == "__VA_OPT__"),
-        "out-of-scope syntax must not silently pass through"
+        "the operator must never pass through as a literal token"
     );
 }
 

@@ -1615,7 +1615,6 @@ impl Engine {
             std_variadic,
             &body,
         );
-        strip_va_opt(&mut body, &mut self.diagnostics);
         let body_extent = extent(&body).unwrap_or(Span::new(
             name_tok.token.span.hi,
             name_tok.token.span.hi,
@@ -2132,6 +2131,24 @@ impl Engine {
                     .unwrap_or_else(|| "__VA_ARGS__".into()),
             );
         }
+        // **`__VA_OPT__(c)` is resolved here, against this call's arguments** (C23 6.10.3.1).
+        // It yields `c` when the variadic argument is present and **non-empty**, and nothing
+        // otherwise — `P(1,)` supplies an empty one and still yields nothing, so the test is the
+        // argument's *tokens*, not its presence, which is the opposite of the GNU comma rule's
+        // test two functions above. Resolving it into an effective body before substitution
+        // means the group's contents go through the ordinary parameter walk with no second path.
+        let variadic_has_tokens = raw_by_name
+            .get(
+                def.variadic_name
+                    .as_deref()
+                    .unwrap_or("__VA_ARGS__"),
+            )
+            .is_some_and(|tokens| !tokens.is_empty());
+        let body = expand_va_opt(&def.body, variadic_has_tokens, &mut self.diagnostics);
+        let def = &StoredMacro {
+            body,
+            ..def.clone()
+        };
         let mut expanded_by_name = BTreeMap::new();
         for name in expansion_order {
             if needs_preexpansion(&def.body, &name) {
@@ -2507,6 +2524,68 @@ fn needs_preexpansion(body: &[Tok], parameter: &str) -> bool {
     })
 }
 
+/// Replace every `__VA_OPT__ ( … )` in a replacement list with its contents or with nothing.
+///
+/// C23 6.10.3.1: the contents appear when the variadic argument has tokens. Nesting is handled
+/// by counting parentheses, so `__VA_OPT__(f(a))` keeps its inner pair.
+///
+/// An unterminated group is left alone and diagnosed rather than swallowing the rest of the
+/// body — the same choice 011 §4 makes for every other malformed construct.
+fn expand_va_opt(body: &[Tok], keep: bool, diagnostics: &mut Vec<Diagnostic>) -> Vec<Tok> {
+    if !body.iter().any(|token| token.text == "__VA_OPT__") {
+        return body.to_vec();
+    }
+    let mut out = Vec::with_capacity(body.len());
+    let mut i = 0;
+    while i < body.len() {
+        if body[i].text != "__VA_OPT__" {
+            out.push(body[i].clone());
+            i += 1;
+            continue;
+        }
+        let Some(open) = body.get(i + 1).filter(|t| t.text == "(") else {
+            diagnostics.push(Diagnostic {
+                span: body[i].token.span,
+                message: "`__VA_OPT__` must be followed by `(`".into(),
+            });
+            out.push(body[i].clone());
+            i += 1;
+            continue;
+        };
+        let _ = open;
+        let mut depth = 0_usize;
+        let mut end = None;
+        for (offset, token) in body[i + 1..].iter().enumerate() {
+            match token.text.as_str() {
+                "(" => depth += 1,
+                ")" => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(i + 1 + offset);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(end) = end else {
+            diagnostics.push(Diagnostic {
+                span: body[i].token.span,
+                message: "unterminated `__VA_OPT__(`".into(),
+            });
+            out.push(body[i].clone());
+            i += 1;
+            continue;
+        };
+        if keep {
+            out.extend(body[i + 2..end].iter().cloned());
+        }
+        i = end + 1;
+    }
+    out
+}
+
+#[allow(dead_code)]
 fn strip_va_opt(body: &mut Vec<Tok>, diagnostics: &mut Vec<Diagnostic>) {
     let mut index = 0;
     while index < body.len() {
