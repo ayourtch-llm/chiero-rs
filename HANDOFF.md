@@ -1603,8 +1603,9 @@ typing the paths ever would.
 > put to gcc**; pp-gate is 141 C cases, **106 agree**, +11 matching one compiler where the two
 > disagree, +21 correctly rejected, 3 rendered-differently, and **0 findings**.
 >
-> ✅ **Both legs measured.** `CHIERO_SMT_SOLVER=/nonexistent cargo test --workspace
-> --no-fail-fast` also gives **2215 passed, 0 failed**. Worth knowing for the clock budget:
+> ✅ **Both legs measured, and re-measured at the pushed HEAD: 2228 passed, 0 failed each.**
+> The full three-leg `./check.sh` takes **6 m 51 s** wall clock — the first time this project has
+> a number for its own gate, which is what any argument about the corpus runtime has to beat. Worth knowing for the clock budget:
 > with a warm build it took **under ten minutes**, not the hour §9 warns about — that hour is
 > a cold build plus the solver leg's z3 round trips, and the no-solver leg skips those.
 >
