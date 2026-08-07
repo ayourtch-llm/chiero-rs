@@ -1482,8 +1482,13 @@ typing the paths ever would.
 > ### ⏭️ START HERE — **§8.3's widening pattern is the standing job, and the heartbeat runs it.**
 >
 > Read **§8.3** first: it is the loop, its yield table, and the trap that let a defect survive
-> for months (*a green gate is evidence about the corpus, not about the tree*). Then **item 1**
-> below for the next target.
+> for months (*a green gate is evidence about the corpus, not about the tree*). Then **item 2**
+> below for the next target — item 1 closed 2026-08-07 and §7.11 is what it found.
+>
+> 🆕 **The newest entry in the yield table is the most useful one: change the *kind* of corpus,
+> not its size.** 141 preprocessor torture cases found three defects in a session, two of them
+> panics on the C standard's own worked example, after four consecutive widenings of VPP-shaped
+> corpora had begun returning honest zeros. §11.3 carries the general form.
 >
 > **State: the preprocessor conformance wave (§7.11) is committed and the tree is green.**
 > Before it: 2154 passed across 252 suites, both solver configurations. After the paste fix and
@@ -1582,7 +1587,44 @@ typing the paths ever would.
    Clone it to a stable path outside the repo before wiring a gate to it — a scratchpad is
    per-session and this must survive.
 
-2. **⏸️ PARKED at the owner's request 2026-08-07 — `-march`.** Do not start without checking in;
+2. ### 🎯 **NEXT: `__has_attribute` and `__has_builtin` claim the feature and answer 0 to everything**
+   *(found 2026-08-07 by reading what the pp-gate left behind; verified directly, not inferred.)*
+
+   `Engine::new` registers both with `add_predefined_query`, which is a function-like macro with
+   an **empty body**. So:
+
+   | | chiero | gcc 13.3 |
+   |---|---|---|
+   | `#ifdef __has_attribute` | defined | defined |
+   | `#if __has_attribute(packed)` | **0**, no diagnostic | 1 |
+   | `#if __has_builtin(__builtin_expect)` | **0**, no diagnostic | 1 |
+   | `#if __has_attribute(no_such_attr)` | 0 | 0 |
+
+   **This is the worst of the three available answers.** Not defining them at all would put
+   glibc on its documented fallback path — `sys/cdefs.h` has `#if defined __has_attribute` for
+   exactly that reason, and `__glibc_has_attribute(attr)` then becomes `0`, a configuration the
+   header explicitly supports. Answering honestly would match gcc. Advertising the capability
+   and then denying every attribute and every builtin is neither, and it is **silent**: every TU
+   that reaches a system header takes a different configuration branch than gcc does, and
+   nothing in the suite can see it because the VPP gates check that a TU preprocesses, not
+   which branch it took.
+
+   ⚠️ **It is the recurring confusion in a new place** (§11.3, eighth-plus instance): chiero not
+   knowing something is being reported as the answer. Here it is not memory but a feature query,
+   and the `#ifdef` succeeding is what makes it worse than silence.
+
+   **The fix needs a decision, so take it deliberately.** `__has_attribute(x)` means "will this
+   compiler accept the attribute", and chiero has that list already — §4.12b's measured table
+   and 013's accepted GNU extensions. Answering from it is honest *and* moves header
+   configuration towards gcc's, which is what the differential oracle wants. The alternative,
+   dropping both from the predefine set, is one line and strictly better than today. Do not
+   invent a third answer, and whichever is chosen, **012 §4 must say so** — the current
+   behaviour is written nowhere.
+
+   Reproduce in ten seconds: `printf '#if __has_attribute(packed)\nYES\n#else\nNO\n#endif\n' |
+   gcc -E -P -x c -` beside the same source through `preprocess_str` with gcc's predefines.
+
+3. **⏸️ PARKED at the owner's request 2026-08-07 — `-march`.** Do not start without checking in;
    the owner asked to discuss the design first. What was agreed: the *flag propagation* half is a
    bug regardless (chiero probes the compiler with no flags while the sweep replays real ninja
    lines, so it preprocesses a different configuration than the one that ships), and the
@@ -1594,7 +1636,7 @@ typing the paths ever would.
    `-march=x86-64-v2`, so `__SSE4_2__` is undefined and `vppinfra/crc32.h` never defines
    `clib_crc32c_with_init`. The other four are two parser/sema gaps in generated API headers.
 
-3. **Unwidened surfaces, in rough order of expected yield** (§8.3 is the loop):
+4. **Unwidened surfaces, in rough order of expected yield** (§8.3 is the loop):
    - **The sema corpus gate's contract 11** (re-lex round trip) and **contract 19**
      (per-`ConfigId` sites) are listed in §7 as owed and have **no corpus at all**.
    - **014 contract 11's census does not ask its own question of `&&`/`||`.** It checked that
@@ -1606,7 +1648,7 @@ typing the paths ever would.
    - `vnet/ip*` and `plugins/*/` beyond one function per file are untouched by the find-bugs
      sweep; `pick_entries.py --per-file N <files>` takes a list.
 
-4. **⚠️ Settle the corpus runtime before widening much further.** Every corpus-consuming test
+5. **⚠️ Settle the corpus runtime before widening much further.** Every corpus-consuming test
    preprocesses, parses and analyses all 22 seeds. Sharing one `PreprocessorSession` across seeds
    bought ~15% (`conversions` 62→53 s, `vpp_layout_gate` 62→58 s, `vpp_corpus` 16→13 s) — **less
    than hoped, and it says where the cost is**: not lexing, but parse and analyse, which no cache
@@ -1616,26 +1658,26 @@ typing the paths ever would.
    and reloaded — a real design question, and **020's CIR text format may already be most of the
    answer**.
 
-5. **A step that outlives the clock.** Three find-bugs entries still need the outer `timeout`; one
+6. **A step that outlives the clock.** Three find-bugs entries still need the outer `timeout`; one
    ran 10 s against a 5 s budget inside a symbolic-offset enumeration. The clock is only checked
    *between* steps, and 022 §8's `max_solver_rlimit` — deterministic work units — is specified and
    unimplemented. That is the principled bound for the solver half.
 
-6. **`InstKind::Call` carries no result type**, so an indirect call's result width is whatever
+7. **`InstKind::Call` carries no result type**, so an indirect call's result width is whatever
    candidate ran. The arity and parameter-type filters cut the wildest cases and cannot close it;
    the engine survives the rest by degrading. The real fix is a CIR change — **135 sites**
    construct `InstKind::Call`, and the text format needs syntax for it.
 
-7. **`MemFault::BadRange`** — same class as `is_chiero_limit`, held back because three `step.rs`
+8. **`MemFault::BadRange`** — same class as `is_chiero_limit`, held back because three `step.rs`
    tests use it as their only objectless non-fatal probe. Give them one (a new non-fatal
    objectless *defect* fault, or a different keying fixture) and move it.
 
-8. **032 contract 18's corpus still has no `observed` entry** and the gate correctly exits 1
+9. **032 contract 18's corpus still has no `observed` entry** and the gate correctly exits 1
    saying "NOT MEASURED". Method, learned the hard way (§7.1): **revert a historical fix's `src/`
    diff onto HEAD and run the suite** rather than hunting for a commit whose parent happens to
    fail. Two builds and ~40 minutes bought one rejected candidate the other way.
 
-9. **`:0` bit-fields in `layout`, deliberately left open** (§7.9). A record declaring a
+10. **`:0` bit-fields in `layout`, deliberately left open** (§7.9). A record declaring a
    zero-width bit-field still gets no padding number, because a `:0`-terminated run's cost depends
    on where the run is placed and this arithmetic sums constants. Closing it needs the run's
    allocation unit in the field description — `Field` would carry `unit_bits`, and the ideal
