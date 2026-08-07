@@ -35,20 +35,24 @@ use std::process::Command;
 
 /// gcc's answer, asked directly. The oracle for every case in this file.
 ///
-/// ⚠️ **The scratch file is named per query.** Keying it on the pid alone is not unique — every
-/// test in one binary shares it, cargo runs them in parallel, and the first version of this
-/// raced: `every_table_entry_still_matches_gcc` failed in the suite and passed on its own,
-/// reporting a table mismatch that did not exist. An oracle that answers a different question
-/// than the one asked is worse than no oracle.
+/// ⚠️ **The scratch file is unique per *call*, and it took two goes to get there.** Keying it on
+/// the pid alone is not unique — every test in one binary shares it — and keying it on
+/// `(query, name)` is not either, because two *different* tests ask about `packed`
+/// concurrently, and one deletes the file while the other's gcc is still reading it. Both
+/// versions produced a failure that reproduced only under load: first a table mismatch that did
+/// not exist, then "gcc gave neither 1 nor 0", the second surviving a clean `-p chiero-pp` run
+/// and only falling over in the full workspace.
+///
+/// A counter is the fix because it is the only key that cannot collide by construction.
+/// **Parallel tests must not share mutable filesystem state at all** — every narrower key is a
+/// guess about which callers exist, and this file was wrong about that twice.
 fn gcc_says(query: &str, name: &str) -> bool {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
     let source = format!("#if {query}({name})\n1\n#else\n0\n#endif\n");
     let dir = std::env::temp_dir().join(format!("chiero-fq-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let safe: String = format!("{query}-{name}")
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '_' })
-        .collect();
-    let path = dir.join(format!("{safe}.c"));
+    let path = dir.join(format!("q{}.c", NEXT.fetch_add(1, Ordering::Relaxed)));
     std::fs::write(&path, source).unwrap();
     let output = Command::new("gcc")
         .args(["-E", "-P"])
