@@ -1703,10 +1703,24 @@ typing the paths ever would.
      extension, and chiero records pragmas rather than acting on them.
    - ~~**`__has_c_attribute`**~~ — **done (§7.15).** The two files now reach token 73 instead of
      token 4. What is left in them is **scoped attribute names** (`__has_attribute(gnu::noreturn)`)
-     and `__has_cpp_attribute`: gcc accepts a `scope::name` operand in all three queries, and
-     `answer_feature_queries` matches a single identifier between the parens. `__has_cpp_attribute`
-     is C++ and gcc does not define it in C, so the right answer there is to leave it undefined and
-     let the file's own `#ifdef` take the else-branch — **check that before implementing anything**.
+     and `__has_cpp_attribute`. ⚠️ **I wrote here that gcc does not define `__has_cpp_attribute`
+     in C. That is wrong — gcc 13 defines it in C and returns version numbers from it**
+     (`__has_cpp_attribute(noreturn)` is `202202`). Measured, after writing the opposite from
+     memory; the note survived one commit. Verified rules:
+
+     | operand | `__has_attribute` | `__has_c_attribute` | `__has_cpp_attribute` |
+     |---|---|---|---|
+     | `noreturn` (standard) | 202202 | 202202 | 202202 |
+     | `deprecated` | 201904 | 201904 | 201904 |
+     | `packed` (GNU only) | 1 | 0 | 0 |
+     | `gnu::noreturn` (**scoped**) | **1** | **1** | **1** |
+     | `gnu::nonesuch` | 0 | 0 | 0 |
+
+     **A scoped operand answers 1, never a version** — a vendor-scoped attribute has no standard
+     version — which is the rule the table must encode, not a special case to hard-code.
+     ⚠️ And C has no `::` punctuator, so `gnu::noreturn` lexes as **four** tokens (`gnu`, `:`,
+     `:`, `noreturn`); `answer_feature_queries` matches a single identifier between the parens
+     and will need to accept that shape.
    - **More comma-swallow corners** — 2 files (`macro_fn_comma_swallow2`, `macro_paste_commaext`),
      same family as §7.13 and different shapes.
    - **`__VA_OPT__`** — 1 file, out of v1 scope by measurement (012 §2.3), diagnosed not guessed.
