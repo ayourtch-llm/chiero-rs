@@ -123,11 +123,18 @@ fn a_ucn_for_a_basic_character_or_surrogate_is_diagnosed() {
         let (_, diagnostics) = lex(src);
         assert!(diagnostics > 0, "chiero accepted what gcc rejects: {src}");
     }
-    // `$`, `@` and `` ` `` are the three exceptions the paragraph carves out, and gcc takes them.
-    for src in ["int a\\u0024 = 1;\n", "int a\\u0040 = 1;\n"] {
-        assert!(gcc_accepts(src), "fixture must be valid C11: {src}");
+    // ⚠️ **Two rules, not one — and this fixture asserted otherwise until gcc rejected it.**
+    // 6.4.3p2 carves `$`, `@` and `` ` `` out of the basic-set prohibition, so `\\u0040` *is* a
+    // well-formed universal-character-name. `@` is still not an identifier character, and gcc
+    // says so with a different message. Only `$` gets in, by the same GNU extension that admits
+    // a literal `$`.
+    let dollar = "int a\\u0024 = 1;\n";
+    assert!(gcc_accepts(dollar), "`$` is an identifier character");
+    assert_eq!(lex(dollar).1, 0, "a UCN naming `$` is legal in an identifier");
+    for src in ["int a\\u0040 = 1;\n", "int a\\u0060 = 1;\n"] {
+        assert!(!gcc_accepts(src), "fixture must be invalid C11: {src}");
         let (_, diagnostics) = lex(src);
-        assert_eq!(diagnostics, 0, "the 6.4.3p2 carve-outs are legal: {src}");
+        assert!(diagnostics > 0, "a valid UCN naming a non-identifier character: {src}");
     }
 }
 

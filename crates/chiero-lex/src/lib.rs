@@ -432,6 +432,9 @@ impl Lexer<'_> {
                 }
                 b'/' if self.peek(1) == Some(b'/') => self.line_comment(),
                 b'/' if self.peek(1) == Some(b'*') => self.block_comment(),
+                b'\\' if universal_character_name(&self.cooked.bytes, self.pos).is_some() => {
+                    self.ident_or_prefixed_literal();
+                }
                 b if is_ident_start(b) => self.ident_or_prefixed_literal(),
                 b'0'..=b'9' => self.number(),
                 b'.' if self.peek(1).is_some_and(|b| b.is_ascii_digit()) => self.number(),
@@ -478,13 +481,51 @@ impl Lexer<'_> {
             self.literal(prefix, quote, prefix_len);
             return;
         }
-        self.pos += 1;
-        while self.peek(0).is_some_and(is_ident_continue) {
-            self.pos += 1;
+        // **A UCN is scanned as a unit, in the first position and in every later one.**
+        // C11 6.4.2.1 puts it in `identifier-nondigit`, so `\u00C0` here is a character of the
+        // identifier and not an escape — see 011 §2.0. The constraints are checked as each one
+        // is consumed, because the initial position has a rule the others do not (Annex D.2).
+        let mut offences: Vec<(usize, u32, UcnOffence)> = Vec::new();
+        let mut first = true;
+        loop {
+            if let Some((code, len)) = universal_character_name(&self.cooked.bytes, self.pos) {
+                if !ucn_is_permitted(code) {
+                    offences.push((self.pos, code, UcnOffence::NotAUniversalCharacter));
+                } else if !ucn_is_identifier_character(code) {
+                    offences.push((self.pos, code, UcnOffence::NotInAnIdentifier));
+                } else if first && ucn_forbidden_initially(code) {
+                    offences.push((self.pos, code, UcnOffence::NotAtTheStart));
+                }
+                self.pos += len;
+            } else if first {
+                self.pos += 1;
+            } else if self.peek(0).is_some_and(is_ident_continue) {
+                self.pos += 1;
+            } else {
+                break;
+            }
+            first = false;
         }
         let text = String::from_utf8_lossy(&self.cooked.bytes[begin..self.pos]);
         let symbol = self.interner.borrow_mut().intern(&text);
         self.push(begin, self.pos, PpTokenKind::Ident(symbol), None);
+        let span = self.tokens.last().unwrap().span;
+        for (_, code, offence) in offences {
+            self.diagnostics.push(LexDiagnostic {
+                span,
+                message: match offence {
+                    UcnOffence::NotAUniversalCharacter => {
+                        format!("\\u{code:04X} is not a valid universal character")
+                    }
+                    UcnOffence::NotInAnIdentifier => {
+                        format!("universal character \\u{code:04X} is not valid in an identifier")
+                    }
+                    UcnOffence::NotAtTheStart => format!(
+                        "universal character \\u{code:04X} is not valid at the start of an identifier"
+                    ),
+                },
+            });
+        }
     }
 
     fn number(&mut self) {
@@ -703,4 +744,78 @@ fn is_ident_start(byte: u8) -> bool {
 
 fn is_ident_continue(byte: u8) -> bool {
     is_ident_start(byte) || byte.is_ascii_digit()
+}
+
+/// The code point a universal-character-name at `bytes[at..]` denotes, and its byte length.
+///
+/// `None` when this is **not a UCN** — no `\`, no `u`/`U`, or too few hex digits. C11 6.4.3
+/// gives the production exactly four or eight digits, so `a\u12` is not a malformed UCN but
+/// simply not one, and phase 3 has nothing to say about it (011 §2.0).
+/// Why a universal character name is not usable where it appears. **Three rules, not one** —
+/// gcc distinguishes them and so does this, because "not a valid universal character" and "not
+/// valid in an identifier" are true of different code points.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum UcnOffence {
+    /// C11 6.4.3p2: names a basic-set character or a surrogate.
+    NotAUniversalCharacter,
+    /// Well-formed, but the character it names is not an identifier character.
+    NotInAnIdentifier,
+    /// C11 Annex D.2: a combining mark, in the initial position only.
+    NotAtTheStart,
+}
+
+fn universal_character_name(bytes: &[u8], at: usize) -> Option<(u32, usize)> {
+    if bytes.get(at) != Some(&b'\\') {
+        return None;
+    }
+    let digits = match bytes.get(at + 1) {
+        Some(b'u') => 4,
+        Some(b'U') => 8,
+        _ => return None,
+    };
+    let end = at + 2 + digits;
+    let text = bytes.get(at + 2..end)?;
+    if !text.iter().all(u8::is_ascii_hexdigit) {
+        return None;
+    }
+    let value = std::str::from_utf8(text).ok()?;
+    Some((u32::from_str_radix(value, 16).ok()?, 2 + digits))
+}
+
+/// C11 6.4.3p2: a UCN may not name a member of the basic character set, nor a surrogate.
+///
+/// The three carve-outs are `$`, `@` and `` ` `` — gcc takes those and rejects the rest. Without
+/// this constraint `\u0041bc` and `Abc` are two spellings of one identifier, which is the whole
+/// reason the paragraph exists.
+fn ucn_is_permitted(code: u32) -> bool {
+    if matches!(code, 0x24 | 0x40 | 0x60) {
+        return true;
+    }
+    code >= 0xA0 && !(0xD800..=0xDFFF).contains(&code)
+}
+
+/// Whether a *valid* UCN may appear in an identifier at all.
+///
+/// 6.4.3p2 carves `$`, `@` and `` ` `` out of the basic-set prohibition, so `\u0040` is a
+/// well-formed universal-character-name — but `@` is still not an identifier character, and gcc
+/// says so with a **different** message: *not valid in an identifier*, against *not a valid
+/// universal character*. `$` is the one carve-out that gets in, by the same GNU extension that
+/// puts a literal `$` in `is_ident_start`.
+///
+/// ⚠️ The two rules were merged in the first version of this and the test fixture asserted
+/// `\u0040` was legal. gcc rejected the *fixture*, which is the good direction for that mistake
+/// to fail in.
+fn ucn_is_identifier_character(code: u32) -> bool {
+    code == 0x24 || code >= 0xA0
+}
+
+/// C11 Annex D.2: code points that may not **begin** an identifier — the combining marks.
+///
+/// A continuing position is fine, so a fix that rejects the range everywhere is wrong in the
+/// direction that matters: `a\u0300` is legal C and appears in real text.
+fn ucn_forbidden_initially(code: u32) -> bool {
+    (0x0300..=0x036F).contains(&code)
+        || (0x1DC0..=0x1DFF).contains(&code)
+        || (0x20D0..=0x20FF).contains(&code)
+        || (0xFE20..=0xFE2F).contains(&code)
 }
