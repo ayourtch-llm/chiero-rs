@@ -1245,8 +1245,13 @@ started mis-laying every struct containing a `clib_longjmp_t`.
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
 three xtask gates were red: a crate whose test *binary* fails to build emits no `test result`
 line at all, so counting successes cannot detect a missing success. `./check.sh` keys on
-cargo's exit status and prints the failing suites first. Current: **2152 passed, 252 suites**,
-and the same 2152 with `CHIERO_SMT_SOLVER=/nonexistent` (§7.8).
+cargo's exit status and prints the failing suites first. Current: **2154 passed, 252 suites**,
+and the same 2154 with `CHIERO_SMT_SOLVER=/nonexistent` (§7.8).
+
+⏱️ **It now takes over an hour per leg**, and that is the session's dominant cost — see §9's
+note on the corpus. `conversions` and `semantics` are ~55 s each, the two VPP gates ~60 s, and
+every corpus-consuming *binary* rebuilds the 22-seed analysis from scratch because Rust
+integration tests are separate processes.
 
 **Every spec must end with a `## Testable contracts` section** — numbered, checkable
 assertions. Those become the RED tests. This is what makes the specs actually drive TDD
@@ -1339,7 +1344,27 @@ typing the paths ever would.
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE — **bit-fields are measurable in `layout`, and the review of that fix found a proven wrong answer inside it.** §7.9.
+> ### ⏭️ START HERE — **§8.3's widening pattern is the standing job, and the heartbeat runs it.**
+>
+> Read **§8.3** first: it is the loop, its yield table, and the trap that let a defect survive
+> for months (*a green gate is evidence about the corpus, not about the tree*). Then **§9 item 1**
+> for the next target — a preprocessor conformance corpus from simplecpp, with the licence
+> findings and the oracle decision already settled, and the extraction measured.
+>
+> Everything below §9 item 1 is the queue behind it. **§9 item 2 (`-march`) is PARKED at the
+> owner's request** — do not start it without checking in.
+>
+> State: `4fcd58c`, pushed. **2154 passed across 252 suites, both solver configurations.** The
+> contract-12 layout gate is 22 seeds / 2238 records / **10248 assertions put to gcc**, up from
+> 5482 this session. Two widenings landed; between them they found two real 014 defects, two
+> defects in the gates themselves, and one diagnostic worth fixing — then two widenings in a row
+> found nothing, which is the signal §8.3's table exists to give.
+>
+> ⏱️ **Budget the clock.** A full both-legs run is over an hour and dominated this session. Do
+> not start a widening and a full run in the same breath; §9 says settle the corpus runtime
+> before widening again, and that advice was earned.
+>
+> ### ⏭️ (previous) bit-fields are measurable in `layout`, and the review of that fix found a proven wrong answer inside it. §7.9.
 >
 > Five commits closed §9 item 1: 041 §3.1 models a run of bit-fields as one member, two VPP
 > structs that were silent now get gcc-confirmed proposals (`test_registration_` 48 → 40,
@@ -1455,7 +1480,8 @@ typing the paths ever would.
 >    this corner of VPP does not exhibit it. `drivers/armada/pp2/pp2_hw.h` is the third file
 >    with unnamed bit-fields and does not preprocess yet — unmeasured.
 > ✅ **Done — the widening landed and the defects it found are fixed** (§7.10, §8.3). The
->    contract-12 gate is 21 seeds, 113 corpus files, 1939 records, **8492 assertions**, green.
+>    contract-12 gate is **22 seeds, 113 corpus files, 2238 records, 10248 assertions**, green
+>    — `vnet/session/session_types.h` and `vlib/vlib.h` both landed, the second one free.
 > 1. ### 🎯 **NEXT: a preprocessor conformance corpus from simplecpp** (owner's suggestion, 2026-08-07)
 >
 >    <https://github.com/cppcheck-opensource/simplecpp>, pinned at `74a5a63` (2026-08-04). This
