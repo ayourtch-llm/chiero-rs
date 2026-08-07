@@ -1483,8 +1483,8 @@ typing the paths ever would.
    - **`_Pragma` and `#pragma push_macro`/`pop_macro`** — 3 files. `_Pragma` is C11, not an
      extension, and chiero records pragmas rather than acting on them.
    - ~~**`__has_c_attribute`**, **scoped operands**, **`__has_cpp_attribute`**~~ — **all done
-     (§7.15, §7.16); `pr63831-1/2` have left the findings list.** Historical detail follows.
-   - ~~**`__has_c_attribute`**~~ — **done (§7.15).** The two files now reach token 73 instead of
+     (§7.11); `pr63831-1/2` have left the findings list.** Historical detail follows.
+   - ~~**`__has_c_attribute`**~~ — **done (§7.11).** The two files now reach token 73 instead of
      token 4. What is left in them is **scoped attribute names** (`__has_attribute(gnu::noreturn)`)
      and `__has_cpp_attribute`. ⚠️ **I wrote here that gcc does not define `__has_cpp_attribute`
      in C. That is wrong — gcc 13 defines it in C and returns version numbers from it**
@@ -1505,9 +1505,9 @@ typing the paths ever would.
      `:`, `noreturn`); `answer_feature_queries` matches a single identifier between the parens
      and will need to accept that shape.
    - **More comma-swallow corners** — 2 files (`macro_fn_comma_swallow2`, `macro_paste_commaext`),
-     same family as §7.13 and different shapes.
+     same family as §7.11 and different shapes.
    - **`__VA_OPT__`** — 1 file, out of v1 scope by measurement (012 §2.3), diagnosed not guessed.
-   - **UCN spelling** — 2 files, a **declared** divergence (§7.14, 011 §2.0), not a defect.
+   - **UCN spelling** — 2 files, a **declared** divergence (§7.11, 011 §2.0), not a defect.
    - **UB where gcc and clang disagree** — 2 files (`pr58844-1/2`, `x######x`). No single answer.
    - `_Pragma-dependency2.c` and `diagnostic-pragma-1.c` accept what both compilers reject —
      both pragma-driven, both on simplecpp's own skip/todo lists.
@@ -1586,7 +1586,7 @@ typing the paths ever would.
    Clone it to a stable path outside the repo before wiring a gate to it — a scratchpad is
    per-session and this must survive.
 
-2. ### ✅ **DONE 2026-08-07 — the compiler persona.** See **§7.12**; 012 §4.1 is normative.
+2. ### ✅ **DONE 2026-08-07 — the compiler persona.** See **§7.11**; 012 §4.1 is normative.
    `__has_attribute`/`__has_builtin` now answer from `features::TABLE` (163 rows measured from
    gcc, 46 `false`), in `#if` **and** in program text, **after** expansion, with an unknown name
    answering 0 and saying so once per distinct name. `__GNUC_MINOR__` joined the baked persona.
@@ -1685,7 +1685,7 @@ typing the paths ever would.
    `-march=x86-64-v2`, so `__SSE4_2__` is undefined and `vppinfra/crc32.h` never defines
    `clib_crc32c_with_init`. The other four are two parser/sema gaps in generated API headers.
 
-4. ### ✅ **DONE 2026-08-07 — GNU comma-swallow.** See **§7.13**. Two opposite defects behind one
+4. ### ✅ **DONE 2026-08-07 — GNU comma-swallow.** See **§7.11**. Two opposite defects behind one
    guard, and the gate had named the wrong row. What follows is the entry as filed, kept because
    **the diagnosis in it was wrong** and correcting it took measuring every row of the fixture:
 
