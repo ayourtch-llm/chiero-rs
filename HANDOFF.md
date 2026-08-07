@@ -1560,13 +1560,20 @@ typing the paths ever would.
 > panics on the C standard's own worked example, after four consecutive widenings of VPP-shaped
 > corpora had begun returning honest zeros. §11.3 carries the general form.
 >
-> **State: 2026-08-07 — §7.11's seven waves over the preprocessor conformance corpus (nine
-> defects), plus honest zeros on 014 contract 11, `vnet/ip/` (§7.17) and 010 contract 11 (§7.18),
-> then two more preprocessor closures (`push_macro`/`pop_macro`, `#pragma GCC error`/`warning`).
-> `./check.sh` GREEN at 2193/258 before those two; re-measured after.** Up from 2154 at the
-> session's start. The contract-12 layout gate is 22 seeds / 2238 records / **10248 assertions
+> **State: 2026-08-07 — `./check.sh` GREEN at 2215 passed across 263 suites**, measured after
+> the `BadRange` closure. Up from 2154 at the previous session's start and 2193/258 before the
+> last two preprocessor closures. Earlier in the session: §7.11's seven waves over the
+> preprocessor conformance corpus (nine defects), honest zeros on 014 contract 11, `vnet/ip/`
+> (§7.17) and 010 contract 11 (§7.18), then `push_macro`/`pop_macro` and `#pragma GCC
+> error`/`warning`. The contract-12 layout gate is 22 seeds / 2238 records / **10248 assertions
 > put to gcc**; pp-gate is 141 C cases, **106 agree**, +11 matching one compiler where the two
 > disagree, +21 correctly rejected, 3 rendered-differently, and **0 findings**.
+>
+> ⚠️ **Only the default solver leg has been run since `BadRange` landed.** §10 wants both;
+> `CHIERO_SMT_SOLVER=/nonexistent ./check.sh --no-fail-fast` is the other, and it is another
+> hour. The change is a memory-fault classification and touches no solver path, so the leg is
+> expected to agree — *expected*, not measured, and that distinction is this file's oldest
+> recurring lesson.
 >
 > ⏱️ **Budget the clock.** A full both-legs run is over an hour and dominated the last session.
 > Do not start a widening and a full run in the same breath.
