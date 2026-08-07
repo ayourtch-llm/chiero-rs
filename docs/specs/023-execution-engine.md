@@ -307,8 +307,24 @@ pub struct Budget {
 **What exists today** (2026-08-06), because a sketch a reader takes for an inventory is worse
 than no sketch. Built: `max_depth`, `max_loop_iters`, `max_recursion_depth` (per `FuncId` in
 the active stack, §5), `max_states`, `max_forks`, `max_indirect`, `max_resolutions`,
-`wall_clock`, and — since 2026-08-07 — **`max_solver_rlimit`**, reachable as `--solver-rlimit`.
-**Not built: `max_memory_objects`.**
+`wall_clock`, and — both since 2026-08-07 — **`max_solver_rlimit`** (reachable as
+`--solver-rlimit`) and **`max_memory_objects`**. **Every field in the sketch above is now
+built**, which is the first time that sentence has been true.
+
+`max_memory_objects` bounds *one path*, where `max_states` bounds paths: an `alloca` in a loop
+mints a fresh object per iteration and lazy initialisation mints one per unknown pointer first
+dereferenced, so a single state could allocate without limit while every other budget was
+satisfied. Default 100 000 — a runaway backstop, not a search bound.
+
+> **It is enforced between steps, and that is stated rather than glossed.** Objects are minted
+> from eleven sites in `chiero-exec` *and* from every model in `chiero-model` through
+> `ModelCtx::mem`, a registry `chiero-vpp` extends; no call site sees them all, so a bound
+> installed at the allocations would be a bound at *some* of them, which is not one. The check
+> lives where the objects land. The consequence is that the observable count may pass the limit
+> by whatever a single step allocated — measured at 13 against a limit of 12 — the same shape
+> `max_forks` has, where the sibling is created and then dropped. A budget is a real bound when
+> its granularity is stated; pretending to a precision the design does not have is the failure
+> mode, not the slack itself.
 
 `max_solver_rlimit` is still the right bound and still worth having: the clock is checked
 *between steps*, so a single long solver query outlives it, and `:rlimit` is the deterministic

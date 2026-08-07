@@ -428,6 +428,20 @@ pub struct Budget {
     /// 023 §8.1's non-deterministic backstop. `None` — the default — is what the determinism
     /// contracts run under; a surface where somebody is waiting sets one.
     pub wall_clock: Option<std::time::Duration>,
+    /// 023 §8: how many memory objects **one state** may hold.
+    ///
+    /// `max_states` bounds paths; this bounds one path. An `alloca` in a loop mints a fresh
+    /// object per iteration and UCSE's lazy initialisation mints one per unknown pointer first
+    /// dereferenced, so a single state can allocate without limit while every other budget is
+    /// satisfied.
+    ///
+    /// ⚠️ **Enforced between steps, and that granularity is the honest statement of it.** The
+    /// eleven allocation sites in this crate are not all of them — every model in `chiero-model`
+    /// allocates through `ModelCtx::mem`, and `chiero-vpp` adds more — so no call site sees the
+    /// whole flow and the check belongs where the objects land. Overshoot is therefore bounded
+    /// by what a single step can allocate, which is why the test asserts the count rather than
+    /// the message.
+    pub max_memory_objects: u32,
     /// 023 §8: how much work **one solver query** may do, in z3's deterministic units. `0` is
     /// no limit, which is the default.
     ///
@@ -464,6 +478,10 @@ impl Default for Budget {
             // of the watchdog for every caller in this workspace, including the ones that never
             // heard of it.
             max_solver_rlimit: 0,
+            // **Generous, because it is a runaway backstop rather than a search bound.** A run
+            // that legitimately needs 100 000 live objects on one path is not a run this number
+            // should be deciding; one that has minted a million is looping.
+            max_memory_objects: 100_000,
         }
     }
 }
@@ -2526,6 +2544,30 @@ impl<'m> Engine<'m> {
                     break;
                 }
                 let forked = self.step(a, &mut s);
+                // **023 §8's `max_memory_objects`, checked where the objects land.**
+                //
+                // Not at the allocation sites: there are eleven in this crate and every model in
+                // `chiero-model` mints through `ModelCtx::mem`, a set `chiero-vpp` extends. No
+                // call site sees the whole flow, and a bound enforced at some of them is not a
+                // bound. The memory itself sees all of them.
+                //
+                // The state is *terminated* rather than left to carry on with allocation
+                // refused: a path that cannot allocate cannot faithfully continue, and reporting
+                // what it does next would be a claim about a program that does not exist. Same
+                // reasoning as the wall clock's `TermReason::Budget` above.
+                if s.mem.object_count() > self.budget.max_memory_objects as usize {
+                    s.status = Status::Terminated(TermReason::Budget);
+                    s.degrade(
+                        Fidelity::Bounded,
+                        AssumptionKind::BudgetHit,
+                        Span::DUMMY,
+                        &format!(
+                            "max_memory_objects ({}) reached with {} live",
+                            self.budget.max_memory_objects,
+                            s.mem.object_count()
+                        ),
+                    );
+                }
                 // An indirect call creates several siblings at once, which `step` cannot
                 // return.
                 let mut new: Vec<State> = self.pending.drain(..).collect();

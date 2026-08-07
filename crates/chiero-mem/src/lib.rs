@@ -2344,10 +2344,14 @@ impl Memory {
         }
     }
 
-    /// How many objects this memory holds. Only for tests: a caller that needs to know
-    /// how many objects exist is usually asking the wrong question, but "did this loop
-    /// allocate once or three times" has no other observable.
-    pub fn object_count_for_test(&self) -> usize {
+    /// How many objects this memory holds.
+    ///
+    /// **Not only for tests any more.** It was, with a note that a caller asking this is usually
+    /// asking the wrong question — and then 023 §8's `max_memory_objects` turned out to need
+    /// exactly it. Objects are minted from eleven sites in `chiero-exec` *and* from every model
+    /// in `chiero-model` through `ModelCtx::mem`, a set `chiero-vpp` extends; no call site sees
+    /// them all, and the memory that holds them is the only thing that does.
+    pub fn object_count(&self) -> usize {
         self.entries.len()
     }
 
