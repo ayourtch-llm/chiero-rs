@@ -478,6 +478,7 @@ impl Engine {
             "__has_attribute",
             "__has_builtin",
             "__has_c_attribute",
+            "__has_cpp_attribute",
         ] {
             engine.add_predefined_query(name);
         }
@@ -1609,22 +1610,50 @@ impl Engine {
         let mut out = Vec::with_capacity(tokens.len());
         let mut i = 0;
         while i < tokens.len() {
+            // **The operand is `NAME` or `SCOPE :: NAME`, and C has no `::` punctuator.** A
+            // scoped operand therefore arrives as four tokens — `gnu`, `:`, `:`, `noreturn` — so
+            // a matcher written for one identifier between the parens saw nothing at all for it.
+            let operand = tokens
+                .get(i + 1)
+                .filter(|token| token.text == "(")
+                .and_then(|_| match (tokens.get(i + 2), tokens.get(i + 3)) {
+                    (Some(name), Some(close)) if close.text == ")" => {
+                        Some((None, name.text.clone(), 4))
+                    }
+                    (Some(scope), Some(colon))
+                        if colon.text == ":"
+                            && tokens.get(i + 4).is_some_and(|t| t.text == ":")
+                            && tokens.get(i + 6).is_some_and(|t| t.text == ")") =>
+                    {
+                        tokens
+                            .get(i + 5)
+                            .map(|name| (Some(scope.text.clone()), name.text.clone(), 7))
+                    }
+                    _ => None,
+                });
             if is_feature_query(&tokens[i].text)
-                && tokens.get(i + 1).is_some_and(|token| token.text == "(")
-                && tokens.get(i + 3).is_some_and(|token| token.text == ")")
-                && let Some(name) = tokens.get(i + 2)
+                && let Some((scope, operand_name, width)) = operand
             {
                 let query = tokens[i].text.clone();
-                let value = match features::answer(&query, &name.text) {
+                // A scoped operand answers by rule rather than by row (`features::answer_scoped`).
+                let looked_up = match &scope {
+                    Some(scope) => features::answer_scoped(scope, &operand_name),
+                    None => features::answer(&query, &operand_name),
+                };
+                let spelled = match &scope {
+                    Some(scope) => format!("{scope}::{operand_name}"),
+                    None => operand_name.clone(),
+                };
+                let value = match looked_up {
                     Some(value) => value,
                     None => {
-                        if self.unknown_queries.insert(name.text.clone()) {
+                        if self.unknown_queries.insert(spelled.clone()) {
                             self.diagnostics.push(Diagnostic {
                                 span: tokens[i].token.span,
                                 message: format!(
-                                    "`{query}({})` is not in chiero's compiler-persona table; \
-                                     answered 0, which may not be what the build compiler says",
-                                    name.text
+                                    "`{query}({spelled})` is not in chiero's compiler-persona \
+                                     table; answered 0, which may not be what the build compiler \
+                                     says"
                                 ),
                             });
                         }
@@ -1632,7 +1661,7 @@ impl Engine {
                     }
                 };
                 out.push(synthetic_number(&value.to_string(), tokens[i].token.span));
-                i += 4;
+                i += width;
             } else {
                 out.push(tokens[i].clone());
                 i += 1;
@@ -2294,7 +2323,7 @@ fn span_from_ends(first: Span, last: Span) -> Span {
 fn is_feature_query(text: &str) -> bool {
     matches!(
         text,
-        "__has_attribute" | "__has_builtin" | "__has_c_attribute"
+        "__has_attribute" | "__has_builtin" | "__has_c_attribute" | "__has_cpp_attribute"
     )
 }
 
