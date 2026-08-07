@@ -1864,6 +1864,19 @@ doubles the wake-ups.
   people write them*, which is a systematically biased sample — the dark corners are never in it,
   and no amount of widening within it reaches them. **When the yield table flattens, change the
   kind rather than the size.**
+- ⚠️ **Two neighbouring rules can have opposite conditions, and a shared flag will get one
+  wrong.** GNU comma-swallowing turns on whether the variadic argument was *supplied*
+  (`debug(Y, )` keeps its comma); `__VA_OPT__` turns on whether it has *tokens* (`P(1,)` yields
+  nothing). Same parameter, same function, opposite tests — and putting the first condition on
+  the flag the second uses broke every non-empty row within a minute. **When two rules read the
+  same input, write down what each one is asking before sharing anything between them.**
+- ⚠️ **When a differential gate reports a difference, ask whether the difference is in the
+  gate.** Of the last three pp-gate findings, **two were mine**: a canonicalization that cast
+  bytes to `char` (Latin-1, so a UTF-8 `¨` became `Â¨` and never matched a decoded escape), and a
+  scoring rule that counted "chiero rejected and a compiler rejected" as `MatchedNeither` because
+  there were no tokens to compare. A gate compares *renderings*; the thing you care about is
+  identity, and the two part company at UCN normalization, at unterminated literals, and at
+  rejection.
 - ⚠️ **A qualifier in someone's note is load-bearing until you have tested that it is not.**
   `is_chiero_limit`'s note said `NullDeref` cannot serve as the objectless probe "because neither
   can produce two findings **on one path**". I read "on one path" as incidental, recorded a route
