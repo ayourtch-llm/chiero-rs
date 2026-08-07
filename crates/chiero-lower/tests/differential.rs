@@ -325,6 +325,60 @@ fn short_circuit_results_match_the_compiler() {
     agree("int a = 0; return !a + !!a;");
 }
 
+// ---------------------------------------------------------------------------------------
+// 014 contract 11, the half its census names but cannot reach.
+//
+// C 6.5.13/6.5.14 compare each operand of `&&`/`||` against zero **independently**, at the
+// operand's own type. `chiero-sema`'s conversion census asserts the scalar-type constraint and
+// then says outright that lowering's compare-against-zero is contract 11's subject and that the
+// census cannot see it. This is where it is seen, because no *shape* assertion can answer it:
+// what makes a wrong compare-against-zero wrong is the number, and only the oracle sees numbers.
+//
+// ⚠️ **Most of this was already covered and I did not look before scoping the wave.**
+// `a_float_on_the_right_of_a_short_circuit_agrees_with_gcc` and `logical_not_of_a_float_agrees_
+// with_gcc` already pin `double` operands *including* `-0.0`, which I had picked out as the
+// killer discriminator; pointer operands already appear in five rows. §8.3 step 1 is "ask what
+// the corpus cannot contain", and asserting an edge without reading the corpus is how a wave
+// spends itself re-proving what holds. What was genuinely missing is below, and it is narrow.
+// ---------------------------------------------------------------------------------------
+
+/// An operand **wider than `int`**, whose low 32 bits are all zero.
+///
+/// The corpus had no logical operand above 32 bits. A lowering that narrows before comparing
+/// answers 0 here; gcc answers 1.
+#[test]
+fn a_logical_operand_wider_than_int_is_compared_at_its_own_width() {
+    agree("long long big = 1LL << 32; return (big && 1) + (big || 0);"); // 2
+    agree("long long big = 0; return (big && 1) + (big || 0);"); // 0
+    agree("unsigned long long u = 1ULL << 63; return (u && 1) + (u || 0);"); // 2
+}
+
+/// Operands of **different types**, which C does not bring to a common type here.
+///
+/// This is the case that exposed the conversion census asking the wrong question — it had
+/// asserted that both operands share one type, which C requires for arithmetic operators and not
+/// for these. A lowering that forces a common type has to convert, and `0x80000000u` against
+/// `-1` makes the conversion observable. The corpus had no such pair.
+#[test]
+fn logical_operands_of_mixed_types_are_not_converted_to_each_other() {
+    agree("unsigned u = 0x80000000u; int i = -1; return (u && i) + (u || i) * 10;"); // 11
+    agree("unsigned char c = 0; long l = 256; return (c || l) + (c && l) * 10;"); // 1
+    agree("double d = 0.5; int i = 0; return (d && i) + (d || i) * 10;"); // 10
+}
+
+/// Short-circuiting in **all four** directions, with an observable side effect.
+///
+/// The corpus had one such row. The two negative cases alone are passed by an implementation
+/// that never evaluates the right operand at all, so the two positive ones are what make this a
+/// test rather than half of one (§11.1).
+#[test]
+fn the_right_operand_is_evaluated_exactly_when_the_left_does_not_decide() {
+    agree("int n = 0; int r = (0 && (n = 5)); return r * 100 + n;"); // 0
+    agree("int n = 0; int r = (1 || (n = 5)); return r * 100 + n;"); // 100
+    agree("int n = 0; int r = (1 && (n = 5)); return r * 100 + n;"); // 105
+    agree("int n = 0; int r = (0 || (n = 5)); return r * 100 + n;"); // 105
+}
+
 /// **Control flow and compound assignment**, end to end.
 #[test]
 fn loops_and_compound_assignment_compute_what_gcc_computes() {
