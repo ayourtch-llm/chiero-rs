@@ -354,3 +354,47 @@ fn the_baked_persona_supports_gnuc_prereq() {
         "a persona claiming __GNUC__ 13 must satisfy __GNUC_PREREQ(4,9)"
     );
 }
+
+/// **A scoped operand answers 1, never a version** — and any scope but gcc's answers 0.
+///
+/// `gnu::noreturn` is 1 under all three queries while bare `noreturn` is 202202, because a
+/// vendor-scoped attribute has no *standard* version to report. `clang::packed` is 0 even though
+/// `packed` alone is 1: the scope is part of the question.
+///
+/// ⚠️ C has no `::` punctuator, so `gnu::noreturn` reaches the rewriter as **four** tokens
+/// (`gnu`, `:`, `:`, `noreturn`). A matcher written for one identifier between the parens sees
+/// nothing here, which is why this is a rule about the operand's *shape* and not a table row.
+#[test]
+fn a_scoped_operand_answers_one_and_only_for_gcc_s_own_scope() {
+    for query in ["__has_attribute", "__has_c_attribute", "__has_cpp_attribute"] {
+        for name in ["gnu::noreturn", "gnu::packed", "__gnu__::packed", "gnu::deprecated"] {
+            let expected = gcc_value(query, name);
+            assert_eq!(expected, 1, "gcc answers 1 for a known gcc-scoped attribute");
+            assert_eq!(chiero_value(query, name).0, expected, "{query}({name})");
+        }
+        for name in ["clang::packed", "foo::packed", "gnu::nonesuch"] {
+            let expected = gcc_value(query, name);
+            assert_eq!(expected, 0, "gcc answers 0 for an unknown scope or name");
+            assert_eq!(chiero_value(query, name).0, expected, "{query}({name})");
+        }
+    }
+}
+
+/// `__has_cpp_attribute` **is defined in C by gcc**, and returns versions.
+///
+/// ⚠️ A note in HANDOFF said the opposite, written from memory one commit before this was
+/// measured. The bare standard attributes carry their version; `packed` and `always_inline`
+/// answer 1 because gcc accepts them in the `[[...]]` syntax without a standard version; the C23
+/// attributes gcc 13 lacks answer 0. All three shapes are here, because a table that only held
+/// the first would pass a rubber stamp.
+#[test]
+fn has_cpp_attribute_is_available_in_c_and_answers_versions() {
+    for name in ["noreturn", "deprecated", "packed", "always_inline", "unsequenced", "nonesuch"] {
+        let expected = gcc_value("__has_cpp_attribute", name);
+        let (ours, _) = chiero_value("__has_cpp_attribute", name);
+        assert_eq!(ours, expected, "__has_cpp_attribute({name})");
+    }
+    assert!(gcc_value("__has_cpp_attribute", "noreturn") > 1, "a version, not a truth");
+    assert_eq!(gcc_value("__has_cpp_attribute", "packed"), 1, "GNU-only: 1, no version");
+    assert_eq!(gcc_value("__has_cpp_attribute", "unsequenced"), 0, "gcc 13 lacks it");
+}
