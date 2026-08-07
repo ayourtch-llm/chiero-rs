@@ -327,6 +327,23 @@ pub struct TermArena {
     vars: Vec<(String, Sort)>,
     /// See [`TermArena::id`]. Assigned on first use, never reused within the process.
     id: std::cell::Cell<u64>,
+    /// Scratch for [`TermArena::vars_of`]'s visited set, **stamped rather than cleared**.
+    ///
+    /// It used to allocate and zero `vec![false; nodes.len()]` per call — a bool for every term
+    /// the arena had ever held, whether or not the query touched it. An arena only grows, and
+    /// 022 §6.2's independence slicing calls `vars_of` once per constraint on *every* backend
+    /// query, so the cost of slicing a fixed path condition grew with everything the run had
+    /// done beforehand: 8.3 µs at a thousand nodes, 699 µs at 256 000, for the same forty
+    /// one-variable constraints.
+    ///
+    /// A generation counter makes the reset free: a node counts as visited only if its stamp
+    /// equals the current generation, so a call touches exactly the nodes it walks.
+    /// `Cell`/`RefCell` rather than `&mut self` because `vars_of` is a *query* — every caller
+    /// holds `&TermArena`, several while iterating something else borrowed from it, and this is
+    /// the same reason `id` above is a `Cell`.
+    seen: std::cell::RefCell<Vec<u32>>,
+    /// Which generation `seen` is stamped with. Wraps to 1 and re-zeroes; 0 is "never visited".
+    seen_gen: std::cell::Cell<u32>,
 }
 
 impl TermArena {
@@ -1035,13 +1052,28 @@ impl TermArena {
     /// otherwise, and this runs on *every* term immediately before serialization — so
     /// making only the serializer iterative moved the failure rather than removing it.
     pub fn vars_of(&self, t: Term, out: &mut Vec<VarId>) {
-        let mut seen: Vec<bool> = vec![false; self.nodes.len()];
+        let mut seen = self.seen.borrow_mut();
+        if seen.len() < self.nodes.len() {
+            seen.resize(self.nodes.len(), 0);
+        }
+        // **Wrapping means re-zeroing, once every four billion calls.** Skipping it would let a
+        // stale stamp from the previous cycle read as visited and silently drop a variable —
+        // which slicing would turn into two components that should have been one, and 022
+        // contract 9 requires slicing to return the same answer as the unsliced query.
+        let stamp = match self.seen_gen.get().checked_add(1) {
+            Some(g) => g,
+            None => {
+                seen.iter_mut().for_each(|x| *x = 0);
+                1
+            }
+        };
+        self.seen_gen.set(stamp);
         let mut stack = vec![t];
         while let Some(n) = stack.pop() {
-            if seen[n.0 as usize] {
+            if seen[n.0 as usize] == stamp {
                 continue;
             }
-            seen[n.0 as usize] = true;
+            seen[n.0 as usize] = stamp;
             if let Node::Var(v, _) = &self.nodes[n.0 as usize]
                 && !out.contains(v)
             {

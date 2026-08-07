@@ -401,7 +401,18 @@ fn the_subsumption_index_is_bypassed_while_the_flag_is_set() {
 ///   256 000 nodes   698.7 µs
 /// ```
 ///
-/// Eighty-four times the work for terms that never changed.
+/// Eighty-four times the work for terms that never changed. Afterwards, steady state:
+///
+/// ```text
+///     1 000 nodes     3.5 µs
+///    64 000 nodes     4.1 µs
+///   256 000 nodes     3.9 µs
+/// ```
+///
+/// ⚠️ "Steady state" is load-bearing in that sentence. The scratch buffer still grows once to
+/// match the arena, and a measurement that builds a large arena and immediately times one pass
+/// charges the whole growth to that pass — 26x rather than 1.1x. A real run grows the arena
+/// incrementally and amortises it, which is why the test below repeats.
 ///
 /// **The assertion is a ratio, not a duration** — §11.2's rule, and the only form that says
 /// anything about the shape. The bound is generous: the defect is 84x and a correct
