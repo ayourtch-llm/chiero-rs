@@ -33,6 +33,9 @@ records:
         advisory: false
         evidence:
           - 8 bytes of alignment padding, 0 of 1 lines saved per instance
+          - 14 bytes of padding in the record as declared; reordering recovers 8 of them, because the record's 8-byte alignment rounds the end up whatever order the members are in
+          - 7 bytes of padding after `active` (offset 0, 1 byte) and before `bytes` at offset 8
+          - 7 bytes of padding at the end, after `flags` (offset 16, 1 byte) — tail padding the record's alignment requires
         obligations:
           - state: discharged
             what: the layout is internal to the program
@@ -45,6 +48,15 @@ proven — this holds for all inputs (Exact)
 
 24 bytes that would be 16. The delta is what *this* reorder is worth rather than a theoretical
 minimum, because a proposal saying "you could save space" without a number is not actionable.
+
+**And it says where the bytes are.** A total is not advice on a struct with thirty members, so
+each hole names the fields on either side of it and its offset — `active` is one byte followed
+by seven of nothing, and `flags` leaves seven more at the end.
+
+**The two numbers are different on purpose.** There are 14 bytes of padding in the struct as
+declared and reordering gets 8 of them back: the best order still ends `long, char, char`, and
+the record's own 8-byte alignment rounds 10 up to 16 whatever the order. A proposal that listed
+14 beside `recoverable: 8` and said nothing would read as an arithmetic error.
 
 **The obligation is discharged**, so `advisory` is false: nothing suggests this layout is
 visible outside the program, so reordering it is an ordinary change.

@@ -367,6 +367,56 @@ fn padding(r: &Record, cfg: &LocalityCfg, escapes: Option<&str>) -> Option<Propo
     if recoverable == 0 {
         return None;
     }
+
+    // **Where the bytes are, not only how many.** A total is a number; a reader deciding
+    // whether to reorder a thirty-member struct needs to know which members the gaps are
+    // between, and every offset that answer needs is already in hand.
+    let gaps = holes(r);
+    let total: u64 = gaps.iter().map(|h| h.bytes).sum();
+    let mut evidence = vec![format!(
+        "{} bytes of alignment padding, {} of {} lines saved per instance",
+        recoverable,
+        r.size.div_ceil(cfg.cache_line_bytes.max(1)) - off.div_ceil(cfg.cache_line_bytes.max(1)),
+        r.size.div_ceil(cfg.cache_line_bytes.max(1))
+    )];
+    // **The two numbers differ, and the difference is explained rather than left to look like
+    // an arithmetic error.** The holes are what the current layout wastes; `recoverable` is
+    // what *this* reorder gets back, and the record's own alignment still rounds the tail up.
+    if total != recoverable {
+        evidence.push(format!(
+            "{total} bytes of padding in the record as declared; reordering recovers \
+             {recoverable} of them, because the record's {}-byte alignment rounds the end \
+             up whatever order the members are in",
+            r.align
+        ));
+    }
+    // **Capped, and the cap is stated.** A struct with forty holes would bury the proposal it
+    // belongs to, and a list silently cut at eight reads as a struct with eight holes.
+    const SHOWN: usize = 8;
+    for h in gaps.iter().take(SHOWN) {
+        let (name, offset, size) = &h.after;
+        evidence.push(match &h.before {
+            Some((next, next_off)) => format!(
+                "{} of padding after `{name}` (offset {offset}, {}) and before `{next}` at \
+                 offset {next_off}",
+                bytes(h.bytes),
+                bytes(*size)
+            ),
+            None => format!(
+                "{} of padding at the end, after `{name}` (offset {offset}, {}) — tail padding \
+                 the record's alignment requires",
+                bytes(h.bytes),
+                bytes(*size)
+            ),
+        });
+    }
+    if gaps.len() > SHOWN {
+        evidence.push(format!(
+            "and {} further gap(s), not shown",
+            gaps.len() - SHOWN
+        ));
+    }
+
     Some(Proposal::new(
         OptKind::PaddingWaste { recoverable },
         format!(
@@ -380,15 +430,78 @@ fn padding(r: &Record, cfg: &LocalityCfg, escapes: Option<&str>) -> Option<Propo
             }
         ),
         shared(escapes),
-        vec![format!(
-            "{} bytes of alignment padding, {} of {} lines saved per instance",
-            recoverable,
-            r.size.div_ceil(cfg.cache_line_bytes.max(1))
-                - off.div_ceil(cfg.cache_line_bytes.max(1)),
-            r.size.div_ceil(cfg.cache_line_bytes.max(1))
-        )],
+        evidence,
         Benefit::Unquantified,
     ))
+}
+
+/// `1 byte` / `7 bytes`. A reader should not have to read `byte(s)`.
+fn bytes(n: u64) -> String {
+    format!("{n} byte{}", if n == 1 { "" } else { "s" })
+}
+
+/// One run of bytes no member occupies, and what it sits between.
+struct Hole {
+    /// The member the hole follows, and its extent — a name alone does not locate a gap in a
+    /// struct where the reader is counting members.
+    after: (String, u64, u64),
+    /// The member it runs up to. `None` for the tail, which is a different fact: it is not
+    /// between two fields, and the record's own alignment puts some of it back whatever order
+    /// the members are in.
+    before: Option<(String, u64)>,
+    bytes: u64,
+}
+
+/// **Where the padding actually is**, walked in offset order.
+///
+/// Nothing here is derived: 014 computed every offset and size, and a gap is the arithmetic
+/// between two of them. Members are sorted by offset first because a record's field list is in
+/// declaration order and this answer is about the layout — for a record whose members are
+/// declared out of order those are different sequences, and the wrong one produces negative
+/// gaps that read as chiero not understanding the struct.
+///
+/// **Overlaps are skipped rather than reported as gaps.** Two members at the same offset are
+/// a union nested in the list, and a "hole" of a negative size is not something to print.
+fn holes(r: &Record) -> Vec<Hole> {
+    let mut fs: Vec<&Field> = r.fields.iter().collect();
+    fs.sort_by_key(|f| (f.offset, f.size));
+    let mut out = Vec::new();
+    let mut at = 0u64;
+    for f in &fs {
+        if f.offset > at {
+            if let Some(prev) = out.last_mut() {
+                let _: &mut Hole = prev;
+            }
+            // The member this gap follows is the one that ended at `at`; before the first
+            // member there is nothing to follow, and a leading gap is not something C's layout
+            // rules produce for a record with any member at all.
+            if let Some(p) = fs
+                .iter()
+                .filter(|p| p.offset + p.size == at)
+                .max_by_key(|p| p.size)
+            {
+                out.push(Hole {
+                    after: (p.name.clone(), p.offset, p.size),
+                    before: Some((f.name.clone(), f.offset)),
+                    bytes: f.offset - at,
+                });
+            }
+        }
+        at = at.max(f.offset + f.size);
+    }
+    if r.size > at
+        && let Some(p) = fs
+            .iter()
+            .filter(|p| p.offset + p.size == at)
+            .max_by_key(|p| p.size)
+    {
+        out.push(Hole {
+            after: (p.name.clone(), p.offset, p.size),
+            before: None,
+            bytes: r.size - at,
+        });
+    }
+    out
 }
 
 /// A scalar member's alignment, bounded by the record's.
