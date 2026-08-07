@@ -1548,6 +1548,35 @@ could run. `is_feature_query` is now the one place.
 `__has_attribute(gnu::noreturn)` — and `__has_cpp_attribute`. They now reach token 73 instead of
 token 4.
 
+### 7.16 Scoped operands and `__has_cpp_attribute`, 2026-08-07 — the tool naming its own gaps
+
+Seventh wave, and the one where the **honesty mechanism paid its own construction cost.** The
+gate's remaining divergence on `pr63831-1/2` was three attribute names the table lacked, and the
+diagnostic *named all three* — which is the entire reason `features::answer` returns `Option<u32>`
+and not a number. Fixing it was mechanical because the tool said what it did not know.
+
+**Two rules, both measured, neither guessed:**
+
+- **A scoped operand answers 1, never a version.** `gnu::noreturn` is 1 under all three queries
+  where bare `noreturn` is 202202, because a vendor-scoped attribute has no *standard* version.
+  Any scope but gcc's is a definite 0 — `clang::packed` is 0 where `packed` alone is 1.
+  `features::answer_scoped` is therefore a **rule, not rows**: it defers to the unscoped table,
+  which stops that table being multiplied by however many scopes anyone invents and makes a name
+  added for `__has_attribute` scoped-correct for free.
+- ⚠️ **C has no `::` punctuator**, so `gnu::noreturn` reaches the rewriter as **four** tokens.
+  A matcher written for one identifier between the parens sees nothing at all for the scoped form
+  — the operand's *shape* is the thing to parse.
+
+The table is now the same **105 names across all three queries, 382 rows**, every value measured.
+
+⚠️ **Regenerating it from `__has_attribute`'s name list dropped the C-attribute-only names** —
+`nodiscard` is not a GNU attribute — and the contract test caught it on the first run. The union
+of the previous table's names is what the rows are built from. *When a table is regenerated from
+one of its own columns, the other columns' rows are silently lost.*
+
+pp-gate: findings 16 → **14**; `pr63831-1/2` leave the findings entirely and now match gcc where
+gcc and clang disagree, which is a pass by simplecpp's own rule.
+
 ### 7.5 How to check the workspace is green — `./check.sh`
 
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
@@ -1601,6 +1630,7 @@ This has now paid out three times in a row, each time on the first run after a w
 | `differential.rs`'s logical-operator rows: `int`-only → wider-than-`int`, mixed types, four-way short-circuit | one wave | **zero defects — and the wave was mis-scoped.** Most of what I "widened" was already covered, including the exact `-0.0` case I had picked as the discriminator. §8.3 step 1 says *ask what the corpus cannot contain*; I asked what I imagined it could not |
 | the same gate's **remaining findings, read as a to-do list** rather than as noise | one wave | §7.14: chiero was rejecting **valid C11** — a UCN in an identifier. **51 spurious diagnostics gone.** The corpus paid a fifth time, in a fifth different way |
 | **sharpening an oracle** — a feature query's value rather than its truthiness | one wave | §7.15: six rows of the table shipped two waves earlier were wrong, and the old test agreed with every one. The corpus was not widened at all; the *instrument* was |
+| following the **diagnostics the tool itself emitted** — three names it said it did not know | one wave | §7.16: scoped operands + `__has_cpp_attribute`; findings 16 → **14**, and `pr63831-1/2` leave the list. The honesty mechanism turned the next fix into a mechanical one |
 
 The loop, and it is deliberately mechanical:
 
