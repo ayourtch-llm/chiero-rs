@@ -1673,13 +1673,21 @@ they lived only in scratch") and it happened again anyway.
 | `tests/corpus/layout/vpp_sizes.py` | ✅ committed — contract-12's method pointed at arbitrary headers |
 | `xtask/src/replay_gate.rs` | ✅ committed — `cargo run -p xtask -- replay-gate`, corpus `tests/corpus/replay/corpus.tsv` |
 | `xtask/src/pp_gate.rs` | ✅ committed — `cargo run -p xtask -- pp-gate`, ~2 min. Reads `$SIMPLECPP` (default `/home/ubuntu/simplecpp`, pinned `74a5a63`); gcc and clang are the oracle. §7.11 |
-| `probe.sh` + `probe_cmds.txt` | ❌ **LOST.** The 7-second five-TU probe that replaced 2-hour sweeps. Rebuild: `cd $VPPBUILD && ninja -t commands <the .o>` for `vlib/main.c`, `vppinfra/format.c`, `vnet/interface.c`, `vlib/node_cli.c`, `vppinfra/mem_dlmalloc.c`, replay each through the release `xtask`, one line of output per TU |
+| `tests/corpus/vpp-findings/probe.sh` | ✅ **REBUILT and committed 2026-08-07.** The 7-second five-TU probe that replaces 2-hour sweeps — measured 7.3 s, all five `clean`. `REALCC=true` by default, so it asks what *chiero* makes of the build's flags without compiling. ⚠️ Its rebuild note: the object path **cannot** be constructed from the source path (CMake names an object after its position in the object library, so `src/vlib/main.c` is `…/vlib_objs.dir/main.c.o`) — match `-c <source>` in one `ninja -t commands all` dump, 63 ms for all 2945 |
 | `replay-probe.sh` | ❌ **LOST.** Two-checkout historical-replay probe that restored the tree on every exit path |
 | `rev5` (20 fixtures), `replayprobe` (13) | ❌ **LOST.** |
 
 **When the next instrument is built, commit it under `tests/corpus/` in the same wave.** The
-committed ones are all still here; not one uncommitted one is. `probe.sh` in particular paid for
-itself four sweeps over — rebuilding it is cheap and is worth doing before the next VPP-wide wave.
+committed ones are all still here; not one uncommitted one is. `probe.sh` was rebuilt on
+2026-08-07 and took under half an hour including the bug above — but the version it replaces had
+paid for itself four sweeps over, so the rebuild was pure repeated cost. `replay-probe.sh` and
+the two fixture sets are still gone.
+
+📌 **What the rebuilt probe says in passing, and neither fact was written down anywhere:** the
+VPP build in `build-root/build-vpp-native` is **clang**, not gcc, and every command line carries
+**`-march=x86-64-v2`** — the parked per-TU target-configuration item, visible on all five lines.
+There is **no `compile_commands.json`** in that build dir, despite §4.12 assuming one; `ninja -t
+commands` is the route that exists.
 
 ⚠️ **`CCACHE_DISABLE=1` is mandatory** for anything replaying VPP build lines — VPP's cmake wraps
 the compiler in ccache and a warm cache makes the measurement about the cache.
