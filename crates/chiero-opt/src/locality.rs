@@ -36,8 +36,32 @@
 pub struct Field {
     pub name: String,
     /// Byte offset from the start of the record — 014's answer, not this crate's.
+    ///
+    /// For a bit-field this is the byte its **first** bit falls in, and `size` the number of
+    /// bytes its extent touches. Those two are a rounding of `bits`, kept so that a consumer
+    /// reading bytes alone gets a member that occupies the right span rather than none.
     pub offset: u64,
     pub size: u64,
+    /// `Some` for a bit-field — 014 §3's `BitField` verbatim, and 041 §3.1's input.
+    ///
+    /// **Bits are what `(offset, size)` cannot say**, and saying nothing was the earlier
+    /// answer: a record holding a bit-field got no padding proposal at all, which is honest
+    /// and leaves out exactly the packed, hand-tuned structs where padding matters most.
+    pub bits: Option<BitExtent>,
+}
+
+/// A bit-field's extent — [041 §3.1](../../../docs/specs/041-optimization-analysis.md).
+///
+/// `bit_offset` is **absolute, from the start of the record**, not relative to
+/// [`Field::offset`], because gcc's straddling rules move the byte offset around and a
+/// relative number could not be read without knowing them. That is 014 §3's choice and this
+/// is a transcription of it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct BitExtent {
+    pub bit_offset: u64,
+    /// Width in bits. **Zero is a real value** — a zero-width bit-field forces the next one
+    /// into a new allocation unit and occupies nothing itself.
+    pub width: u64,
 }
 
 /// A record's layout, plus the two facts that decide whether reordering it may be proposed.

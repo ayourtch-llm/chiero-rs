@@ -234,22 +234,81 @@ fn an_anonymous_member_is_counted_in_the_padding_it_costs() {
     );
 }
 
-/// **A bit-field cannot be described by (offset, size), and the answer to that is not to
-/// pretend the struct is smaller.**
+/// **Contract 25 — a bit-field is described by its bits, and the struct around it is
+/// measured.**
 ///
-/// The same `filter_map` that dropped anonymous members drops bit-fields — deliberately, and
-/// the comment says why: "a bit-field's extent is bits within a byte, which straddling and
-/// padding do not describe". That is right for the *straddle* finding and wrong for the
-/// padding sum, which then adds up a struct that is missing members.
+/// A bit-field cannot be described by `(offset, size)`, and for a while the answer was to drop
+/// it and withhold the padding number for the whole record: honest, and it left out exactly
+/// the packed, hand-tuned structs where padding matters most. 041 §3.1 gives the field
+/// description a bit extent and models a run of adjacent bit-fields as one member.
 ///
-/// So the padding proposal is withheld when the field list is known to be partial, and the
-/// envelope says which records that happened to. `with_bits` below sums to 9 bytes of visible
-/// fields against a real 16, and a proposal computed from that is arithmetic about a struct
-/// nobody declared.
+/// `q` below is **12 bytes under gcc 13.3 and 8 with `int` first**, both compiled and checked
+/// rather than reasoned about. The fixture discriminates: counting each bit-field as the byte
+/// it starts in sums to 9, rounds to 12, and yields no proposal at all — so this assertion can
+/// fail if the run is not treated as one member.
 #[test]
-fn a_record_with_a_bitfield_gets_no_padding_number_it_cannot_stand_behind() {
+fn a_bit_field_run_is_measured_rather_than_dropped() {
     let p = write(
         "bits.c",
+        "struct q {\n\
+         \x20 char tag;         /* 0, then 3 bytes of nothing */\n\
+         \x20 int big;          /* 4 */\n\
+         \x20 unsigned a : 1;   /* bit 64 — byte 8, and the next three share it */\n\
+         \x20 unsigned b : 1;\n\
+         \x20 unsigned c : 1;\n\
+         \x20 unsigned d : 1;   /* then 3 more bytes to the end */\n\
+         };\n\
+         struct q instance;\n",
+    );
+    let (code, v, err) = run(&["layout", p.to_str().expect("utf-8"), "--json"]);
+    assert_eq!(code, 0, "{err}");
+    let rec = v["result"]["records"]
+        .as_array()
+        .expect("records")
+        .iter()
+        .find(|r| r["tag"] == "q")
+        .expect("the record is analysed");
+    assert_eq!(rec["size"], 12, "gcc says 12: {rec}");
+    let pad = rec["proposals"]
+        .as_array()
+        .expect("proposals")
+        .iter()
+        .find(|p| p["kind"] == "padding_waste")
+        .unwrap_or_else(|| panic!("gcc says the reordered declaration is 8: {rec}"));
+    assert_eq!(
+        pad["recoverable"], 4,
+        "12 with `char` first, 8 with `int` first — both compiled: {pad}"
+    );
+    let ev = pad["evidence"].to_string();
+    assert!(
+        ev.contains("bit-field"),
+        "the hole after the run names it as a bit-field run, since moving one moves all \
+         four: {pad}"
+    );
+    // **And the record is no longer one chiero declines to judge**, so nothing in the envelope
+    // may say it was.
+    assert!(
+        !v["blind_spots"]
+            .as_array()
+            .expect("blind_spots")
+            .iter()
+            .any(|b| b.as_str().is_some_and(|s| s.contains("bit-field"))),
+        "a record that got a number is not a record that could not be judged: {v}"
+    );
+}
+
+/// **Contract 25 — nothing to recover and nothing chiero could judge must stay
+/// distinguishable.**
+///
+/// `with_bits` is 16 bytes and no order makes it smaller: the two bit-fields share the byte
+/// after `tag`, and `long` needs its alignment. So there is no proposal — and no blind spot
+/// either, because silence about a struct that was measured and silence about a struct that
+/// was skipped mean opposite things to a reader.
+#[test]
+fn a_record_whose_bit_fields_already_pack_tight_is_silent_for_the_right_reason() {
+    let p = write(
+        // Not `tight.c`: the scratch directory is shared and another test owns that name.
+        "tight_bits.c",
         "struct with_bits {\n\
          \x20 char tag;\n\
          \x20 unsigned a : 3;\n\
@@ -266,23 +325,22 @@ fn a_record_with_a_bitfield_gets_no_padding_number_it_cannot_stand_behind() {
         .iter()
         .find(|r| r["tag"] == "with_bits")
         .expect("the record is analysed");
+    assert_eq!(rec["size"], 16, "gcc says 16: {rec}");
     assert!(
         rec["proposals"]
             .as_array()
             .expect("proposals")
             .iter()
             .all(|p| p["kind"] != "padding_waste"),
-        "the field list is missing two members, so there is no honest padding number: {rec}"
+        "8 + 1 + 1 rounds to 16, which is what it already is: {rec}"
     );
-    // **Said, not swallowed.** A record chiero could not judge is not a record with nothing
-    // to find, and the envelope is where that distinction lives.
     assert!(
-        v["blind_spots"]
+        !v["blind_spots"]
             .as_array()
             .expect("blind_spots")
             .iter()
             .any(|b| b.as_str().is_some_and(|s| s.contains("bit-field"))),
-        "the envelope names what it could not judge: {v}"
+        "this record was judged and found tight, not skipped: {v}"
     );
 }
 

@@ -299,6 +299,7 @@ pub(crate) fn records(path: &Path, src: &str, f: Frontend) -> Result<Vec<Record>
                 },
                 offset: fl.offset,
                 size,
+                bits: None,
             });
         }
         out.push(Record {

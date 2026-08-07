@@ -416,16 +416,19 @@ fn tutorial_08_layout() {
                 name: "active".into(),
                 offset: 0,
                 size: 1,
+                bits: None,
             },
             Field {
                 name: "bytes".into(),
                 offset: 8,
                 size: 8,
+                bits: None,
             },
             Field {
                 name: "flags".into(),
                 offset: 16,
                 size: 1,
+                bits: None,
             },
         ],
     };
@@ -457,6 +460,7 @@ fn tutorial_08_layout() {
             name: "seq".into(),
             offset: 60,
             size: 8,
+            bits: None,
         }],
     };
     let env = chiero_tool::layout_envelope(std::slice::from_ref(&wire), &LocalityCfg::default());

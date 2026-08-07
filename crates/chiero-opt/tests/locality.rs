@@ -38,6 +38,7 @@ fn one_field_at(offset: u64) -> Record {
             name: "f".into(),
             offset,
             size: 8,
+            bits: None,
         }],
     }
 }
@@ -85,16 +86,19 @@ fn padded() -> Record {
                 name: "a".into(),
                 offset: 0,
                 size: 1,
+                bits: None,
             },
             Field {
                 name: "big".into(),
                 offset: 8,
                 size: 8,
+                bits: None,
             },
             Field {
                 name: "b".into(),
                 offset: 16,
                 size: 1,
+                bits: None,
             },
         ],
     }
@@ -145,6 +149,7 @@ fn a_struct_whose_layout_escapes_gets_an_advisory_proposal_that_says_so() {
             name: "seq".into(),
             offset: 60,
             size: 8,
+            bits: None,
         }],
     };
     for (what, r) in [
@@ -262,11 +267,13 @@ fn a_well_packed_struct_yields_no_proposals() {
                 name: "x".into(),
                 offset: 0,
                 size: 8,
+                bits: None,
             },
             Field {
                 name: "y".into(),
                 offset: 8,
                 size: 8,
+                bits: None,
             },
         ],
     };
@@ -300,16 +307,19 @@ fn a_padding_proposal_says_where_the_padding_is() {
                 name: "a".into(),
                 offset: 0,
                 size: 1,
+                bits: None,
             },
             Field {
                 name: "big".into(),
                 offset: 8,
                 size: 8,
+                bits: None,
             },
             Field {
                 name: "b".into(),
                 offset: 16,
                 size: 1,
+                bits: None,
             },
         ],
     };
@@ -355,16 +365,19 @@ fn the_padding_it_names_and_the_padding_it_recovers_are_reconciled() {
                 name: "a".into(),
                 offset: 0,
                 size: 1,
+                bits: None,
             },
             Field {
                 name: "big".into(),
                 offset: 8,
                 size: 8,
+                bits: None,
             },
             Field {
                 name: "b".into(),
                 offset: 16,
                 size: 1,
+                bits: None,
             },
         ],
     };
@@ -382,5 +395,222 @@ fn the_padding_it_names_and_the_padding_it_recovers_are_reconciled() {
     assert!(
         ev.contains("14 bytes of padding") && ev.contains("8"),
         "the total holes and what a reorder recovers are both stated: {ev}"
+    );
+}
+
+/// **Contract 25 — a bit-field run is one member, and the bytes around it are countable.**
+///
+/// `struct { char tag; int big; unsigned a : 1; unsigned b : 1; unsigned c : 1; unsigned d :
+/// 1; }` is 12 bytes under gcc 13.3 and **8** with `int` first, so there are 4 real bytes
+/// here. Withholding the number because the record holds a bit-field left out exactly the
+/// hand-tuned structs where padding matters most; 041 §3.1 gives the description bits instead.
+///
+/// **This fixture rather than a rounder one, because it discriminates.** The obvious mistake
+/// is to count each bit-field as the byte it starts in: that sums 4 + 1 + 1 + 1 + 1 + 1 to 9,
+/// rounds to 12, and produces no proposal at all — so the assertion below can tell the two
+/// models apart. On `char; long; unsigned a:3; unsigned b:5;` they both answer 8, and a test
+/// written there would have passed without seeing anything, which is the trap this file keeps
+/// re-learning.
+///
+/// The bit offsets are gcc's, transcribed: `big` takes bits 32..64, and `a`..`d` are bits
+/// 64..68 — one byte, shared, at offset 8.
+#[test]
+fn a_bit_field_run_is_one_member_and_the_padding_around_it_is_counted() {
+    let bit = |name: &str, bit_offset: u64| Field {
+        name: name.into(),
+        offset: bit_offset / 8,
+        size: 1,
+        bits: Some(BitExtent {
+            bit_offset,
+            width: 1,
+        }),
+    };
+    let r = Record {
+        tag: "q".into(),
+        size: 12,
+        align: 4,
+        packed: false,
+        externally_visible: false,
+        fields_complete: true,
+        fields: vec![
+            Field {
+                name: "tag".into(),
+                offset: 0,
+                size: 1,
+                bits: None,
+            },
+            Field {
+                name: "big".into(),
+                offset: 4,
+                size: 4,
+                bits: None,
+            },
+            bit("a", 64),
+            bit("b", 65),
+            bit("c", 66),
+            bit("d", 67),
+        ],
+    };
+    let props = analyse(&r, &LocalityCfg::default());
+    let pad = props
+        .iter()
+        .find(|p| matches!(p.kind, OptKind::PaddingWaste { .. }))
+        .expect("12 bytes that gcc says would be 8 — contract 25");
+    assert!(
+        matches!(pad.kind, OptKind::PaddingWaste { recoverable: 4 }),
+        "`int, char, bits` is 8 bytes under gcc, so 4 come back: {:?}",
+        pad.kind
+    );
+
+    // **The run is named as a run.** Reporting the tail hole as "after `a`" would be false of
+    // the other three, which sit in the same byte; naming one of them alone hides that moving
+    // it moves all four. One member, named as what it is.
+    let ev = pad.evidence.join("\n");
+    assert!(
+        ev.contains("bit-field") && ev.contains('a') && ev.contains('d'),
+        "the hole after the bit-fields names them as one run: {ev}"
+    );
+    // Three bytes between `tag` and `big`, three more after the run to the record's end.
+    assert!(
+        ev.contains("`tag`") && ev.contains("`big`"),
+        "the interior hole still names both sides: {ev}"
+    );
+}
+
+/// **Contract 25 — nothing to recover is not the same fact as nothing chiero could judge.**
+///
+/// `struct { char tag; unsigned a : 3; unsigned b : 5; long big; }` is 16 bytes and no order
+/// makes it smaller: the two bit-fields share the byte after `tag`, and `long` needs its
+/// alignment. Silence here is the right answer for the right reason, and the reason is why
+/// this is a separate test from the one above rather than a second assertion in it.
+#[test]
+fn bit_fields_that_already_pack_tight_yield_no_proposal() {
+    let r = Record {
+        tag: "with_bits".into(),
+        size: 16,
+        align: 8,
+        packed: false,
+        externally_visible: false,
+        fields_complete: true,
+        fields: vec![
+            Field {
+                name: "tag".into(),
+                offset: 0,
+                size: 1,
+                bits: None,
+            },
+            Field {
+                name: "a".into(),
+                offset: 1,
+                size: 1,
+                bits: Some(BitExtent {
+                    bit_offset: 8,
+                    width: 3,
+                }),
+            },
+            Field {
+                name: "b".into(),
+                offset: 1,
+                size: 1,
+                bits: Some(BitExtent {
+                    bit_offset: 11,
+                    width: 5,
+                }),
+            },
+            Field {
+                name: "big".into(),
+                offset: 8,
+                size: 8,
+                bits: None,
+            },
+        ],
+    };
+    let props = analyse(&r, &LocalityCfg::default());
+    assert!(
+        !props
+            .iter()
+            .any(|p| matches!(p.kind, OptKind::PaddingWaste { .. })),
+        "8 + 1 + 1 rounds to 16, which is what it already is: {props:?}"
+    );
+}
+
+/// **Contract 25 / §3.1 — the reorder moves the run, it does not repack the bits.**
+///
+/// `struct { unsigned a : 1; unsigned : 0; unsigned b : 1; char tail; }` is 8 bytes: the
+/// zero-width member forces `b` into the next allocation unit at bit 32, so the run spans
+/// bytes 0..5 for two bits of payload. **Adding the widths instead would say the run is one
+/// byte** and offer 4 bytes back — a floor no declaration order reaches, because the
+/// allocation-unit rule follows the members wherever they go. gcc agrees: the reordered
+/// declaration is still 8.
+///
+/// This is the direction that matters. An analysis that under-claims loses a finding; one
+/// that over-claims sends somebody to reorder a struct for bytes that are not there.
+#[test]
+fn the_reorder_moves_a_bit_field_run_whole_rather_than_repacking_it() {
+    let r = Record {
+        tag: "z".into(),
+        size: 8,
+        align: 4,
+        packed: false,
+        externally_visible: false,
+        fields_complete: true,
+        fields: vec![
+            Field {
+                name: "a".into(),
+                offset: 0,
+                size: 1,
+                bits: Some(BitExtent {
+                    bit_offset: 0,
+                    width: 1,
+                }),
+            },
+            // The unnamed zero-width member: it forces the next unit and occupies nothing.
+            Field {
+                name: "<anonymous member at offset 4>".into(),
+                offset: 4,
+                size: 0,
+                bits: Some(BitExtent {
+                    bit_offset: 32,
+                    width: 0,
+                }),
+            },
+            Field {
+                name: "b".into(),
+                offset: 4,
+                size: 1,
+                bits: Some(BitExtent {
+                    bit_offset: 32,
+                    width: 1,
+                }),
+            },
+            Field {
+                name: "tail".into(),
+                offset: 5,
+                size: 1,
+                bits: None,
+            },
+        ],
+    };
+    let props = analyse(&r, &LocalityCfg::default());
+    assert!(
+        !props
+            .iter()
+            .any(|p| matches!(p.kind, OptKind::PaddingWaste { .. })),
+        "the run is five bytes wherever it goes, so 8 is the floor gcc reaches: {props:?}"
+    );
+}
+
+/// **A member the caller could not size at all still yields no number** — `fields_complete`
+/// keeps meaning what it meant, and a bit-field has simply stopped being one of its causes.
+#[test]
+fn a_field_list_that_is_still_partial_still_yields_no_padding_number() {
+    let mut r = padded();
+    r.fields_complete = false;
+    let props = analyse(&r, &LocalityCfg::default());
+    assert!(
+        !props
+            .iter()
+            .any(|p| matches!(p.kind, OptKind::PaddingWaste { .. })),
+        "a sum over a list missing a member is wrong in the flattering direction: {props:?}"
     );
 }

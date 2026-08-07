@@ -242,11 +242,13 @@ fn layout_samples() -> Vec<Envelope> {
                 name: "a".into(),
                 offset: 0,
                 size: 1,
+                bits: None,
             },
             Field {
                 name: "big".into(),
                 offset: 8,
                 size: 8,
+                bits: None,
             },
         ],
     };
