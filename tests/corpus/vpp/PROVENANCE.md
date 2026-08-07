@@ -8,7 +8,7 @@ These files are copied **unmodified** from VPP and are not chiero's work.
   the original authors.
 - Local checkout the copy was taken from: `/home/ubuntu/vpp/src`
 
-## Why these 28 files and not others
+## Why these 113 files and not others
 
 They are the **transitive VPP-local include closure** of six vppinfra headers —
 `vec.h`, `pool.h`, `bitmap.h`, `format.h`, `hash.h`, `error.h` — computed by following
@@ -16,6 +16,21 @@ every `#include` and keeping the ones that resolve inside `vpp/src`. Everything 
 closure reaches is a system header (`stddef.h`, `stdarg.h`, `string.h`, …) or is behind a
 false conditional (`vppinfra/config.h`, which is generated at build time and never
 reached in this configuration).
+
+**Widened 2026-08-07 by one seed** — `vnet/session/session_types.h` — which adds its own
+closure of 86 files and brings `vlib`, `svm` and `vnet` in for the first time. §8.3 of the
+handoff records why: twenty headers from one directory is a gate that can only see what that
+directory does, and this seed found a defect on its first run (an attribute after a typedef
+declarator, read as the record definition's — glibc's `__pthread_unwind_buf_t`, and so every
+TU that reaches `<pthread.h>`).
+
+**Two files here are generated, not upstream source**: `vlib/config.h` and `vpp/vnet/config.h`,
+copied from `build-root/install-vpp-native/vpp/include/` of the same checkout. They are cmake
+output rather than checked-in source, so the "resolves inside `vpp/src`" rule above does not
+describe them — but `vlib/buffer.h` includes `vlib/config.h` unconditionally and the closure
+does not preprocess without it. Their contents are four `#define`s of build configuration
+(`VLIB_BUFFER_PRE_DATA_SIZE` and friends), which is what VPP really compiles with.
+`vppinfra/config.h` is still absent and still unreached, as described above.
 
 The closure is the point. Contract 19 is about **preprocessed** TUs, and a hand-written
 fixture cannot stand in for one: these six headers expand to 250,000–290,000 tokens each,

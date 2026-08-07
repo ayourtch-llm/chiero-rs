@@ -720,6 +720,18 @@ impl Analysis {
     }
 
     /// The alignment `d`'s declarator asked for, if it asked for more than its type's own.
+    /// The alignment a **typedef name** carries, for `typedef struct {…} T
+    /// __attribute__((aligned(16)));`.
+    ///
+    /// **Not the record's** — C puts a post-declarator attribute on the name, so `_Alignof(T)`
+    /// is 16 while the struct it names stays 8-aligned, and `sizeof(T)` is the struct's either
+    /// way. A consumer comparing chiero's answer against `_Alignof` of the *name* must ask this
+    /// as well as `RecordLayout::align`; conflating them is what the contract-12 gate did, and
+    /// it reported a defect in a layout that was right.
+    pub fn typedef_align(&self, name: Symbol) -> Option<u64> {
+        self.typedef_aligns.get(&name).copied()
+    }
+
     pub fn decl_align(&self, d: DeclId) -> Option<u64> {
         self.decl_aligns.get(&d).copied()
     }
@@ -3790,7 +3802,18 @@ impl Cx<'_> {
             // re-introduce padding before the member — it only raises the record's own
             // alignment. 014 §3 calls this out because getting it backwards is the
             // common error.
-            let requested = self.aligned_attr(ty);
+            // **`declared_align`, not `aligned_attr`: the typedef the member names may carry
+            // one.** `typedef struct {…} clib_longjmp_t __attribute__((aligned(16)));` puts the
+            // alignment on the *name*, so a member declared `clib_longjmp_t j;` is 16-aligned
+            // although its own declarator asks for nothing and the record it names is 8-aligned.
+            //
+            // This was masked by the defect above it: while the attribute was wrongly applied to
+            // the record, the member inherited the alignment through the record's own, and the
+            // enclosing struct came out right by two cancelling errors. Moving the attribute to
+            // the name — which is where C puts it — is only correct if the name is then honoured
+            // where it is used, and the contract-12 gate said so immediately: one rejection
+            // became eleven, VPP's `serialize_main_t` among them.
+            let requested = self.declared_align(ty);
 
             let bw = self.ast.bitfield(m);
             if let Some(bw) = bw {

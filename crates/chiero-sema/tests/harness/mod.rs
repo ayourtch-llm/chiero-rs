@@ -253,6 +253,16 @@ pub const CORPUS_SEEDS: &[&str] = &[
     "vppinfra/vec.h",
     "vppinfra/vector.h",
     "vppinfra/warnings.h",
+    // **Not `vppinfra/`, and that is the point.** Every seed above came from one directory, so
+    // the contract-12 layout gate could only ever see what that directory does. Measured: no
+    // `vppinfra/` header declares an unnamed bit-field, so 014 contract 4a's defect passed the
+    // gate untouched, and it took a hand-written fixture to find it.
+    //
+    // This seed pulls in `vlib`, `svm` and `vnet` — 570 records and 3010 assertions, against
+    // 5482 for all twenty above — and it found a second defect on its first run: an attribute
+    // after a typedef declarator was being read as the record definition's, which is glibc's
+    // `__pthread_unwind_buf_t` and therefore every TU that reaches `<pthread.h>`.
+    "vnet/session/session_types.h",
 ];
 
 pub fn corpus_dir() -> std::path::PathBuf {

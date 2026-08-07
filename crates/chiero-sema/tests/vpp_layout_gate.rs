@@ -115,6 +115,13 @@ struct Named<'a> {
     keyword: &'static str,
     tag: String,
     layout: &'a RecordLayout,
+    /// The alignment the **typedef name** carries, when the record is reached through one.
+    ///
+    /// `_Alignof(T)` answers about the name, `RecordLayout::align` about the struct, and
+    /// `typedef struct {…} T __attribute__((aligned(16)));` makes them differ. Asserting the
+    /// second against the first reported `__pthread_unwind_buf_t` and VPP's `clib_longjmp_t`
+    /// as defects when both layouts were right.
+    name_align: Option<u64>,
 }
 
 #[test]
@@ -153,7 +160,7 @@ fn every_corpus_record_layout_is_accepted_by_gcc() {
         // and still report zero failures. That was the first version of this gate.
         let mut named: Vec<Named> = Vec::new();
         let mut anonymous = 0usize;
-        let mut by_typedef: indexmap::IndexMap<u32, String> = Default::default();
+        let mut by_typedef: indexmap::IndexMap<u32, (String, Option<u64>)> = Default::default();
         for &item in parsed.ast.items() {
             if let chiero_ast::DeclKind::Typedef { name, .. } = &parsed.ast.decl(item).kind {
                 let Some(ty) = analysis.ty_of_decl(item) else {
@@ -162,7 +169,15 @@ fn every_corpus_record_layout_is_accepted_by_gcc() {
                 if let (chiero_sema::Ty::Record(r), Some(text)) =
                     (analysis.ty(ty), parsed.text(*name))
                 {
-                    by_typedef.entry(r.0).or_insert_with(|| text.to_owned());
+                    // **The name's own alignment travels with the name.** `typedef struct {…}
+                    // T __attribute__((aligned(16)));` leaves the struct 8-aligned and makes
+                    // `_Alignof(T)` 16, so a gate that asserts the record's alignment against
+                    // `_Alignof(T)` is comparing two different quantities — and reported a
+                    // defect in a layout that agreed with gcc everywhere it was asked.
+                    let a = analysis.typedef_align(*name);
+                    by_typedef
+                        .entry(r.0)
+                        .or_insert_with(|| (text.to_owned(), a));
                 }
             }
         }
@@ -185,11 +200,15 @@ fn every_corpus_record_layout_is_accepted_by_gcc() {
                     t.to_owned(),
                 )
             });
-            match tagged.or_else(|| by_typedef.get(&rid.0).map(|t| ("", t.clone()))) {
-                Some((keyword, tag)) => named.push(Named {
+            match tagged
+                .map(|(k, t)| (k, t, None))
+                .or_else(|| by_typedef.get(&rid.0).map(|(t, a)| ("", t.clone(), *a)))
+            {
+                Some((keyword, tag, name_align)) => named.push(Named {
                     keyword,
                     tag,
                     layout,
+                    name_align,
                 }),
                 None => anonymous += 1,
             }
@@ -202,9 +221,14 @@ fn every_corpus_record_layout_is_accepted_by_gcc() {
                 "_Static_assert(sizeof({} {}) == {}, \"size {}\");\n",
                 n.keyword, n.tag, n.layout.size, n.tag
             ));
+            // The record's alignment, raised by whatever the *name* asks for when the record
+            // is reached through a typedef that carries an `aligned` attribute of its own.
             prog.push_str(&format!(
                 "_Static_assert(_Alignof({} {}) == {}, \"align {}\");\n",
-                n.keyword, n.tag, n.layout.align, n.tag
+                n.keyword,
+                n.tag,
+                n.layout.align.max(n.name_align.unwrap_or(1)),
+                n.tag
             ));
             asserts += 2;
             for f in &n.layout.fields {
