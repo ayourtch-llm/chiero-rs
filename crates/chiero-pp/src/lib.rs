@@ -473,7 +473,12 @@ impl Engine {
         ] {
             engine.add_predefined_object(name, value);
         }
-        for name in ["__has_include", "__has_attribute", "__has_builtin"] {
+        for name in [
+            "__has_include",
+            "__has_attribute",
+            "__has_builtin",
+            "__has_c_attribute",
+        ] {
             engine.add_predefined_query(name);
         }
         for (name, value) in engine.config.defines.clone() {
@@ -1598,23 +1603,20 @@ impl Engine {
     /// impersonation of the build compiler rather than a self-report. A name the table does not
     /// cover answers `0`, since `#if` must yield a number, and says so once per distinct name.
     fn answer_feature_queries(&mut self, tokens: Vec<Tok>) -> Vec<Tok> {
-        if !tokens
-            .iter()
-            .any(|token| matches!(token.text.as_str(), "__has_attribute" | "__has_builtin"))
-        {
+        if !tokens.iter().any(|token| is_feature_query(&token.text)) {
             return tokens;
         }
         let mut out = Vec::with_capacity(tokens.len());
         let mut i = 0;
         while i < tokens.len() {
-            if matches!(tokens[i].text.as_str(), "__has_attribute" | "__has_builtin")
+            if is_feature_query(&tokens[i].text)
                 && tokens.get(i + 1).is_some_and(|token| token.text == "(")
                 && tokens.get(i + 3).is_some_and(|token| token.text == ")")
                 && let Some(name) = tokens.get(i + 2)
             {
                 let query = tokens[i].text.clone();
                 let value = match features::answer(&query, &name.text) {
-                    Some(supported) => supported,
+                    Some(value) => value,
                     None => {
                         if self.unknown_queries.insert(name.text.clone()) {
                             self.diagnostics.push(Diagnostic {
@@ -1626,13 +1628,10 @@ impl Engine {
                                 ),
                             });
                         }
-                        false
+                        0
                     }
                 };
-                out.push(synthetic_number(
-                    if value { "1" } else { "0" },
-                    tokens[i].token.span,
-                ));
+                out.push(synthetic_number(&value.to_string(), tokens[i].token.span));
                 i += 4;
             } else {
                 out.push(tokens[i].clone());
@@ -2286,6 +2285,19 @@ fn span_from_ends(first: Span, last: Span) -> Span {
 /// The single call point is what makes the rule checkable: a body reaching `self.macros` without
 /// passing through here is a macro whose `##` silently stops working, and there is no second
 /// place that can make a token an operator.
+/// The queries [`Engine::answer_feature_queries`] answers, in **one** place.
+///
+/// It was two: a fast-path guard that skipped the whole pass when no query was present, and the
+/// matcher inside it. Adding `__has_c_attribute` to the matcher and not the guard made the pass
+/// return before it could ever run — a predicate written twice is a predicate that will disagree
+/// with itself, and this one did so within a minute of being duplicated.
+fn is_feature_query(text: &str) -> bool {
+    matches!(
+        text,
+        "__has_attribute" | "__has_builtin" | "__has_c_attribute"
+    )
+}
+
 fn mark_paste_operators(body: &mut [Tok]) {
     for token in body {
         if matches!(token.token.kind, PpTokenKind::Punct(Punct::HashHash)) {

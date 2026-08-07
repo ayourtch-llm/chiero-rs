@@ -33,6 +33,73 @@
 use chiero_pp::{Config, preprocess_str};
 use std::process::Command;
 
+/// gcc's answer as a **number**, asked in program text.
+///
+/// ⚠️ **This replaced a `bool` oracle, and the `bool` was hiding something.** A feature query
+/// yields a value: `__has_c_attribute(deprecated)` is `201904` under gcc 13. Comparing
+/// truthiness would have let the table claim `1` there and called it agreement. gcc evaluates
+/// all three queries in program text, so one line of C reads the value out exactly.
+fn gcc_value(query: &str, name: &str) -> u32 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!("chiero-fqv-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(format!("v{}.c", NEXT.fetch_add(1, Ordering::Relaxed)));
+    std::fs::write(&path, format!("{query}({name})\n")).unwrap();
+    let output = Command::new("gcc")
+        .args(["-E", "-P"])
+        .arg(&path)
+        .output()
+        .expect("gcc is required for the feature-query oracle");
+    let _ = std::fs::remove_file(&path);
+    let text = String::from_utf8(output.stdout).unwrap();
+    text.split_whitespace()
+        .collect::<String>()
+        .parse()
+        .unwrap_or_else(|_| panic!("gcc gave no number for {query}({name})"))
+}
+
+/// chiero's answer as a number, through the same program-text path.
+fn chiero_value(query: &str, name: &str) -> (u32, Vec<String>) {
+    let tu = preprocess_str("q.c", &format!("{query}({name})\n"), Config::default());
+    let texts: Vec<_> = tu.token_texts().collect();
+    assert_eq!(texts.len(), 1, "expected one token, got {texts:?}");
+    (
+        texts[0].parse().unwrap_or_else(|_| panic!("not a number: {texts:?}")),
+        tu.diagnostics.iter().map(|d| d.message.clone()).collect(),
+    )
+}
+
+/// **`__has_c_attribute` answers a version, not a truth.**
+///
+/// gcc 13 defines it at every `-std` level and returns the C standard's version for each
+/// attribute. The `0` rows are the discriminating ones: `reproducible` and `unsequenced` are C23
+/// attributes gcc 13 does not have, so a table that answered "1 for anything plausible" fails
+/// here.
+#[test]
+fn has_c_attribute_answers_the_version_gcc_does() {
+    for name in [
+        "deprecated",
+        "nodiscard",
+        "maybe_unused",
+        "fallthrough",
+        "noreturn",
+        "__deprecated__",
+        "reproducible",
+        "unsequenced",
+    ] {
+        let expected = gcc_value("__has_c_attribute", name);
+        let (ours, diagnostics) = chiero_value("__has_c_attribute", name);
+        assert_eq!(ours, expected, "__has_c_attribute({name})");
+        assert!(
+            diagnostics.is_empty(),
+            "the table covers {name}, so nothing was guessed: {diagnostics:?}"
+        );
+    }
+    // A version is not 1 — the assertion the old `bool` oracle could not make.
+    assert!(gcc_value("__has_c_attribute", "deprecated") > 1);
+}
+
 /// gcc's answer, asked directly. The oracle for every case in this file.
 ///
 /// ⚠️ **The scratch file is unique per *call*, and it took two goes to get there.** Keying it on
@@ -251,7 +318,7 @@ fn the_query_names_are_still_defined() {
 fn every_table_entry_still_matches_gcc() {
     let mut checked = 0;
     for &(query, name, expected) in chiero_pp::features::TABLE {
-        let actual = gcc_says(query, name);
+        let actual = gcc_value(query, name);
         assert_eq!(
             actual, expected,
             "the table says {query}({name}) = {expected}, gcc 13 on this machine says {actual}"
