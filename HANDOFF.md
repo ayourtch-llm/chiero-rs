@@ -1534,12 +1534,19 @@ This has now paid out three times in a row, each time on the first run after a w
 | both corpora → `+ vlib/vlib.h` | **free** — its whole 67-file closure was already there | **zero defects.** Layout gate 8492 → **10248 assertions**, 2238 records; parse 357k tokens, 0 diagnostics. It is the seed that reaches `vlib/trace.h`, so that header is now under the gate rather than only in an error message |
 | **a new *kind* of edge: simplecpp's `testsuite/`, 141 C preprocessor cases** | one wave | **the richest yield yet — see §7.11.** 22 findings on the first run including **2 panics on the C standard's own worked example**. Every corpus before it was real VPP code |
 | *reading what that gate left behind*, rather than what it failed on | one wave | §7.12: the compiler-persona defect — `__has_attribute` claimed the capability and answered 0 to everything, silently. **The residue of a gate is a corpus too** |
+| the same gate, one `Todo` row — but **measuring every row of the file, not the one it named** | one wave | §7.13: **two opposite defects behind one guard**. The gate had pointed at the wrong row; the reported one was already correct |
+| `differential.rs`'s logical-operator rows: `int`-only → wider-than-`int`, mixed types, four-way short-circuit | one wave | **zero defects — and the wave was mis-scoped.** Most of what I "widened" was already covered, including the exact `-0.0` case I had picked as the discriminator. §8.3 step 1 says *ask what the corpus cannot contain*; I asked what I imagined it could not |
 
 The loop, and it is deliberately mechanical:
 
-1. **Find the edge.** Ask what the corpus *cannot* contain. `CORPUS_SEEDS` was twenty headers
-   from one directory — so no unnamed bit-field, no typedef-attribute, nothing `vlib` does.
-   The question is never "is the gate green", it is "what is the gate incapable of seeing".
+1. **Find the edge — by *reading the corpus*, not by imagining it.** Ask what it *cannot*
+   contain. `CORPUS_SEEDS` was twenty headers from one directory — so no unnamed bit-field, no
+   typedef-attribute, nothing `vlib` does. The question is never "is the gate green", it is
+   "what is the gate incapable of seeing".
+   ⚠️ **Grep the corpus for the construct before claiming it is absent.** A wave on 2026-08-07
+   was scoped around `-0.0 && 1` as the case nothing covered; two tests had pinned it in an
+   earlier wave, under names that did not contain the word "logical". Cost: a whole wave to
+   re-prove what held. `git stash` + grep the *pre-change* file is the five-second version.
 2. **Widen by one.** One seed, one directory, one file class. One, because the next step is
    reading failures and a wide widening produces a pile nobody can attribute.
 3. **Read what it rejects, and do not fix it yet.** The first run's failure list is the
@@ -1832,7 +1839,14 @@ typing the paths ever would.
    Reproduce: `/home/ubuntu/simplecpp/testsuite/clang-preprocessor-tests/macro_fn_comma_swallow.c`,
    or the four `#define`s above through `gcc -E -P` beside `preprocess_str`.
 
-5. **A missing assertion rather than a defect: 014 contract 11's other half.**
+5. ### ✅ **DONE 2026-08-07 — 014 contract 11's other half. Zero defects, and a mis-scoped wave.**
+   Lowering already calls `truth_of` per operand and gets every case right. Three rows landed in
+   `differential.rs` that were genuinely absent — an operand wider than `int`, operands of
+   different types, and four-way short-circuiting with a side effect — and the rest of what I
+   had queued **was already covered by earlier waves**, including the `-0.0` case I had named as
+   the killer discriminator. ⚠️ **Read the corpus before asserting its edge.**
+
+   *(the entry as filed, kept because its premise was wrong:)*
    `chiero-sema`'s conversion census says in a comment what it cannot see — that lowering must
    insert a compare-against-zero per operand of `&&`/`||`, which is contract 11's actual
    subject. **Lowering does do this correctly** (`truth_of` per operand, checked), so this is a
