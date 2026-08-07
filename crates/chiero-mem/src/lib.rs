@@ -1175,18 +1175,31 @@ impl MemFault {
     /// A caller must still **degrade** for these: the answer is weaker, and the engine says so
     /// with a fidelity and a named assumption. What it may not do is put them in a defect list.
     ///
-    /// ⚠️ **`BadRange` belongs to this class and is deliberately not in it yet.**
-    /// "unsupported-access-width" on a 32-byte AVX load is the same sentence about chiero, and
-    /// the note beside it in `read_term` already draws the line — *"`BadRange` is a chiero
-    /// limit; a use-after-free is a fact about the program, and reporting the limit instead
-    /// hides the bug"*. It still reports because three tests in `chiero-exec/tests/step.rs` use
-    /// it as their probe for `FindingKey`'s `func` and `span` components, and it is the **only**
-    /// objectless non-fatal fault there is: `NullDeref` and `WildPointer` are objectless and
-    /// fatal, so neither can produce two findings on one path. Moving `BadRange` here means
-    /// giving those tests a probe first, and doing it the other way round would trade a wrong
-    /// finding for a hole in the deduplication rules.
+    /// **`BadRange` joins it**, which took several waves for a reason worth keeping. It is the
+    /// same sentence about chiero — "256-bit access exceeds the 128-bit limit chiero can carry"
+    /// on a 32-byte AVX load VPP writes routinely — and the note beside it in `read_term`
+    /// already drew the line: *"`BadRange` is a chiero limit; a use-after-free is a fact about
+    /// the program, and reporting the limit instead hides the bug"*.
+    ///
+    /// What held it back was not an argument but two fixtures. `BadRange` is the **only**
+    /// objectless non-fatal fault there is — `NullDeref` and `WildPointer` are objectless and
+    /// fatal — so it was the only way to put two findings agreeing on `object` on one path, and
+    /// two of `FindingKey`'s component probes were written with it. Moving it first would have
+    /// traded a wrong finding for a hole in the deduplication rules. They are now written with
+    /// `overlapping-copy` over a **shared** object instead, and the mutants confirm each still
+    /// pins its own component.
+    ///
+    /// `is_fatal` had already reached the same answer about `BadRange` for the same reason —
+    /// a limit of chiero's is not a reason to stop executing the program either — so this
+    /// closes a disagreement between two predicates rather than opening one. The two lists are
+    /// **not** the same and must not be made so: `is_fatal` also excludes `AllocationTooLarge`,
+    /// `MaybeUninitialized` and `OutOfBoundsMaybe`, which are *possibilities* about the program
+    /// and belong in a defect list precisely because chiero could not rule them out.
     pub fn is_chiero_limit(&self) -> bool {
-        matches!(self, MemFault::SymbolicByte { .. })
+        matches!(
+            self,
+            MemFault::SymbolicByte { .. } | MemFault::BadRange { .. }
+        )
     }
 
     pub fn yields_unknown_value(&self) -> bool {
