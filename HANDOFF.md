@@ -1276,7 +1276,9 @@ green VPP gates said nothing about them.
 | first, before any fix | **22** | of which **2 panics** |
 | after the paste-operator fix | 19 | both panics gone, agreement 92 → 95 of 141 |
 | after splitting the refused bucket | 21 | +2 *seen for the first time*, §7.10's shape again |
-| after the hide-set intersection | **18** | agreement **97 of 141**; `Expected`-prior divergences **4 → 1** |
+| after the hide-set intersection | 18 | agreement 97 of 141; `Expected`-prior divergences **4 → 1** |
+| after the compiler persona (§7.12) | 17 | agreement 98 |
+| after the GNU comma-swallow rule (§7.13) | **16** | agreement **99 of 141**; two `todo` files simplecpp itself still fails now pass |
 
 **Three `Expected`-prior rows remain of the 17, and none is a plain defect** — stated precisely,
 because "one is left" was a earlier shorthand for the `DIFFERS` count alone:
@@ -1441,6 +1443,47 @@ gave 37 ok, 2 cut, **0 failed**, 20 findings (was 23).
 ⚠️ **My own oracle raced and lied first.** The table test keyed its scratch file on the pid,
 which every test in a binary shares, so it failed in the suite and passed alone — reporting a
 table mismatch that did not exist. §11.2 again, on a harness written the same hour.
+
+### 7.13 GNU comma-swallow, 2026-08-07 — one guard hiding two opposite defects
+
+Third wave from the same corpus, and the first where **the gate named the wrong row**.
+
+`macro_fn_comma_swallow.c` was in the `Todo` cluster and pp-gate reported it diverging at
+`x##,##__VA_ARGS__`. Measuring all six rows instead of the reported one moved the diagnosis
+twice — §11.2's *a dominant finding is a lid, not a summary* applies to a first-divergence report
+exactly as it did to a sweep:
+
+| row | gcc and clang | chiero, before |
+|---|---|---|
+| `#define X2(Y) fo2{A,##Y}` / `X2()` | `fo2{A,}` | `fo2{A}` — **the comma wrongly eaten** |
+| `X2(z)` | `,z` is not a token, **gcc rejects** | accepted in silence — **a hidden invalid paste** |
+| `#define X5(x,...) x##,##__VA_ARGS__` / `X5(1)` | `1`, silently | `1` with a **spurious** diagnostic |
+| `X5(1,2)` | `1 , 2`, **gcc errors** | already correct |
+
+⚠️ **The first probe got X5 backwards because it read gcc through a closed channel** — stderr
+suppressed, clean stdout, so "chiero's diagnostic is spurious" for the row where gcc calls it an
+error. The test now asserts gcc's **exit status** beside its tokens, and `X5(1,2)` is in the
+suite precisely as the row that fails if a fix merely silences the diagnostic.
+
+**The rule: GNU comma-swallowing is about `, ## <variadic parameter>` and about nothing else.**
+`, ## Y` for an ordinary parameter is an ordinary paste — the comma survives an empty argument
+and fuses (invalidly) with a non-empty one. chiero decided from the *comma* and from *emptiness*,
+neither of which distinguishes the two, so one branch produced two opposite errors: it ate a
+comma that should stay, and it swallowed a diagnostic that should fire.
+
+`Tok::from_variadic` is set in `substitute`, where the parameter still has a name — which is the
+only place the distinction exists, since an empty ordinary argument and an empty variadic one are
+identical by the time `paste` sees them. Third flag on `Tok` this session, all three for the same
+reason: **`paste` runs after substitution has erased what it needs to know.**
+
+A third consequence fell out: a comma the `, ## <empty variadic>` group has claimed is not
+available to a preceding `##`, so `x##,##__VA_ARGS__` is silent — narrow by construction, because
+with a non-empty tail gcc really does call `1 ## ,` an error and chiero still does.
+
+⚠️ **`right.from_variadic` subsumes the `!right.paste_op` guard added earlier the same session.**
+That guard was the right answer to the wrong question — it named two things the extension does
+*not* apply to, where the rule is what it **does** apply to. A guard that enumerates exclusions
+is a guard waiting for the next one.
 
 ### 7.5 How to check the workspace is green — `./check.sh`
 
@@ -1755,7 +1798,12 @@ typing the paths ever would.
    `-march=x86-64-v2`, so `__SSE4_2__` is undefined and `vppinfra/crc32.h` never defines
    `clib_crc32c_with_init`. The other four are two parser/sema gaps in generated API headers.
 
-4. ### 🎯 **NEXT, and it is a real defect rather than a missing assertion: GNU comma-swallow beside an ordinary paste**
+4. ### ✅ **DONE 2026-08-07 — GNU comma-swallow.** See **§7.13**. Two opposite defects behind one
+   guard, and the gate had named the wrong row. What follows is the entry as filed, kept because
+   **the diagnosis in it was wrong** and correcting it took measuring every row of the fixture:
+
+   *(filed diagnosis, superseded — the divergence was `X2`, not `X5`, and `X5`'s tokens were
+   already right)*
 
    From the pp-gate's `Todo` cluster (§7.11) — `macro_fn_comma_swallow.c`, and **gcc and clang
    agree on every row**, so this is not one of the UB rows where the oracles split:
@@ -2055,6 +2103,11 @@ doubles the wake-ups.
   people write them*, which is a systematically biased sample — the dark corners are never in it,
   and no amount of widening within it reaches them. **When the yield table flattens, change the
   kind rather than the size.**
+- ⚠️ **A guard that enumerates exclusions is waiting for the next exclusion.** The GNU comma
+  branch was guarded with `!right.paste_op` — true, useful, and the wrong shape: it named two
+  things the extension does not apply to, when the rule is what it **does** apply to
+  (`right.from_variadic`). The narrow guard shipped in the same session as the fix that replaced
+  it. **State the positive rule; a list of things it is not never terminates.**
 - ⚠️ **The harness is defective more often than you expect, and it fails *flatteringly*.** In one
   session: a gcc oracle that raced on a shared scratch path (**twice** — the second key was still
   a guess about which callers exist), a probe comparing whitespace-split words instead of tokens
