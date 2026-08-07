@@ -1278,10 +1278,21 @@ green VPP gates said nothing about them.
 | after splitting the refused bucket | 21 | +2 *seen for the first time*, §7.10's shape again |
 | after the hide-set intersection | **18** | agreement **97 of 141**; `Expected`-prior divergences **4 → 1** |
 
-**The one `Expected` divergence left is `__VA_OPT__`**, which 012 §2.3 declares out of scope for
-v1 by measurement (VPP uses it zero times) and diagnoses rather than passing through. The rest
-of the 18 are `Skipped`/`Todo` priors — and chiero now passes one file simplecpp itself still
+**Three `Expected`-prior rows remain of the 17, and none is a plain defect** — stated precisely,
+because "one is left" was a earlier shorthand for the `DIFFERS` count alone:
+
+| file | class | what it is |
+|---|---|---|
+| `macro_fn_va_opt.c` | DIFFERS | `__VA_OPT__`, which 012 §2.3 declares out of v1 scope by measurement (VPP uses it zero times) and **diagnoses** rather than passing through |
+| `pr58844-1.c`, `-2.c` | MATCHED NEITHER | `#define A x######x` — UB per 6.10.3.3p3, and **the two compilers disagree**: gcc silently produces `xx`, clang rejects it. There is no single right answer to match |
+
+The rest are `Skipped`/`Todo` priors — and chiero now passes one file simplecpp itself still
 lists as `todo`, which is the result that says the corpus is worth keeping.
+
+⚠️ **This is why `pp-gate` can become a gate but its threshold is not zero.** The honest form is
+"fail on an `Expected`-prior `DIFFERS` that is not a declared scope limit, and print NOTHING WAS
+MEASURED when `$SIMPLECPP` is absent" — a `MATCHED NEITHER` where gcc and clang disagree is
+information, not a failure.
 
 #### Defect 1 — a `##` that arrives by substitution was treated as the paste operator
 
