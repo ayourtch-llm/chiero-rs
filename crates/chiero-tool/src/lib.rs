@@ -1782,9 +1782,12 @@ pub fn layout_envelope(
          than produced from nothing",
     );
     // **A record chiero could not judge is not a record with nothing to find.** A partial
-    // field list — a bit-field, whose extent is bits inside a storage unit its neighbours
-    // share — suppresses the padding proposal, and suppressing it silently would read exactly
-    // like a struct with no padding to recover.
+    // field list suppresses the padding proposal, and suppressing it silently would read
+    // exactly like a struct with no padding to recover.
+    //
+    // A bit-field used to be the usual cause and is not one any more — 041 §3.1 passes its
+    // extent in bits and the analysis groups a run into one member — so this now names the
+    // cause that is left: a member whose size the frontend could not compute at all.
     let partial: Vec<&str> = records
         .iter()
         .filter(|r| !r.fields_complete)
@@ -1795,9 +1798,9 @@ pub fn layout_envelope(
     } else {
         env.with_blind_spot(&format!(
             "no padding proposal was computed for {} record(s) whose field list this \
-             analysis cannot state in full — a bit-field's extent is bits inside a storage \
-             unit its neighbours share, so a padding number summed over the members that are \
-             left is not a smaller number but a wrong one: {}",
+             analysis cannot state in full — a member chiero could not size at all, so a \
+             padding number summed over the members that are left is not a smaller number \
+             but a wrong one: {}",
             partial.len(),
             partial.join(", ")
         ))

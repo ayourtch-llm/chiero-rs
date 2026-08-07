@@ -277,11 +277,26 @@ pub(crate) fn records(path: &Path, src: &str, f: Frontend) -> Result<Vec<Record>
         let mut fields_complete = true;
         let mut fields: Vec<Field> = Vec::new();
         for fl in &l.fields {
-            // A bit-field's extent is bits inside a storage unit its neighbours share, which
-            // `(offset, size)` cannot express — so it stays out, and says so rather than
-            // leaving the sum short by however much it occupied.
-            if fl.bits.is_some() {
-                fields_complete = false;
+            // **A bit-field's extent is bits, so it is passed as bits** — 041 §3.1. It used to
+            // be dropped, with the field list marked partial and the padding proposal withheld
+            // for the whole record; honest, and it left out exactly the packed, hand-tuned
+            // structs where padding matters most. `(offset, size)` here is the byte span those
+            // bits touch, which is what a consumer reading bytes alone should see, and the
+            // analysis reads `bits` to group a run into one member.
+            if let Some(b) = fl.bits {
+                let offset = b.bit_offset / 8;
+                fields.push(Field {
+                    name: match fl.name.and_then(|n| names.0.text(n)) {
+                        Some(n) => n.to_string(),
+                        None => format!("<anonymous bit-field at bit {}>", b.bit_offset),
+                    },
+                    offset,
+                    size: (b.bit_offset + b.width).div_ceil(8).saturating_sub(offset),
+                    bits: Some(chiero_opt::locality::BitExtent {
+                        bit_offset: b.bit_offset,
+                        width: b.width,
+                    }),
+                });
                 continue;
             }
             let Some(size) = analysis.size_of(fl.ty) else {

@@ -373,7 +373,13 @@ fn padding(r: &Record, cfg: &LocalityCfg, escapes: Option<&str>) -> Option<Propo
     if r.fields.is_empty() || r.packed || !r.fields_complete {
         return None;
     }
-    let mut sizes: Vec<u64> = r.fields.iter().map(|f| f.size).collect();
+    // **Bit-fields arrive as runs, not as members** — §3.1. Everything below this line counts
+    // members that own whole bytes, which a bit-field does not.
+    let members = effective_fields(r);
+    if members.is_empty() {
+        return None;
+    }
+    let mut sizes: Vec<u64> = members.iter().map(|f| f.size).collect();
     // Descending by size, which for scalar members is descending by alignment.
     sizes.sort_unstable_by(|a, b| b.cmp(a));
     let mut off = 0u64;
@@ -395,7 +401,7 @@ fn padding(r: &Record, cfg: &LocalityCfg, escapes: Option<&str>) -> Option<Propo
     // **Where the bytes are, not only how many.** A total is a number; a reader deciding
     // whether to reorder a thirty-member struct needs to know which members the gaps are
     // between, and every offset that answer needs is already in hand.
-    let gaps = holes(r);
+    let gaps = holes(&members, r.size);
     let total: u64 = gaps.iter().map(|h| h.bytes).sum();
     let mut evidence = vec![format!(
         "{} bytes of alignment padding, {} of {} lines saved per instance",
@@ -486,8 +492,8 @@ struct Hole {
 ///
 /// **Overlaps are skipped rather than reported as gaps.** Two members at the same offset are
 /// a union nested in the list, and a "hole" of a negative size is not something to print.
-fn holes(r: &Record) -> Vec<Hole> {
-    let mut fs: Vec<&Field> = r.fields.iter().collect();
+fn holes(fields: &[Field], record_size: u64) -> Vec<Hole> {
+    let mut fs: Vec<&Field> = fields.iter().collect();
     fs.sort_by_key(|f| (f.offset, f.size));
     let mut out = Vec::new();
     let mut at = 0u64;
@@ -513,7 +519,7 @@ fn holes(r: &Record) -> Vec<Hole> {
         }
         at = at.max(f.offset + f.size);
     }
-    if r.size > at
+    if record_size > at
         && let Some(p) = fs
             .iter()
             .filter(|p| p.offset + p.size == at)
@@ -522,10 +528,93 @@ fn holes(r: &Record) -> Vec<Hole> {
         out.push(Hole {
             after: (p.name.clone(), p.offset, p.size),
             before: None,
-            bytes: r.size - at,
+            bytes: record_size - at,
         });
     }
     out
+}
+
+/// The members as the padding arithmetic sees them — [041 §3.1](../../../docs/specs/041-optimization-analysis.md).
+///
+/// **A maximal run of consecutive bit-fields becomes one synthetic member**, spanning the byte
+/// its first bit falls in through the byte its last bit falls in. Everything else passes
+/// through untouched.
+///
+/// Three things this is *not*, each of which was the tempting version:
+///
+/// - **Not one member per bit-field.** They share bytes, so counting each one's byte sums a
+///   record larger than the one declared — on `char; int; unsigned a:1..d:1;` that is 9 against
+///   a real 12, which rounds to 12 and silently produces no proposal where 4 bytes are real.
+/// - **Not the sum of the widths.** Repacking bits needs gcc's allocation-unit rules, which
+///   001 §4 rule 7 keeps out of this crate and which would in any case describe a struct no
+///   declaration order reaches: `unsigned a:1; unsigned :0; unsigned b:1;` is two bits of
+///   payload over five bytes, and it stays five wherever it is moved.
+/// - **Not "drop them and say the list is partial"**, which is what this replaced. That is
+///   honest and it withholds the answer for exactly the hand-tuned structs where padding
+///   matters most.
+///
+/// Runs break at any non-bit-field member, which is where gcc's allocation units break too —
+/// so the run's byte extent is read off the declared layout rather than derived from the
+/// packing rules.
+///
+/// A run of only zero-width members occupies nothing and yields no member at all: a zero-width
+/// bit-field forces the next allocation unit and stores nothing itself.
+fn effective_fields(r: &Record) -> Vec<Field> {
+    let mut out: Vec<Field> = Vec::new();
+    let mut run: Vec<&Field> = Vec::new();
+    // Declaration order, which is the order `Record::fields` is documented to be in and the
+    // order allocation units are filled in. Sorting by offset here would merge two runs that a
+    // by-value member separates, and there is no such thing as a hole inside a member.
+    for f in &r.fields {
+        match f.bits {
+            Some(_) => run.push(f),
+            None => {
+                out.extend(collapse(&run));
+                run.clear();
+                out.push(f.clone());
+            }
+        }
+    }
+    out.extend(collapse(&run));
+    out
+}
+
+/// One run of adjacent bit-fields as a single member, or nothing if it stores nothing.
+fn collapse(run: &[&Field]) -> Option<Field> {
+    let extents: Vec<(u64, &Field)> = run
+        .iter()
+        .filter_map(|f| f.bits.filter(|b| b.width > 0).map(|b| (b.bit_offset, *f)))
+        .collect();
+    let (_, first) = *extents.first()?;
+    let (_, last) = *extents.last()?;
+    // **The extreme bits, not the first and last declared.** Declaration order is what names
+    // the run, and for every layout gcc produces it is also bit order — but a `size` computed
+    // by subtracting one from the other would underflow if they ever came apart, and a member
+    // of negative extent is not a thing to hand a reader.
+    let first_bit = extents.iter().map(|(b, _)| *b).min()?;
+    let last_bit = run
+        .iter()
+        .filter_map(|f| f.bits.filter(|b| b.width > 0))
+        .map(|b| b.bit_offset + b.width)
+        .max()?;
+    let offset = first_bit / 8;
+    Some(Field {
+        // **Named as a run, because moving one of them moves all of them.** A hole reported
+        // after `a` alone is false of the three members sharing `a`'s byte, and a reader told
+        // to move `a` would find the bytes still there.
+        // No backticks in the name: every consumer that prints a member quotes it already, and
+        // a nested pair renders as noise.
+        name: if extents.len() == 1 {
+            format!("bit-field {}", first.name)
+        } else {
+            format!("bit-fields {}..{}", first.name, last.name)
+        },
+        offset,
+        size: last_bit.div_ceil(8) - offset,
+        // The synthetic member is a byte extent, not a bit-field: whoever reads it back should
+        // not think there is a single width here.
+        bits: None,
+    })
 }
 
 /// A scalar member's alignment, bounded by the record's.
