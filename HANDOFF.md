@@ -1338,6 +1338,33 @@ still out of bounds. **An enum-typed parameter whose type is wider than the arra
 latent contract hazard in the program, not an artefact of chiero's ignorance**, and `Unknown`
 fidelity is the honest verdict for it.
 
+### 7.18 010 contract 11, 2026-08-07 — the contract nobody had tested, and it holds
+
+> Round trip: for every token in a preprocessed fixture, the byte range given by `spelling_loc`
+> re-lexes to the same token text.
+
+**The only 010 contract with no test anywhere**, established by mapping `chiero-span`'s five test
+files against the twenty contracts — 1–2, 3–10, 12, 13–17 and 19 covered, 18 declared as needing
+a large fixture, 11 absent. ⚠️ §9 had called it a "sema corpus gate" contract, which named the
+wrong spec; **reading the tests took two minutes and the note had been wrong for some time.**
+
+`crates/chiero-pp/tests/spelling_round_trip.rs` — it belongs there because the contract asks for a
+*preprocessed* fixture and only the preprocessor makes one. **Zero defects** across twelve
+fixtures, including every construct with a span rule of its own: macro-body vs argument spans
+(010 §2.2), line splices whose bytes are not contiguous (011 §2.2), and this session's UCN
+identifiers.
+
+Two properties worth copying into the next invariant test of this shape:
+
+- **The exclusion is typed, not heuristic.** Pasted and stringized tokens have no contiguous
+  source text, and `TokenOrigin::Synthesized` names exactly that set — so the test asks the type
+  rather than guessing which tokens look odd. A second test pins the excluded set to *precisely*
+  those two tokens, so it cannot quietly widen into "whatever fails".
+- **The skip count is bounded, not merely reported.** A round-trip test that skipped every token
+  would pass. The synthesized-set fixture initially had no ordinary tokens at all, making its
+  round-trip half vacuous; `checked > 0` caught it and the **fixture** gained `int v = … ;`
+  rather than the assertion being relaxed.
+
 ### 7.5 How to check the workspace is green — `./check.sh`
 
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
@@ -1393,6 +1420,7 @@ This has now paid out three times in a row, each time on the first run after a w
 | **sharpening an oracle** — a feature query's value rather than its truthiness | one wave | §7.11: six rows of the table shipped two waves earlier were wrong, and the old test agreed with every one. The corpus was not widened at all; the *instrument* was |
 | following the **diagnostics the tool itself emitted** — three names it said it did not know | one wave | §7.11: scoped operands + `__has_cpp_attribute`; findings 16 → **14**, and `pr63831-1/2` leave the list. The honesty mechanism turned the next fix into a mechanical one |
 | find-bugs to a **new subsystem**: `vnet/ip/`, 152 entries (never swept) | one sweep, ~20 min | **zero chiero defects — 0 failed, 0 `Exact`.** 143 ok, 7 cut, 9 `Unknown` findings, all one known class. See §7.17 |
+| **010 contract 11**, the one contract with no test anywhere — verified by reading, not by trusting §9's note | one wave | **zero defects.** The round trip holds over twelve fixtures incl. splices, macro-body/argument spans and the session's new UCN identifiers |
 
 The loop, and it is deliberately mechanical:
 
@@ -1773,8 +1801,11 @@ typing the paths ever would.
    an implementation that never evaluates the right operand at all.
 
 6. **Unwidened surfaces, in rough order of expected yield** (§8.3 is the loop):
-   - **The sema corpus gate's contract 11** (re-lex round trip) and **contract 19**
-     (per-`ConfigId` sites) are listed in §7 as owed and have **no corpus at all**.
+   - ~~The sema corpus gate's contract 11 and contract 19~~ — **both wrong, and both closed.**
+     They are **010**'s contracts, not sema's. 19 was already covered by
+     `chiero-span/tests/config_sites.rs`; 11 genuinely had no test and now does (§7.18), and it
+     holds. ⚠️ **This entry named the wrong spec and claimed a gap that was half fictional** —
+     `grep 'Covers:' crates/*/tests/*.rs` settles such a claim in one command.
    - **014 contract 11's census does not ask its own question of `&&`/`||`.** It checked that
      both operands share one type — right for arithmetic, wrong for these (C 6.5.13/6.5.14
      compare each against 0 independently), and it is now skipped with the constraint C *does*
