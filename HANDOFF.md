@@ -1447,8 +1447,8 @@ table mismatch that did not exist. §11.2 again, on a harness written the same h
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
 three xtask gates were red: a crate whose test *binary* fails to build emits no `test result`
 line at all, so counting successes cannot detect a missing success. `./check.sh` keys on
-cargo's exit status and prints the failing suites first. Current: **2154 passed, 252 suites**,
-and the same 2154 with `CHIERO_SMT_SOLVER=/nonexistent` (§7.8).
+cargo's exit status and prints the failing suites first. Current: **2174 passed, 255 suites**
+(2026-08-07, after §7.11 and §7.12).
 
 ⏱️ **It now takes over an hour per leg**, and that is the session's dominant cost — see §9's
 note on the corpus. `conversions` and `semantics` are ~55 s each, the two VPP gates ~60 s, and
@@ -1560,13 +1560,11 @@ typing the paths ever would.
 > panics on the C standard's own worked example, after four consecutive widenings of VPP-shaped
 > corpora had begun returning honest zeros. §11.3 carries the general form.
 >
-> **State: the preprocessor conformance wave (§7.11) is committed and the tree is green.**
-> Before it: 2154 passed across 252 suites, both solver configurations. After the paste fix and
-> its tests: **2158 across 253**, `./check.sh` rc=0. The hide-set commit landed after that run —
-> ⚠️ **re-run `./check.sh` and the `CHIERO_SMT_SOLVER=/nonexistent` leg before pushing**, since
-> `expand_function`'s hide set is upstream of every frontend consumer.
-> The contract-12 layout gate is 22 seeds / 2238 records / **10248 assertions put to gcc**.
-> pp-gate: 141 C cases, **97 agree**, 18 findings, 1 on an `Expected` prior.
+> **State: two waves landed 2026-08-07 — §7.11 (preprocessor conformance) and §7.12 (compiler
+> persona). `./check.sh` GREEN: 2174 passed across 255 suites**, up from 2154 at the session's
+> start. The contract-12 layout gate is 22 seeds / 2238 records / **10248 assertions put to
+> gcc**; pp-gate is 141 C cases, **98 agree**, 17 findings, and the 3 on `Expected` priors are a
+> declared scope limit plus two rows where gcc and clang disagree with each other.
 >
 > ⏱️ **Budget the clock.** A full both-legs run is over an hour and dominated the last session.
 > Do not start a widening and a full run in the same breath.
