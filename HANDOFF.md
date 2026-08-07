@@ -2015,6 +2015,18 @@ doubles the wake-ups.
   2026-08-05 waiting on `cargo test --workspace`, four from 2026-08-06 waiting on `measure.sh`.
   All killed.
 
+  ☠️☠️ **Third and fourth instances, 2026-08-07, both in tooling I wrote *for* this trap.**
+  Sampling a test binary needs the run interrupted, and `pkill -INT -f "conversions-fdfe"`
+  matched **gdb's own command line** (`gdb --args …/conversions-fdfe…`) and killed the debugger
+  instead of the test. Then the cleanup — `pkill -f "pkill -INT -x conversions"` — matched
+  *itself* and killed the shell running it (exit 144).
+
+  **The rule, in the only form that has survived contact:** `pkill -f`/`pgrep -f` match the full
+  command line of *every* process including the one asking, its parents, and anything that
+  merely names the target. Use **`pkill -x <comm>`** (exact process name, 15 chars) or kill an
+  explicit PID. To *list* candidates without matching yourself, filter in `awk` rather than in
+  the pattern: `ps -eo pid,cmd | awk '/target/ && !/awk/ {print}'`.
+
   ⚠️ **And the first sweep at them reported "0 remaining" while eleven were still running** —
   which is the same defect one more time, in the *cleanup*. Two causes, both worth knowing:
   the pattern was narrower than the thing it was clearing, and the check **matched itself**, so
