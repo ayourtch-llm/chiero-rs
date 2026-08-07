@@ -1520,6 +1520,34 @@ and a normalized spelling is a byte range that exists in no file. **011 §2.0 de
 the next reader does not spend a wave chasing it. The two rows differ **by spelling, not by
 identity**.
 
+### 7.15 `__has_c_attribute`, 2026-08-07 — and the six table rows the old oracle blessed
+
+Sixth wave, and the first where **nothing was widened but the instrument**.
+
+`__has_c_attribute` needed `features::answer` to return a value rather than a truth: gcc 13
+answers `201904` for `deprecated`, not `1`. Changing `Option<bool>` to `Option<u32>` and reading
+the value from **program text** (all three queries evaluate there) turned an agreeing test into
+a failing one, and it found a defect shipped two waves earlier:
+
+⚠️ **gcc's `__has_attribute` returns the C standard's version for an attribute that is also a
+standard attribute.** `__has_attribute(__deprecated__)` is `201904`. Six rows claimed `1` —
+`deprecated`, `fallthrough`, `noreturn`, in both spellings — and the old test compared `bool`
+against `bool` and agreed with all six.
+
+**The type made the defect invisible to the test rather than impossible in the code.** That is
+the shape to carry forward: `Option<bool>` could only record *non-zero*, so no assertion written
+over it could have caught a wrong version number. When a value is modelled more coarsely than the
+thing it stands for, the test inherits the coarseness and reports agreement.
+
+⚠️ **A predicate written twice disagreed with itself inside a minute.** A fast-path guard skipped
+`answer_feature_queries` when no query was present, and the matcher inside listed the queries
+again; adding `__has_c_attribute` to the matcher and not the guard made the pass return before it
+could run. `is_feature_query` is now the one place.
+
+*Left in these two files* (`pr63831-1/2`, `Skipped` prior): **scoped attribute names** —
+`__has_attribute(gnu::noreturn)` — and `__has_cpp_attribute`. They now reach token 73 instead of
+token 4.
+
 ### 7.5 How to check the workspace is green — `./check.sh`
 
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
@@ -1572,6 +1600,7 @@ This has now paid out three times in a row, each time on the first run after a w
 | the same gate, one `Todo` row — but **measuring every row of the file, not the one it named** | one wave | §7.13: **two opposite defects behind one guard**. The gate had pointed at the wrong row; the reported one was already correct |
 | `differential.rs`'s logical-operator rows: `int`-only → wider-than-`int`, mixed types, four-way short-circuit | one wave | **zero defects — and the wave was mis-scoped.** Most of what I "widened" was already covered, including the exact `-0.0` case I had picked as the discriminator. §8.3 step 1 says *ask what the corpus cannot contain*; I asked what I imagined it could not |
 | the same gate's **remaining findings, read as a to-do list** rather than as noise | one wave | §7.14: chiero was rejecting **valid C11** — a UCN in an identifier. **51 spurious diagnostics gone.** The corpus paid a fifth time, in a fifth different way |
+| **sharpening an oracle** — a feature query's value rather than its truthiness | one wave | §7.15: six rows of the table shipped two waves earlier were wrong, and the old test agreed with every one. The corpus was not widened at all; the *instrument* was |
 
 The loop, and it is deliberately mechanical:
 
@@ -2168,6 +2197,12 @@ doubles the wake-ups.
   people write them*, which is a systematically biased sample — the dark corners are never in it,
   and no amount of widening within it reaches them. **When the yield table flattens, change the
   kind rather than the size.**
+- ⚠️ **A type coarser than the thing it models makes defects invisible to tests, not impossible
+  in code.** `features::TABLE` held a `bool` for a query that returns a *version number*, so six
+  rows claiming `1` where gcc says `201904` were agreed with by a test comparing `bool` to
+  `bool`. No assertion written over that type could have failed. **Ask what values the thing can
+  actually take before choosing how to store it** — and when an oracle and a table share a type,
+  the oracle cannot check the table.
 - ⚠️ **When a compiler has one message you expect, check whether it has two.** gcc distinguishes
   "is not a valid universal character" from "is not valid *in an identifier*" — a well-formed
   UCN naming a character that is not an identifier character — and a third for the initial
