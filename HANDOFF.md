@@ -1580,11 +1580,10 @@ typing the paths ever would.
 > put to gcc**; pp-gate is 141 C cases, **106 agree**, +11 matching one compiler where the two
 > disagree, +21 correctly rejected, 3 rendered-differently, and **0 findings**.
 >
-> ⚠️ **Only the default solver leg has been run since `BadRange` landed.** §10 wants both;
-> `CHIERO_SMT_SOLVER=/nonexistent ./check.sh --no-fail-fast` is the other, and it is another
-> hour. The change is a memory-fault classification and touches no solver path, so the leg is
-> expected to agree — *expected*, not measured, and that distinction is this file's oldest
-> recurring lesson.
+> ✅ **Both legs measured.** `CHIERO_SMT_SOLVER=/nonexistent cargo test --workspace
+> --no-fail-fast` also gives **2215 passed, 0 failed**. Worth knowing for the clock budget:
+> with a warm build it took **under ten minutes**, not the hour §9 warns about — that hour is
+> a cold build plus the solver leg's z3 round trips, and the no-solver leg skips those.
 >
 > ⏱️ **Budget the clock.** A full both-legs run is over an hour and dominated the last session.
 > Do not start a widening and a full run in the same breath.
