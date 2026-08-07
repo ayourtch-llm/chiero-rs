@@ -56,6 +56,19 @@ fn main() -> ExitCode {
             0 => ExitCode::SUCCESS,
             _ => ExitCode::FAILURE,
         },
+        Some("pp-gate") => match xtask::pp_gate::pp_gate() {
+            Ok(report) => {
+                print!("{}", report.render());
+                // **A report, not yet a gate.** §8.3 step 3: the first run's rejection list is
+                // the measurement this wave is judged by, and a threshold chosen before that
+                // number exists would be a threshold chosen to pass.
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("pp-gate: {e}");
+                ExitCode::FAILURE
+            }
+        },
         Some("check-proof-surface") => match xtask::proof_surface::check_proof_surface() {
             0 => ExitCode::SUCCESS,
             _ => ExitCode::FAILURE,
@@ -88,6 +101,8 @@ fn usage() {
          beside a coverage-only baseline computed the same way\n  \
          replay-gate      032 contract 18: recall over historical commits. Exits 1 while\n                   \
          the corpus has no observed entry — an unmeasured recall is not a pass\n  \
+         pp-gate          preprocessor conformance over a simplecpp checkout ($SIMPLECPP),\n                   \
+         with gcc and clang as the oracle. Reports; does not gate yet\n  \
          sweep --tree P [-I dir] [-D name[=v]] [--std gnu11]\n                   \
          report where chiero and gcc disagree over an external C tree\n  \
          recipe-sweep     042 tier-1 structural recipes over a tree\n  \

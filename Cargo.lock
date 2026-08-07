@@ -486,6 +486,7 @@ dependencies = [
  "chiero-ast",
  "chiero-diff",
  "chiero-gcov",
+ "chiero-lex",
  "chiero-lower",
  "chiero-parse",
  "chiero-pp",

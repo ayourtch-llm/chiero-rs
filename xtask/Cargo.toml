@@ -15,6 +15,7 @@ indexmap.workspace = true
 # ("xtask and third-party crates are not part of the architecture"), so this edge is
 # allowed where it would not be between the crates themselves.
 chiero-pp.workspace = true
+chiero-lex.workspace = true
 chiero-parse.workspace = true
 chiero-ast.workspace = true
 chiero-sema.workspace = true

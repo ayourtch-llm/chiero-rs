@@ -5,6 +5,7 @@ pub mod cc;
 pub mod contracts;
 pub mod deps;
 pub mod mutation_gate;
+pub mod pp_gate;
 pub mod proof_surface;
 pub mod replay_gate;
 pub mod sweep;
