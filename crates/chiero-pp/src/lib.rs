@@ -1925,7 +1925,14 @@ impl Engine {
                 // GNU `, ## args`: `##` suppresses the comma only for an empty
                 // variadic argument. With tokens present it is not ordinary token
                 // pasting; retain comma and argument as two pp-tokens.
-                if matches!(left.token.kind, PpTokenKind::Punct(Punct::Comma)) {
+                //
+                // **`right.paste_op` excludes the extension by saying what it applies to.** The
+                // right operand of `, ##` is the variadic *argument*, and an operator `##` is
+                // never argument tokens — it is the second half of an adjacent `## ##`, which is
+                // UB that both compilers reject. Letting it fall through to the ordinary path
+                // below is what produces the diagnostic; the branch was swallowing it, and
+                // answering `[x , y]` in silence where gcc and clang both hard-error.
+                if !right.paste_op && matches!(left.token.kind, PpTokenKind::Punct(Punct::Comma)) {
                     output.push(left);
                     output.push(right);
                     i += 2;
@@ -1981,6 +1988,19 @@ impl Engine {
             }
         }
         output.retain(|token| !token.text.is_empty());
+        // **Nothing leaves this pass still armed.** `output` is a substituted sequence, not a
+        // replacement list, so by C11 6.10.3.3 no `##` in it is an operator — including the ones
+        // the two recovery branches above push back unconsumed, which is UB input (adjacent `##`)
+        // that gcc processes silently and clang rejects, and which neither aborts on.
+        //
+        // Disarming at the exit rather than in each branch is the point. An adversarial review
+        // found the first version of this fix correct at the flag's *source* and unbounded at its
+        // exit: a leaked operator rode the rescan into a later macro's sequence and fired there,
+        // resurrecting the cross-context panic the whole change was written to remove. A third
+        // recovery branch added later would leak the same way; this cannot.
+        for token in &mut output {
+            token.paste_op = false;
+        }
         output
     }
 
