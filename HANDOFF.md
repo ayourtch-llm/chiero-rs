@@ -1275,7 +1275,7 @@ size**.
 |---|---|---|
 | first, before any fix | **22** (2 panics) | 92 / 141 |
 | after each of seven waves | 19, 21, 18, 17, 16, 16, 14 | → 100 / 141 |
-| + `push_macro`/`pop_macro` and `#pragma GCC error`/`warning` | **12** | **101 / 141** |
+| the owner's close-the-gap pass | 12, 11, 8, 5, 4, 2, 1, **0** | **106 / 141** |
 
 *(21 is not a regression: splitting the "neither compiler ran it" bucket let two rows be seen for
 the first time. §7.10's shape — a change that makes a gate reject more is information.)*
@@ -1306,39 +1306,50 @@ builtins = **382 rows, every value measured from gcc**, and a contract test re-a
 A name it does not cover answers 0 **and says so by name** — which is why `answer` returns
 `Option<u32>`, and which turned the last wave's fix from an investigation into a lookup.
 
-### 🎯 **The owner asked to fully close the preprocessor gap. 12 findings left, and here is each.**
-*(2026-08-07. Two closed in the first pass: `pragma-pushpop-macro.c` — `#pragma push_macro`/
-`pop_macro` is a stack of **name bindings**, since a `MacroId` is never reused; and
-`diagnostic-pragma-1.c` — `#pragma GCC error`/`warning`, one text-based implementation for both
-the directive and `_Pragma`.)*
+### ✅ **THE PREPROCESSOR GAP IS CLOSED — pp-gate reports 0 findings** (2026-08-07)
 
-**Mechanical, do these first:**
+The owner asked for it closed before other work, and it is. 141 C cases:
 
-| file(s) | what it needs |
+| outcome | count |
 |---|---|
-| `_Pragma-dependency2.c` | `#pragma GCC dependency "f"` must **error when `f` is not found**. ⚠️ The `_Pragma` route runs inside `expand_inner`, which has **no `FileLoader`** — that is the actual work, not the check |
-| `has_attribute.c` | 8 clang-only attribute names the table lacks. chiero answering **0 is correct** (it impersonates gcc); adding measured rows removes the "not in the persona table" diagnostics |
+| matches **both** gcc and clang | **106** |
+| matches one, where the compilers disagree with each other | 11 |
+| rejected by all three — the corpus's negative tests | 21 |
+| same program, **rendered** differently (declared, below) | 3 |
+| **findings** | **0** |
 
-**Real features:**
+Started the session at 92 agree / 22 findings.
 
-| file(s) | what it needs |
+**The last fourteen, and where each was actually fixed:**
+
+| closure | note |
 |---|---|
-| `macro_fn_comma_swallow2.c` (×2 RUN lines), `macro_paste_commaext.c` | more GNU comma-swallow shapes, same family as §7.11's defect 5+6. **Measure every row of each file** — the gate names one divergence per file and named the wrong one last time |
-| `macro_backslash.c` | `'bar\'` and a trailing `TTB` — a backslash inside a character constant reaching a paste |
-| `c99-6_10_3_4_p6.c` | `stray \ in program`; ours `x`, theirs `printf`. Likely another UCN-adjacent lexer corner |
-| `macro_fn_va_opt.c` | **`__VA_OPT__`** — the big one. 012 §2.3 declares it out of v1 scope *by measurement* (VPP uses it zero times) and **diagnoses** rather than guessing. Closing it is a scope change, so **ask the owner** before building it |
+| `#pragma push_macro`/`pop_macro` | a stack of **name bindings** — a `MacroId` is never reused (012 §1), so `macros` stays append-only and only `by_name` moves. `Option<usize>` because a saved *absence* is a real state |
+| `#pragma GCC error`/`warning` | **one text-based implementation** for both the directive and `_Pragma`, since the fixture puts the operator inside a macro |
+| `#pragma GCC dependency` | recorded during expansion, answered in `finish` — `_Pragma` runs in `expand_inner`, which has **no `FileLoader`** |
+| 8 persona-table rows | measured; `interrupt` and `volatile` differ **across the three queries**, so one answer per name would have been wrong |
+| absent ≠ supplied-empty variadic | closed **three files at once**. ⚠️ The first attempt put the condition on `is_variadic_param` and broke the non-empty rows — only the *placemarker* carries it |
+| `\`-space-newline splices | both compilers do it and warn; C99 6.10.3.4p6's own example contains one. `splice_len` is the single predicate for scan and rewrite |
+| **`__VA_OPT__`** (C23 6.10.3.1) | a **scope change the owner authorised** — 012 §2.3 had it out of v1 by measurement. Resolved into an *effective replacement list* before substitution, so no second code path |
+| 2 UCN rows, 1 unterminated-literal row | **fixed in the gate.** `Verdict::RendersDifferently` — the two render the same program differently and re-lexing a rendering is lossy. Never merged into `Agree`; the comparison behind it is deliberately coarser |
+| 2 `x######x` rows | **fixed in the gate.** UB where gcc emits `xx` and clang rejects; chiero rejects too, and *agreeing to reject is agreement*. Narrow: it requires chiero to have diagnosed, because silence is not agreement |
 
-**Decisions, not defects — closing these means choosing:**
+⚠️ **Two of the last three "defects" were in my own gate, not in chiero.** The canonicalization
+cast bytes to `char` — Latin-1 — so a UTF-8 `¨` became `Â¨` and never matched the decoded escape;
+it reported a difference that was entirely its own. **Bytes in, bytes out.**
 
-| file(s) | the choice |
-|---|---|
-| `normalize-3.c`, `ucnid-2011-1.c` | chiero and gcc agree on **identity** and differ on **spelling**: `gcc -E` normalizes `\u00AA` to `\U000000aa`, chiero preserves what was written because 010 contract 11 wants a token's bytes to re-lex to its own spelling (011 §2.0). **Close it in the gate, not the preprocessor** — normalize UCN escapes on both sides before comparing, which compares identity rather than rendering |
-| `pr58844-1.c`, `-2.c` | `x######x` is **UB** and gcc and clang *disagree* — gcc gives `xx`, clang rejects. There is no answer to match. Closing means **deciding to follow gcc**, which is defensible (gcc is VPP's compiler) but is a decision, not a fix |
+⚠️ **`__VA_OPT__` and GNU comma-swallowing have opposite conditions.** `P(1,)` supplies an empty
+argument and `__VA_OPT__` yields **nothing**; `debug(Y, )` supplies an empty argument and the
+comma **stays**. One turns on the argument's *tokens*, the other on whether it was *supplied*.
+Two neighbouring rules with opposite tests is how a shared flag ends up wrong — which happened
+here, to the comma rule, the same day. Both are pinned by tests.
 
-⚖️ **Assessment: harvested.** Of the 14 findings left, **none affects VPP** — 1 is a declared
-scope limit (`__VA_OPT__`), 2 a declared spelling divergence, 2 UB where gcc and clang disagree,
-3 `_Pragma`/`push_macro` (VPP uses it **zero** times), 5 conformance corners simplecpp also fails,
-1 a row for an attribute gcc itself lacks.
+**Keep `pp-gate` as a standing check** — two minutes, and it is the only thing watching these
+corners. ⚠️ It still **exits 0 unconditionally**; making it fail on a finding is now sensible
+(the count is 0) but would make CI depend on a checkout it does not have. The honest form is
+"fail on a finding when `$SIMPLECPP` exists, print NOTHING WAS MEASURED when it does not".
+
+
 Keep `pp-gate` as a two-minute standing regression check.
 
 ### 7.17 `vnet/ip/` swept, 2026-08-07 — an honest zero, and the class §7.6 predicted
@@ -1522,14 +1533,12 @@ typing the paths ever would.
 > for months (*a green gate is evidence about the corpus, not about the tree*). Then §9.1 for
 > the next target.
 >
-> 🎯 **The owner's standing ask as of 2026-08-07: fully close the preprocessor gap before other
-> work.** §7.11 carries a table of all **12** remaining pp-gate findings with what each needs —
-> two mechanical, four real features, and four that are **decisions** (two UCN-spelling rows to
-> close in the *gate*, two UB rows where gcc and clang disagree so closing means choosing gcc).
-> ⚠️ **`__VA_OPT__` is a declared scope change — ask before building it.**
-> After that: §9.1's live items, the readiest being `MemFault::BadRange` (⚠️ its blocker is
-> **real** — I tested the way round and it fails; the mutant recipe is in the entry).
-> The `-march` item stays parked for the owner.
+> ✅ **The owner's close-the-gap ask is DONE — pp-gate reports 0 findings** (§7.11). Keep it as a
+> two-minute standing check.
+>
+> Next: §9.1's live items, the readiest being `MemFault::BadRange` (⚠️ its blocker is **real** —
+> I tested the way round and it fails; the mutant recipe is in the entry). The `-march` item
+> stays parked for the owner.
 >
 > 🆕 **The newest entry in the yield table is the most useful one: change the *kind* of corpus,
 > not its size.** 141 preprocessor torture cases found three defects in a session, two of them
@@ -1541,9 +1550,8 @@ typing the paths ever would.
 > then two more preprocessor closures (`push_macro`/`pop_macro`, `#pragma GCC error`/`warning`).
 > `./check.sh` GREEN at 2193/258 before those two; re-measured after.** Up from 2154 at the
 > session's start. The contract-12 layout gate is 22 seeds / 2238 records / **10248 assertions
-> put to gcc**; pp-gate is 141 C cases, **101 agree** (+8 matching one compiler where the two
-> disagree, +19 correctly rejected), **12 findings**, every one named in §7.11's close-the-gap
-> table.
+> put to gcc**; pp-gate is 141 C cases, **106 agree**, +11 matching one compiler where the two
+> disagree, +21 correctly rejected, 3 rendered-differently, and **0 findings**.
 >
 > ⏱️ **Budget the clock.** A full both-legs run is over an hour and dominated the last session.
 > Do not start a widening and a full run in the same breath.
