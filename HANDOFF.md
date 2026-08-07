@@ -1775,7 +1775,22 @@ typing the paths ever would.
    - Johnson's circuit enumeration (`native.rs:1258–1286`) uses `Vec::contains` for `bs`,
      `blocked` and `block_lists`, which adds a factor to something already expensive.
 
-   ⛔ **Blocked on artifacts, and this is why it is recorded rather than fixed.** There are **no
+   ✅ **`chiero-cir`'s half is DONE (2026-08-07) and it took two passes, which is the lesson.**
+   The first removed `dominators`' scan: 3001 blocks 11.5 s → 270 ms, and I called it fixed.
+   **The ratio had not moved** — still ~4x per doubling — so only the constant had. Reading the
+   file for the *shape* then found **seven more**, including `check_phis` rebuilding a
+   predecessor map per block, which is the identical defect to `dominators`' one function away.
+   `reachable_blocks` returning a set fixed three at once; a linear `Function::block` find was
+   an eighth, hiding behind a method call rather than behind a `contains`. 30721 blocks: hours
+   → **2.4 s**.
+
+   ⚠️ **And it is still quadratic** — 4x blocks, ~15x time. The scans are gone; what remains is
+   `dominators` holding an explicit dominator *set* per block, O(blocks²) by construction.
+   Cutting it needs Lengauer-Tarjan's idom-only form or bitsets: **a design change, queued not
+   claimed.** Worth doing only if a real VPP function turns out to be large enough to care.
+
+   ⛔ **`chiero-gcov`'s half is blocked on artifacts, and this is why it is recorded rather than
+   fixed.** There are **no
    `.gcno` files under `/home/ubuntu/vpp`** — the 1895-file validation in §7.1 was a one-off
    against a coverage build that no longer exists. Without it there is no growth curve, and this
    entry's own rule says a reading is not a measurement. Two honest ways forward: rebuild VPP with
@@ -2091,6 +2106,12 @@ doubles the wake-ups.
   ⚠️ Practical note for the next stack sample: `ptrace_scope=1` here blocks `gdb -p <pid>`. Run
   the program as gdb's *child* (`gdb -batch -x cmds --args ./prog …` with `run` then `bt 18`) and
   interrupt it from a background `( sleep N; pkill -INT -x prog )`.
+- ⚠️ **A speedup is not a complexity change, and only the ratio tells them apart.** The
+  verifier's `dominators` went 11.5 s → 270 ms at 3001 blocks and was called fixed; the growth
+  per doubling had not moved at all, so seven more instances of the same scan were still there —
+  one of them in the *next function down*. **Re-run the curve after the fix, not just the
+  timing**, and read the ratio rather than the number. §10's "re-measure after a fix" says the
+  same thing one level less precisely.
 - **A growth curve settles a performance claim; a single timing never does.** 10/40/160/320/640
   and the *ratio per doubling* is the whole argument — 4x is quadratic, 6x is worse than
   quadratic, and either is a fact nobody can wave away. The same shape appears in this file's
