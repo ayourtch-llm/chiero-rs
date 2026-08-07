@@ -1896,6 +1896,15 @@ doubles the wake-ups.
   gap was queued as a splitter bug to fix first; the fixed splitter produced byte-identical
   output, because 304 came from a looser scan that over-counted. Reproduce the gap before
   budgeting a fix for it.
+- ⚠️ **Do not write a `until ! pgrep -f "<cmd>"` waiter — it matches itself and never exits.**
+  The waiting shell's own command line *contains* the pattern, so `pgrep -f` finds it, the loop
+  spins forever, and every status check reports the job as still running. It cost over an hour
+  this session across five stacked waiters, while the run they were waiting for **had never
+  started** — the first waiter blocked the `./check.sh` chained after it. §11.2 again: the
+  instrument was reporting the impossible.
+  **There is no need for a waiter at all**: a `run_in_background` command notifies on
+  completion. If a guard is genuinely wanted, match on something the waiter cannot contain
+  (a pidfile, `pgrep -x cargo`, or the output file appearing).
 - ⚠️ **Never edit a source file while `./check.sh` is running.** A full run is over an hour and
   cargo compiles once at the start, so an edit part-way through poisons it: `E0460: found
   possibly newer version of crate chiero_pp`, reported as `RED (cargo exit 1)` with **0 tests
