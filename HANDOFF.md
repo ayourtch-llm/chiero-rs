@@ -1511,6 +1511,15 @@ The loop, and it is deliberately mechanical:
 6. **Record the yield** in the table above, so the next reader can see whether the pattern is
    still paying and stop when it is not.
 
+⚠️ **A third form, and the one that had been true longest: a gate narrower than the gate that
+matters does not warn you, it reassures you.** `./check.sh` exists because an earlier check
+"could not fail", and it then reported GREEN while `cargo fmt --all --check` had **26 diffs**
+and `clippy -D warnings` **two errors** — because CI runs three legs and it ran one. The script
+was honest about *what it measured*, and the word it printed was "GREEN". **When a local gate
+and a remote one disagree about scope, the local one is the one that lies**, because it is the
+one somebody trusts before pushing. Widened 2026-08-07; the one leg still missing is named in
+the file itself.
+
 ⚠️ **And its twin: an *unchanged* number is evidence about the corpus too.** Retaking the pinned
 40 after `BadRange` left the defect list gave byte-identical numbers. The tempting readings are
 "the change did nothing" and "the change was safe"; the true one is that the string
@@ -1688,12 +1697,33 @@ typing the paths ever would.
 
 5. **A step that outlives the clock.** Three find-bugs entries still need the outer `timeout`; one
    ran 10 s against a 5 s budget inside a symbolic-offset enumeration. The clock is only checked
-   *between* steps, and 023 §8's `max_solver_rlimit` — deterministic work units — is specified and
-   unimplemented. That is the principled bound for the solver half.
+   *between* steps, and 023 §8's `max_solver_rlimit` was the principled bound for the solver half.
 
-   ✅ **Groundwork done 2026-08-07 — z3 4.8.12 measured, not assumed.** `UnknownReason::ResourceLimit`
-   already exists and is **constructed nowhere**; nothing reads `(get-info :reason-unknown)` at all.
-   What the real solver does:
+   ✅ **`max_solver_rlimit` is BUILT, 2026-08-07.** `Budget::max_solver_rlimit` reaches the backend
+   as `(set-option :rlimit N)`; a query that spends it answers `Unknown(ResourceLimit)`.
+   `Engine::new_solver` is the single construction point, so it covers feasibility *and* checker
+   queries — a budget that applied to one and not the other is not a budget.
+
+   **The defect it uncovered is worth more than the feature.** `query` returned
+   `Option<(bool, Model)>`, so a solver saying `unknown` and a broken pipe were the same `None`,
+   and `ask_backend_raw` treats `None` as died-mid-query: it **replayed the whole query** and
+   reported `BackendError`. So the hardest queries in a run — the only ones that answer `unknown`
+   — were charged twice, and 022 contract 15's `backend_errors` counted a backend that was
+   behaving correctly. `Answer` is a three-valued type now so the two cannot share an arm again.
+
+   ⚠️ **And the mutation pass caught me shipping the exact confusion the tests' own header
+   describes.** With the first three tests, `if true` in place of the classification guard —
+   making *every* `unknown` a `ResourceLimit` — **survived all of them**. Closing it needed a
+   fake solver answering `unknown` with a chosen reason; z3 cannot be made to decline a theory
+   on demand, and that is a property of the z3 build rather than of chiero.
+
+   **Left here:** no surface sets it — `--solver-rlimit` on the CLI is the next step — and
+   023 §8's `max_memory_objects` is still unbuilt beside it. The three `timeout` rows in the
+   plugin sweep have not been re-measured against the new bound.
+
+   *The measurements that shaped it, kept because they are about z3 rather than about chiero:*
+   `UnknownReason::ResourceLimit` existed and was **constructed nowhere**; nothing read
+   `(get-info :reason-unknown)` at all. What the real solver does:
 
    | asked | answered |
    |---|---|
@@ -1713,7 +1743,11 @@ typing the paths ever would.
    **infer `ResourceLimit` from which budget was armed, not from the string** — when
    `max_solver_rlimit` is set, do not also arm `:timeout`. That is what 023 §8.1 already wants
    anyway (CI runs the determinism gates with `wall_clock: None`), so the constraint and the
-   spec agree. `smt_timeout_ms` is the one place that relationship lives.
+   spec agree. **That is what shipped**, and `Session::spawn` is where the exclusivity lives.
+   One more measurement completes it: genuine incompleteness reads
+   `"smt tactic failed to show goal to be sat/unsat (incomplete (theory arithmetic))"`, never
+   `"canceled"` — so the string separates *a limit* from *a theory declined*, and only the
+   armed budget says which limit.
 
 6. **`InstKind::Call` carries no result type**, so an indirect call's result width is whatever
    candidate ran. The arity and parameter-type filters cut the wildest cases and cannot close it;
@@ -1749,7 +1783,7 @@ they lived only in scratch") and it happened again anyway.
 
 | instrument | state |
 |---|---|
-| `./check.sh` | ✅ committed — the green gate; keys on cargo's **exit status**, prints failing suites first (§7.5) |
+| `./check.sh` | ✅ committed — the green gate; keys on cargo's **exit status**, prints failing suites first (§7.5). ⚠️ **Widened 2026-08-07 to all three CI legs** — it ran `cargo test` alone while CI also gates `cargo fmt --all --check` and `clippy -D warnings`, and was reporting GREEN over **26 fmt diffs and 2 clippy errors**. Fast legs run first, in seconds, so a formatting diff is not found after the hour. `--skip-lints` re-runs the tests alone. **Still not covered, and named in the file:** CI's second solver leg |
 | `tests/corpus/vpp-findings/measure.sh` | ✅ committed — retakes the find-bugs numbers (~4 min pinned 40, ~25 min plugins) |
 | `tests/corpus/layout/fixed_diff.py` | ✅ committed — chiero's padding floor vs gcc's minimum over every run-preserving permutation |
 | `tests/corpus/layout/vpp_sizes.py` | ✅ committed — contract-12's method pointed at arbitrary headers |
