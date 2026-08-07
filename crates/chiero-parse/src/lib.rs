@@ -1350,7 +1350,20 @@ impl<'a> Parser<'a> {
                         // silently: in preprocessed VPP the overwhelmingly likelier cause
                         // is that a macro did not expand, and guessing `int` would turn
                         // that into a plausible declaration instead of a diagnostic.
-                        self.error(span, "expected a type specifier");
+                        //
+                        // **Name the identifier when there is one**, which is gcc's message and
+                        // therefore this project's (013's tiebreak). Nearly every real instance
+                        // of this is a type name the oracle does not know, and the reader's next
+                        // question is which — answering it turns a reduction into a read. Where
+                        // the specifier position holds a punctuator instead there is no name to
+                        // give, and the generic wording is the honest one.
+                        let msg = match self.peek().map(|t| t.kind) {
+                            Some(TokKind::Ident(sym)) => {
+                                format!("unknown type name `{}`", self.spelling_of(sym))
+                            }
+                            _ => "expected a type specifier".to_string(),
+                        };
+                        self.error(span, msg);
                         self.ast.add_type(TypeKind::Error, span)
                     }
                 }
