@@ -1158,13 +1158,66 @@ decides), **widen** (the claim survives both tiers and only the recorded cause d
 failing test *binary*, so the first measurement of this said three suites when the answer was
 eleven, and each fix revealed the next one.
 
+### 7.9 Bit-fields in `layout`, 2026-08-07 — and the review that broke the first fix
+
+§9's item 1 was "`layout`'s remaining honesty gap": a record with a bit-field got *no*
+padding proposal, which was right and left out exactly the packed, hand-tuned structs where
+padding matters most. Five commits: `spec:` (041 §3.1 + contract 25), `red:`/`green:` for the
+run model, then `red:`/`green:` for what an adversarial review found in it.
+
+**The model.** The field description carries a bit extent, and a maximal run of consecutive
+bit-fields is **one synthetic member** spanning the bytes its bits touch. The reorder moves
+the run whole and never repacks bits — repacking needs gcc's allocation-unit rules, which
+001 §4 rule 7 keeps out of `chiero-opt`, and would describe a struct no declaration order
+reaches. Two VPP structs that were silent now get a proposal, both confirmed by handing gcc
+the reordered declaration: `test_registration_` 48 → 40, `vnet_crypto_alg_data_t_` 64 → 56.
+
+**⚠️ The fixture was the hard part, and the first one was a false pass.** On
+`char tag; long big; unsigned a:3; unsigned b:5;` the right model and the obvious wrong one
+(count each bit-field as the byte it starts in) *both* answer 8, because alignment rounds the
+difference away — so the number assertion passed while the analysis was still dropping the
+members, and only the evidence assertion saw anything. Contract 25 now pins
+`struct { char tag; int big; unsigned a:1..d:1; }`, where the wrong model produces no
+proposal at all. **Before trusting a fixture, compute what the defect would have said.**
+
+**Then a fable review broke it**, and this is the third wave running where the finding is a
+proof resting on something chiero invented:
+
+- **`struct Q { unsigned a:1; unsigned :0; char c; unsigned b:1; unsigned :0; char d; }`** —
+  12 bytes, and chiero said it "would be 4", `proven`, not advisory. gcc's floor over all 24
+  orders that keep each run together is **8**. A `:0` declares no member, so it is in no field
+  list — and *cannot* be, because C 6.7.9 has initializers skip unnamed bit-fields and that
+  check indexes `fields` positionally. Its effect survives only as a gap that reads exactly
+  like padding. `RecordLayout::has_zero_width_bitfield` now says so and the record's field
+  list is partial: no number, envelope names it. **The run model cannot fix this by looking
+  harder — a `:0`-terminated run's cost depends on where the run is placed, and the padding
+  arithmetic is a sum of constants.**
+- **An unnamed bit-field was aligning the record**, in sema. `struct { char c; unsigned :0;
+  char d; }` was 8/4 where gcc says 5/1. Only a *named* bit-field contributes alignment
+  (014 contract 4a). Every `chiero layout` number for such a record was computed from a size
+  that was already wrong — the review found it through the proposal, but it lived in 014.
+- **Two of my assertions could not fail.** Both new CLI tests greped the envelope for
+  "bit-field" *after* the sentence stopped containing it. They now ask which records the
+  envelope names, via an `unjudged()` helper that parses the list. **An assertion against
+  prose is an assertion against the next rewording.**
+
+Both legs green at `68f7924`: **2152 passed across 252 suites**, and the same 2152 with
+`CHIERO_SMT_SOLVER=/nonexistent`. The two VPP findings survive the layout correction unchanged.
+
+**The instrument, and it was proven before it was trusted** —
+`tests/corpus/layout/fixed_diff.py` compares chiero's floor against gcc's minimum over every permutation
+that keeps each run together. Run against the *stashed pre-fix* binary it prints the
+over-claim on `Q`; against the fixed one it does not. A randomized 113-proposal sweep found
+nothing either way: the shape needs **two** `:0`-terminated runs, since with one you can
+always hide it last. The random generator was not the check, and would have blessed the bug.
+
 ### 7.5 How to check the workspace is green — `./check.sh`
 
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
 three xtask gates were red: a crate whose test *binary* fails to build emits no `test result`
 line at all, so counting successes cannot detect a missing success. `./check.sh` keys on
-cargo's exit status and prints the failing suites first. Current: **2144 passed, 252 suites**,
-and the same 2144 with `CHIERO_SMT_SOLVER=/nonexistent` (§7.8).
+cargo's exit status and prints the failing suites first. Current: **2152 passed, 252 suites**,
+and the same 2152 with `CHIERO_SMT_SOLVER=/nonexistent` (§7.8).
 
 **Every spec must end with a `## Testable contracts` section** — numbered, checkable
 assertions. Those become the RED tests. This is what makes the specs actually drive TDD
@@ -1215,7 +1268,19 @@ typing the paths ever would.
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE — **the last two defects came from the owner running the tool, and one was a false proof.** §7.7.
+> ### ⏭️ START HERE — **bit-fields are measurable in `layout`, and the review of that fix found a proven wrong answer inside it.** §7.9.
+>
+> Five commits closed §9 item 1: 041 §3.1 models a run of bit-fields as one member, two VPP
+> structs that were silent now get gcc-confirmed proposals (`test_registration_` 48 → 40,
+> `vnet_crypto_alg_data_t_` 64 → 56) — and then a fable review broke the claim. A zero-width
+> bit-field's forced boundary is invisible to the field list, so its gap was being sold as
+> recoverable padding: `struct Q { unsigned a:1; unsigned :0; … }` was told 12 "would be 4"
+> when gcc's floor is 8. Fixed by making the list partial. **Two of my own assertions in that
+> wave could not fail** — they greped the envelope for a word the sentence no longer contained.
+> §7.9 has all of it, including the instrument (`$SCRATCH/fixed_diff.py`) and the proof that it
+> can see the defect it was written for.
+>
+> ### ⏭️ (previous) START HERE — **the last two defects came from the owner running the tool, and one was a false proof.** §7.7.
 >
 > `chiero layout` on a VPP header said a 72-byte struct "would be 8" (it dropped every member
 > with no name — anonymous unions), and `chiero check-reachable` on a dead line answered
@@ -1301,11 +1366,18 @@ typing the paths ever would.
 >    solver decides; each got an explicit skip, or was widened to accept both causes where the
 >    claim survives either tier. **One was neither** — see §7.7.
 >
-> 1. **`layout`'s remaining honesty gap, which §7.7 opened rather than closed.** A record with a
->    bit-field now gets *no* padding proposal at all. That is right — `(offset, size)` cannot
->    express a bit-field's extent — and it is also a hole: those structs are exactly the packed,
->    hand-tuned ones where padding matters most. The fix is a field description that can carry
->    bits, which is 014's shape to give and this analysis's to consume.
+> ✅ **`layout`'s bit-field gap is closed** (§7.9) — 041 §3.1, contracts 25 and 26, 014
+>    contracts 4a/4b. What is *left* of it, deliberately: a record declaring a `:0` still gets
+>    no padding number, because a `:0`-terminated run's cost depends on where the run is placed
+>    and this arithmetic sums constants. Closing that needs the run's allocation unit in the
+>    field description — `Field` would carry `unit_bits`, and the ideal layout would charge the
+>    run `round_up(payload, unit)` at a unit-aligned offset. Worth doing only if `:0` turns out
+>    to be common; the sweep of 69 VPP headers found none.
+> 1. **Sweep VPP for the two defects §7.9 fixed in 014.** Unnamed bit-fields were inflating
+>    every record that has one, and that layout feeds 021's memory model, not only `layout`'s
+>    proposals — so the corpus gate's numbers moved for any VPP struct with an unnamed
+>    bit-field. `vpp_layout_gate` passes, which says the gate does not reach one; find out
+>    whether that is because VPP has none reachable or because the gate's corpus is narrow.
 > 2. **The 11 `failed` plugin entries, which are now one-line diagnoses** (§7.6 has the table).
 >    Seven are one cause: `frontend::predefines` asks gcc for its macros with **no `-march`**,
 >    while VPP builds `-march=x86-64-v2`, so `__SSE4_2__` is undefined and `vppinfra/crc32.h`
@@ -15876,6 +15948,13 @@ doubles the wake-ups.
   failing binary (§7.8).
 - **Re-measure after a fix, not only before it.** §7.6's 108 false findings were introduced by
   a fix and caught only by re-running the corpus; nothing in 2136 tests moved.
+- ⚠️ **Before trusting a fixture, compute what the defect would have said on it.** §7.9's
+  first bit-field test asserted the right number on a struct where the *wrong* model gives the
+  same number, so it passed while the analysis was still dropping members. A fixture that does
+  not discriminate is not a weaker test, it is not a test.
+- ⚠️ **An assertion against prose is an assertion against the next rewording.** Two tests
+  greped an envelope for "bit-field" after the sentence stopped containing it, and could not
+  fail. Assert the structured fact — which records are named — not the sentence naming them.
 - ⚠️ **Writing Rust through a python heredoc mangles `\`-continued string literals** — python
   eats the continuation and the run of indentation lands *inside* the string. It has shipped
   three times this session (`single-threaded`, the padding blind spot, the hole text). Escape
