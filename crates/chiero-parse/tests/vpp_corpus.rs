@@ -47,6 +47,9 @@ const SEEDS: &[&str] = &[
     // this seed's closure, so it costs nothing but the metric below — and the metric is the
     // point.
     "vnet/session/session_types.h",
+    // Free: its closure is already in the corpus, and it is the seed that reaches
+    // `vlib/trace.h` — the header whose diagnostic started this line of work.
+    "vlib/vlib.h",
 ];
 
 /// gcc's own include directories, asked of gcc rather than guessed.

@@ -268,6 +268,12 @@ pub const CORPUS_SEEDS: &[&str] = &[
     // after a typedef declarator was being read as the record definition's, which is glibc's
     // `__pthread_unwind_buf_t` and therefore every TU that reaches `<pthread.h>`.
     "vnet/session/session_types.h",
+    // **`vlib/vlib.h`, and it costs nothing** — its whole 67-file closure is already here,
+    // pulled in by the seed above. It is the seed that reaches `vlib/trace.h`, which HANDOFF
+    // §8.3's table records chiero reporting an error on: gcc rejects that header standalone at
+    // the same line and column, because it is not self-contained. `vlib.h` is how VPP includes
+    // it, and how the include order gets set.
+    "vlib/vlib.h",
 ];
 
 pub fn corpus_dir() -> std::path::PathBuf {
