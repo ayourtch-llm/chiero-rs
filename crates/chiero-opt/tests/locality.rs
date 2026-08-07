@@ -275,3 +275,112 @@ fn a_well_packed_struct_yields_no_proposals() {
         "nothing straddles, nothing is wasted"
     );
 }
+
+/// **"8 bytes recoverable" does not tell anybody which fields to move.**
+///
+/// A padding proposal named a total and left the reader to work out where the holes were, on a
+/// struct that may have thirty members. The bytes are *between* two named fields and chiero
+/// knows which two, because it has every field's offset and size — that is the whole input to
+/// the number it already prints.
+///
+/// `char a; long big; char b;` has both kinds of hole, which is why it is the fixture: seven
+/// bytes of alignment padding in the middle, and seven more at the end that exist because the
+/// record's own alignment rounds the tail up.
+#[test]
+fn a_padding_proposal_says_where_the_padding_is() {
+    let r = Record {
+        tag: "p".into(),
+        size: 24,
+        align: 8,
+        packed: false,
+        externally_visible: false,
+        fields_complete: true,
+        fields: vec![
+            Field {
+                name: "a".into(),
+                offset: 0,
+                size: 1,
+            },
+            Field {
+                name: "big".into(),
+                offset: 8,
+                size: 8,
+            },
+            Field {
+                name: "b".into(),
+                offset: 16,
+                size: 1,
+            },
+        ],
+    };
+    let props = analyse(&r, &LocalityCfg::default());
+    let pad = props
+        .iter()
+        .find(|p| matches!(p.kind, OptKind::PaddingWaste { .. }))
+        .expect("24 bytes that would be 16");
+    let ev = pad.evidence.join("\n");
+
+    // **The interior hole, with the field on each side of it.** "After `a`" alone is not
+    // actionable on a struct where `a` is one of thirty members; the pair is what says which
+    // gap this is.
+    assert!(
+        ev.contains("7 bytes") && ev.contains("`a`") && ev.contains("`big`"),
+        "the seven bytes between `a` and `big` are named: {ev}"
+    );
+    // **And the tail, which is a different fact**: it is not between two fields, and no
+    // reorder removes all of it — the record's alignment rounds the end up whatever the order.
+    assert!(
+        ev.contains("`b`") && ev.to_lowercase().contains("end"),
+        "the seven bytes after `b` are named as the tail: {ev}"
+    );
+}
+
+/// **The holes and the recovery are different numbers, and saying so is the honest part.**
+///
+/// `char a; long big; char b;` has 14 bytes of padding in it and reordering recovers 8: the
+/// best order still ends `long, char, char` and the record's own alignment rounds 10 up to 16.
+/// A proposal that listed 14 bytes of holes beside "recoverable: 8" without a word would read
+/// as an arithmetic error in chiero.
+#[test]
+fn the_padding_it_names_and_the_padding_it_recovers_are_reconciled() {
+    let r = Record {
+        tag: "p".into(),
+        size: 24,
+        align: 8,
+        packed: false,
+        externally_visible: false,
+        fields_complete: true,
+        fields: vec![
+            Field {
+                name: "a".into(),
+                offset: 0,
+                size: 1,
+            },
+            Field {
+                name: "big".into(),
+                offset: 8,
+                size: 8,
+            },
+            Field {
+                name: "b".into(),
+                offset: 16,
+                size: 1,
+            },
+        ],
+    };
+    let props = analyse(&r, &LocalityCfg::default());
+    let pad = props
+        .iter()
+        .find(|p| matches!(p.kind, OptKind::PaddingWaste { .. }))
+        .expect("a proposal");
+    assert!(
+        matches!(pad.kind, OptKind::PaddingWaste { recoverable: 8 }),
+        "{:?}",
+        pad.kind
+    );
+    let ev = pad.evidence.join("\n");
+    assert!(
+        ev.contains("14 bytes of padding") && ev.contains("8"),
+        "the total holes and what a reorder recovers are both stated: {ev}"
+    );
+}

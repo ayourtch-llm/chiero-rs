@@ -285,3 +285,47 @@ fn a_record_with_a_bitfield_gets_no_padding_number_it_cannot_stand_behind() {
         "the envelope names what it could not judge: {v}"
     );
 }
+
+/// **The same, from the command — because "recoverable: 8" is not advice until it says which
+/// fields.**
+///
+/// Asked on VPP's `fib_route_path_t`, the proposal named a total and left the reader to find
+/// the holes in a struct of five members, one of them a 56-byte anonymous union. The offsets
+/// were in chiero's hands the whole time: they are the input to the number it already printed.
+#[test]
+fn the_padding_proposal_names_the_fields_the_holes_are_between() {
+    let p = write(
+        "where.c",
+        "struct s {\n\
+         \x20 char tag;      /* 0, then 7 bytes of nothing */\n\
+         \x20 long big;      /* 8 */\n\
+         \x20 char last;     /* 16, then 7 more to the end */\n\
+         };\n\
+         struct s instance;\n",
+    );
+    let (code, v, err) = run(&["layout", p.to_str().expect("utf-8"), "--json"]);
+    assert_eq!(code, 0, "{err}");
+    let rec = v["result"]["records"]
+        .as_array()
+        .expect("records")
+        .iter()
+        .find(|r| r["tag"] == "s")
+        .expect("analysed");
+    let pad = rec["proposals"]
+        .as_array()
+        .expect("proposals")
+        .iter()
+        .find(|p| p["kind"] == "padding_waste")
+        .expect("24 bytes that would be 16");
+    let ev = pad["evidence"]
+        .as_array()
+        .expect("evidence")
+        .iter()
+        .filter_map(|e| e.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        ev.contains("`tag`") && ev.contains("`big`") && ev.contains("`last`"),
+        "every field a hole touches is named, so a reader can act without counting: {ev}"
+    );
+}
