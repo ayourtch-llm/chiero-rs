@@ -1752,6 +1752,28 @@ typing the paths ever would.
    10/40/160/320/640 and look at the ratio per doubling — 4x is quadratic, 6x is worse), because
    the ratio is what makes it undeniable and a single timing never is.
 
+   **Triage done 2026-08-07; the interesting half is blocked.** By crate: `chiero-cir` 15,
+   `chiero-gcov` 13, `chiero-sema` 9, `chiero-exec` 6. Most hits are ranges or fixed lists. The
+   two that look genuinely quadratic are both in `chiero-gcov/src/native.rs`, and both scale with
+   **arcs or block-lines per function**, not with test count:
+
+   - **`native.rs:1642`** — `slot.contains(&(key.clone(), bl.block))` inside `for bl in &f.lines
+     { for line in &bl.lines { … } }`. `FuncKey` holds two `String`s, so **every probe allocates
+     twice** purely to compare, and the enclosing `entry((bl.file.clone(), *line))` clones a third.
+   - **`native.rs:1656`** — `order.contains(&(a.from, a.to))` while `order` is being filled from
+     `f.arcs`, i.e. O(arcs²) per function.
+   - Johnson's circuit enumeration (`native.rs:1258–1286`) uses `Vec::contains` for `bs`,
+     `blocked` and `block_lists`, which adds a factor to something already expensive.
+
+   ⛔ **Blocked on artifacts, and this is why it is recorded rather than fixed.** There are **no
+   `.gcno` files under `/home/ubuntu/vpp`** — the 1895-file validation in §7.1 was a one-off
+   against a coverage build that no longer exists. Without it there is no growth curve, and this
+   entry's own rule says a reading is not a measurement. Two honest ways forward: rebuild VPP with
+   coverage (long), or write a synthetic `.gcno` generator and curve it the way `dominators` was
+   curved (bounded, and reusable afterwards). ⚠️ **Do not "just fix" the clones** — an unmeasured
+   optimisation is the flattering change this file keeps warning about, and `chiero-gcov` is
+   19/19 contracts green today.
+
    ✅ **`max_solver_rlimit` is BUILT, 2026-08-07.** `Budget::max_solver_rlimit` reaches the backend
    as `(set-option :rlimit N)`; a query that spends it answers `Unknown(ResourceLimit)`.
    `Engine::new_solver` is the single construction point, so it covers feasibility *and* checker
