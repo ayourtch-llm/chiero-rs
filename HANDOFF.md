@@ -1456,7 +1456,38 @@ typing the paths ever would.
 >    with unnamed bit-fields and does not preprocess yet — unmeasured.
 > ✅ **Done — the widening landed and the defects it found are fixed** (§7.10, §8.3). The
 >    contract-12 gate is 21 seeds, 113 corpus files, 1939 records, **8492 assertions**, green.
-> 1. **Widen again, per §8.3.** The pattern is now the standing job and the heartbeat runs it.
+> 1. ### 🎯 **NEXT: a preprocessor conformance corpus from simplecpp** (owner's suggestion, 2026-08-07)
+>
+>    <https://github.com/cppcheck-opensource/simplecpp>, pinned at `74a5a63` (2026-08-04). This
+>    is §8.3's pattern pointed at a **new kind of edge** — every corpus so far is real VPP code,
+>    which exercises macros as people write them and not the dark corners (`#`/`##` edge cases,
+>    recursive expansion, `__VA_ARGS__`, `#line`, GNU `args...` with `##`). simplecpp's suite is
+>    hand-curated for exactly those.
+>
+>    **⚠️ Licensing — take `test.cpp` and NOT `testsuite/`.** simplecpp's own code and `test.cpp`
+>    are **BSD Zero Clause**, which is as permissive as it gets and fine for MIT OR Apache-2.0.
+>    But `testsuite/clang-preprocessor-tests/` is **211 verbatim clang test files** (they still
+>    carry `// RUN: %clang_cc1 -verify %s`) and `testsuite/gcc-preprocessor-tests/` is 26 gcc
+>    ones. Those are Apache-2.0-with-LLVM-exception and **GPL** respectively, carry no notice of
+>    their own in that directory, and must not be vendored here.
+>
+>    **Extraction, measured**: `$SCRATCH/extract.py` pulls `static void NAME() { const char
+>    code[] = "…"; ASSERT_EQUALS("…", preprocess(code)); }` triples — **196 cases with a fixture,
+>    98 of them with a `preprocess()` expectation**. The extractor is deliberately conservative
+>    (it skips `readfile`-only cases, `outputList` diagnostic cases, and bodies that build the
+>    input some other way), so those are floors, not totals. Widen it before concluding coverage.
+>
+>    **The oracle question, and the answer that fits this project.** simplecpp's expected strings
+>    are in *its* normalisation — tokens space-separated, one output line per source line,
+>    directives blanked. Rendering chiero's token stream that way is a small adapter, and it is
+>    the cheap path because input and expectation are already paired. But simplecpp is another
+>    implementation, not a standard. So: **use simplecpp as the finder and `gcc -E` as the
+>    judge.** Where chiero and simplecpp disagree, ask gcc before believing either — the same
+>    rule as everywhere else here, and the same role §8.1 gives an independent model. A
+>    disagreement where gcc sides with chiero is a bug in simplecpp's expectation, and worth
+>    reporting upstream rather than encoding.
+>
+> 2. **Widen again, per §8.3.** The pattern is now the standing job and the heartbeat runs it.
 >    Unwidened surfaces, roughly in order of expected yield:
 >    - ✅ **`chiero-parse`'s `vpp_corpus.rs`** — done, seven seeds now. Zero defects; the
 >      seed parses clean at 401k tokens (the largest in the corpus by 40%) with 0 diagnostics.
