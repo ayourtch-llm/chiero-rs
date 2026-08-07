@@ -424,10 +424,15 @@ fn gcc_predefines() -> Vec<(String, String)> {
 }
 
 fn system_paths() -> Vec<PathBuf> {
-    ["/usr/lib/gcc/x86_64-linux-gnu/13/include", "/usr/local/include", "/usr/include/x86_64-linux-gnu", "/usr/include"]
-        .iter()
-        .map(PathBuf::from)
-        .collect()
+    [
+        "/usr/lib/gcc/x86_64-linux-gnu/13/include",
+        "/usr/local/include",
+        "/usr/include/x86_64-linux-gnu",
+        "/usr/include",
+    ]
+    .iter()
+    .map(PathBuf::from)
+    .collect()
 }
 
 /// Run one case through both compilers and through chiero.
@@ -452,9 +457,7 @@ pub fn run_case(
     defines.extend(case.defines.iter().cloned());
     let config = chiero_pp::Config {
         // The file's own directory first: several cases `#include` a sibling under `Inputs/`.
-        include_paths: vec![
-            case.path.parent().unwrap_or(Path::new(".")).to_path_buf(),
-        ],
+        include_paths: vec![case.path.parent().unwrap_or(Path::new(".")).to_path_buf()],
         system_paths: system_paths(),
         defines,
         ..chiero_pp::Config::default()
@@ -551,10 +554,7 @@ pub fn run_case(
 ///
 /// A whole-stream diff on a 40k-token file is unreadable; the first divergence is the one a
 /// reader reduces from.
-pub fn first_difference(
-    ours: &[String],
-    theirs: &[String],
-) -> Option<(usize, String, String)> {
+pub fn first_difference(ours: &[String], theirs: &[String]) -> Option<(usize, String, String)> {
     let missing = "<end>".to_owned();
     for index in 0..ours.len().max(theirs.len()) {
         let a = ours.get(index).unwrap_or(&missing);

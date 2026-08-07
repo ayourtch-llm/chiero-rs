@@ -23,7 +23,11 @@ fn lex(src: &str) -> (Vec<String>, Vec<String>) {
             .filter(|t| !matches!(t.kind, PpTokenKind::Eof))
             .map(|t| lexed.text(t).to_owned())
             .collect(),
-        lexed.diagnostics().iter().map(|d| d.message.clone()).collect(),
+        lexed
+            .diagnostics()
+            .iter()
+            .map(|d| d.message.clone())
+            .collect(),
     )
 }
 

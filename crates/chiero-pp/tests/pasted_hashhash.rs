@@ -102,7 +102,10 @@ fn a_pasted_hashhash_reaching_a_second_expansion_is_an_ordinary_token() {
     ] {
         let gcc = compiler_tokens("gcc", src);
         let clang = compiler_tokens("clang", src);
-        assert_eq!(gcc, clang, "the independent compilers must agree first: {src}");
+        assert_eq!(
+            gcc, clang,
+            "the independent compilers must agree first: {src}"
+        );
         assert_eq!(ours(src), gcc, "chiero diverges on: {src}");
     }
 }
@@ -183,7 +186,10 @@ fn a_hashhash_in_a_replacement_list_still_pastes() {
     ] {
         let gcc = compiler_tokens("gcc", src);
         let clang = compiler_tokens("clang", src);
-        assert_eq!(gcc, clang, "the independent compilers must agree first: {src}");
+        assert_eq!(
+            gcc, clang,
+            "the independent compilers must agree first: {src}"
+        );
         assert_eq!(ours(src), gcc, "chiero diverges on: {src}");
     }
 }

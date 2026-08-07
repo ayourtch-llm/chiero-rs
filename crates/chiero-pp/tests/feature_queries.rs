@@ -65,7 +65,9 @@ fn chiero_value(query: &str, name: &str) -> (u32, Vec<String>) {
     let texts: Vec<_> = tu.token_texts().collect();
     assert_eq!(texts.len(), 1, "expected one token, got {texts:?}");
     (
-        texts[0].parse().unwrap_or_else(|_| panic!("not a number: {texts:?}")),
+        texts[0]
+            .parse()
+            .unwrap_or_else(|_| panic!("not a number: {texts:?}")),
         tu.diagnostics.iter().map(|d| d.message.clone()).collect(),
     )
 }
@@ -263,7 +265,10 @@ fn has_include_is_answered_after_expansion_too() {
         ..Config::default()
     };
     for (source, expected) in [
-        ("#if __has_include(<stdio.h>)\nYES\n#else\nNO\n#endif\n", "YES"),
+        (
+            "#if __has_include(<stdio.h>)\nYES\n#else\nNO\n#endif\n",
+            "YES",
+        ),
         (
             "#if __has_include(<no_such_header_xyzzy.h>)\nYES\n#else\nNO\n#endif\n",
             "NO",
@@ -366,10 +371,22 @@ fn the_baked_persona_supports_gnuc_prereq() {
 /// nothing here, which is why this is a rule about the operand's *shape* and not a table row.
 #[test]
 fn a_scoped_operand_answers_one_and_only_for_gcc_s_own_scope() {
-    for query in ["__has_attribute", "__has_c_attribute", "__has_cpp_attribute"] {
-        for name in ["gnu::noreturn", "gnu::packed", "__gnu__::packed", "gnu::deprecated"] {
+    for query in [
+        "__has_attribute",
+        "__has_c_attribute",
+        "__has_cpp_attribute",
+    ] {
+        for name in [
+            "gnu::noreturn",
+            "gnu::packed",
+            "__gnu__::packed",
+            "gnu::deprecated",
+        ] {
             let expected = gcc_value(query, name);
-            assert_eq!(expected, 1, "gcc answers 1 for a known gcc-scoped attribute");
+            assert_eq!(
+                expected, 1,
+                "gcc answers 1 for a known gcc-scoped attribute"
+            );
             assert_eq!(chiero_value(query, name).0, expected, "{query}({name})");
         }
         for name in ["clang::packed", "foo::packed", "gnu::nonesuch"] {
@@ -389,12 +406,30 @@ fn a_scoped_operand_answers_one_and_only_for_gcc_s_own_scope() {
 /// the first would pass a rubber stamp.
 #[test]
 fn has_cpp_attribute_is_available_in_c_and_answers_versions() {
-    for name in ["noreturn", "deprecated", "packed", "always_inline", "unsequenced", "nonesuch"] {
+    for name in [
+        "noreturn",
+        "deprecated",
+        "packed",
+        "always_inline",
+        "unsequenced",
+        "nonesuch",
+    ] {
         let expected = gcc_value("__has_cpp_attribute", name);
         let (ours, _) = chiero_value("__has_cpp_attribute", name);
         assert_eq!(ours, expected, "__has_cpp_attribute({name})");
     }
-    assert!(gcc_value("__has_cpp_attribute", "noreturn") > 1, "a version, not a truth");
-    assert_eq!(gcc_value("__has_cpp_attribute", "packed"), 1, "GNU-only: 1, no version");
-    assert_eq!(gcc_value("__has_cpp_attribute", "unsequenced"), 0, "gcc 13 lacks it");
+    assert!(
+        gcc_value("__has_cpp_attribute", "noreturn") > 1,
+        "a version, not a truth"
+    );
+    assert_eq!(
+        gcc_value("__has_cpp_attribute", "packed"),
+        1,
+        "GNU-only: 1, no version"
+    );
+    assert_eq!(
+        gcc_value("__has_cpp_attribute", "unsequenced"),
+        0,
+        "gcc 13 lacks it"
+    );
 }

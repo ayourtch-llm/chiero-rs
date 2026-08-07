@@ -48,7 +48,9 @@ fn matches_gcc(src: &str) {
 /// The basic contract: push, redefine, pop, and the old definition is back.
 #[test]
 fn pop_macro_restores_the_pushed_definition() {
-    matches_gcc("#define X 1\n#pragma push_macro(\"X\")\n#define X 2\nX\n#pragma pop_macro(\"X\")\nX\n");
+    matches_gcc(
+        "#define X 1\n#pragma push_macro(\"X\")\n#define X 2\nX\n#pragma pop_macro(\"X\")\nX\n",
+    );
 }
 
 /// A **stack**, not a single slot — two pushes need two pops.

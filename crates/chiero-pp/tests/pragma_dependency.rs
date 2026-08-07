@@ -30,7 +30,10 @@ fn diagnostics(src: &str) -> Vec<String> {
 #[test]
 fn a_missing_dependency_is_reported() {
     let d = diagnostics("#pragma GCC dependency \"no_such_file_xyzzy.h\"\n");
-    assert!(d.iter().any(|m| m.contains("no_such_file_xyzzy.h")), "{d:?}");
+    assert!(
+        d.iter().any(|m| m.contains("no_such_file_xyzzy.h")),
+        "{d:?}"
+    );
 }
 
 /// **Through `_Pragma`, through a macro** — the fixture's shape, and the reason the request has
@@ -40,7 +43,10 @@ fn a_missing_dependency_is_reported_through_a_macro() {
     let d = diagnostics(
         "#define DO_PRAGMA _Pragma\nDO_PRAGMA (\"GCC dependency \\\"no_such_file_xyzzy.h\\\"\")\n",
     );
-    assert!(d.iter().any(|m| m.contains("no_such_file_xyzzy.h")), "{d:?}");
+    assert!(
+        d.iter().any(|m| m.contains("no_such_file_xyzzy.h")),
+        "{d:?}"
+    );
 }
 
 /// **A dependency that exists is silent.** Without this, "always report" passes both tests above.

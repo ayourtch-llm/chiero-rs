@@ -130,11 +130,18 @@ fn a_ucn_for_a_basic_character_or_surrogate_is_diagnosed() {
     // a literal `$`.
     let dollar = "int a\\u0024 = 1;\n";
     assert!(gcc_accepts(dollar), "`$` is an identifier character");
-    assert_eq!(lex(dollar).1, 0, "a UCN naming `$` is legal in an identifier");
+    assert_eq!(
+        lex(dollar).1,
+        0,
+        "a UCN naming `$` is legal in an identifier"
+    );
     for src in ["int a\\u0040 = 1;\n", "int a\\u0060 = 1;\n"] {
         assert!(!gcc_accepts(src), "fixture must be invalid C11: {src}");
         let (_, diagnostics) = lex(src);
-        assert!(diagnostics > 0, "a valid UCN naming a non-identifier character: {src}");
+        assert!(
+            diagnostics > 0,
+            "a valid UCN naming a non-identifier character: {src}"
+        );
     }
 }
 

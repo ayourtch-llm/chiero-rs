@@ -335,9 +335,10 @@ struct Cooked<'a> {
 
 impl<'a> Cooked<'a> {
     fn new(raw: &'a [u8], config: LexConfig) -> Self {
-        let has_splice = raw.iter().enumerate().any(|(at, byte)| {
-            *byte == b'\\' && splice_len(raw, at).is_some()
-        });
+        let has_splice = raw
+            .iter()
+            .enumerate()
+            .any(|(at, byte)| *byte == b'\\' && splice_len(raw, at).is_some());
         let has_trigraph = config.trigraphs
             && raw.windows(3).any(|triple| {
                 triple[0] == b'?' && triple[1] == b'?' && trigraph(triple[2]).is_some()
@@ -534,9 +535,12 @@ impl Lexer<'_> {
                     offences.push((self.pos, code, UcnOffence::NotAtTheStart));
                 }
                 self.pos += len;
-            } else if first {
-                self.pos += 1;
-            } else if self.peek(0).is_some_and(is_ident_continue) {
+            } else if first || self.peek(0).is_some_and(is_ident_continue) {
+                // **The first byte is taken unconditionally**; the caller has already decided
+                // this begins an identifier, so re-asking would only let the two disagree.
+                // Every later byte has to earn its place. Two conditions, one action — written
+                // as one arm because two arms with identical bodies invite a fix to land in
+                // only one of them.
                 self.pos += 1;
             } else {
                 break;
@@ -791,7 +795,13 @@ fn is_ident_continue(byte: u8) -> bool {
 /// Why a universal character name is not usable where it appears. **Three rules, not one** —
 /// gcc distinguishes them and so does this, because "not a valid universal character" and "not
 /// valid in an identifier" are true of different code points.
+///
+/// The shared `Not` prefix is the point rather than an accident, so `enum_variant_names` is
+/// wrong here: each variant is a *rejection*, and gcc's three messages are phrased as three
+/// things the character is not. Renaming them to satisfy the lint would make the variants stop
+/// matching the diagnostics they exist to produce.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)]
 enum UcnOffence {
     /// C11 6.4.3p2: names a basic-set character or a surrogate.
     NotAUniversalCharacter,

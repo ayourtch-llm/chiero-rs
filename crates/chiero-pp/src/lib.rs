@@ -205,13 +205,7 @@ impl HideSet {
     /// bit in it is zero and the intersection with zero is zero — the mistake `extend`'s
     /// `resize` would invite if this were written by analogy to it.
     fn intersect(&self, other: &Self) -> Self {
-        Self(
-            self.0
-                .iter()
-                .zip(&other.0)
-                .map(|(a, b)| a & b)
-                .collect(),
-        )
+        Self(self.0.iter().zip(&other.0).map(|(a, b)| a & b).collect())
     }
 }
 
@@ -1319,10 +1313,7 @@ impl Engine {
         let Some(severity) = severity else { return };
         let message = rest[severity.len()..].trim();
         // The operand is one string literal; anything else is not this pragma.
-        let Some(message) = message
-            .strip_prefix('"')
-            .and_then(|m| m.strip_suffix('"'))
-        else {
+        let Some(message) = message.strip_prefix('"').and_then(|m| m.strip_suffix('"')) else {
             return;
         };
         self.diagnostics.push(Diagnostic {
@@ -2138,11 +2129,7 @@ impl Engine {
         // test two functions above. Resolving it into an effective body before substitution
         // means the group's contents go through the ordinary parameter walk with no second path.
         let variadic_has_tokens = raw_by_name
-            .get(
-                def.variadic_name
-                    .as_deref()
-                    .unwrap_or("__VA_ARGS__"),
-            )
+            .get(def.variadic_name.as_deref().unwrap_or("__VA_ARGS__"))
             .is_some_and(|tokens| !tokens.is_empty());
         let body = expand_va_opt(&def.body, variadic_has_tokens, &mut self.diagnostics);
         let def = &StoredMacro {

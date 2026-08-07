@@ -65,7 +65,10 @@ fn compiler_tokens(compiler: &str, src: &str) -> Vec<String> {
 fn agrees_with_both(src: &str) {
     let gcc = compiler_tokens("gcc", src);
     let clang = compiler_tokens("clang", src);
-    assert_eq!(gcc, clang, "the independent compilers must agree first: {src}");
+    assert_eq!(
+        gcc, clang,
+        "the independent compilers must agree first: {src}"
+    );
     assert_eq!(ours(src), gcc, "chiero diverges on: {src}");
 }
 
