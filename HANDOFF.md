@@ -1816,6 +1816,19 @@ doubles the wake-ups.
   people write them*, which is a systematically biased sample — the dark corners are never in it,
   and no amount of widening within it reaches them. **When the yield table flattens, change the
   kind rather than the size.**
+- ⚠️ **A qualifier in someone's note is load-bearing until you have tested that it is not.**
+  `is_chiero_limit`'s note said `NullDeref` cannot serve as the objectless probe "because neither
+  can produce two findings **on one path**". I read "on one path" as incidental, recorded a route
+  around it, and pushed that. Measured: a two-path fixture passes with `FindingKey`'s `func`
+  component neutralised, while the fixture the note defends fails under the same mutant —
+  deduplication happens *within* a path, so two findings on two paths never compete for a key.
+  ⚠️ **The check that settles it is a mutant, not an argument**: neutralise the component the test
+  claims to pin and confirm the candidate fails. Four minutes, and it is the only thing that
+  distinguishes a probe from a fixture that merely passes.
+  This was the **fourth** claim of one session that did not survive being checked — the others
+  being an edge asserted without reading the corpus, a fact about gcc written from memory, and a
+  queue entry naming the wrong spec. **Reasoning here is good enough to generate candidates and
+  not good enough to skip verifying them.**
 - ⚠️ **A type coarser than the thing it models makes defects invisible to tests, not impossible
   in code.** `features::TABLE` held a `bool` for a query that returns a *version number*, so six
   rows claiming `1` where gcc says `201904` were agreed with by a test comparing `bool` to
