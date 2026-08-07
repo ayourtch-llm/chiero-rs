@@ -1998,3 +1998,73 @@ fn a_non_integer_size_operand_is_rejected() {
     m.funcs[0].blocks[0].term = Terminator::Return(None);
     assert_rejects(&m, VerifyErrorKind::WidthMismatch);
 }
+
+/// **The verifier has to finish on a function the size real C produces.**
+///
+/// Found 2026-08-07 by chasing the plugin sweep's two `timeout` rows —
+/// `plugins/unittest/fib_test.c` and `llist_test.c`, killed from outside after 50 s. Neither
+/// the engine's `--time-budget` nor 023 §8's brand-new `--solver-rlimit` moved them, and a
+/// stack sample said why: **the time is not in the engine at all.** It is in
+/// `verify::dominators`, which runs before a single instruction executes, so no bound the
+/// engine owns can reach it.
+///
+/// Measured, release build, on a chain of diamonds — the shape a run of `if`s lowers to:
+///
+/// ```text
+///    31 blocks    111 µs
+///   121 blocks      2.0 ms
+///   481 blocks     63.9 ms
+///   961 blocks    420 ms
+///  1921 blocks      3.1 s
+///  3001 blocks     11.5 s
+/// ```
+///
+/// Each doubling costs about **six times** the previous, which is worse than quadratic.
+/// `dominators` rebuilds the predecessor list *inside* the fixpoint loop — an O(blocks) scan
+/// per block per round, each `successors().contains()` another scan — and intersects
+/// dominator sets with `retain(|x| dom[p].contains(x))`, linear in a set that starts as *every
+/// block*.
+///
+/// ⚠️ **The function's own doc comment is the reason this survived**: *"Small graphs, so
+/// simplicity beats Lengauer-Tarjan here."* That is an assumption about the input written as a
+/// justification, and nothing ever measured it. §11.3 — a plausible rationale is not evidence.
+///
+/// The bound here is deliberately generous. The claim is that the cost is not super-quadratic,
+/// not that this machine is fast.
+#[test]
+fn a_function_with_three_thousand_blocks_verifies_promptly() {
+    let n = 1000u32;
+    let mut blocks = Vec::new();
+    for i in 0..n {
+        let b = i * 3;
+        blocks.push(block(
+            b,
+            vec![inst(InstKind::Assign {
+                dst: ValueId(i),
+                rv: RValue::Fresh { ty: CTy::Int(1) },
+            })],
+            Terminator::Br {
+                cond: Operand::Value(ValueId(i)),
+                t: BlockId(b + 1),
+                f: BlockId(b + 2),
+            },
+        ));
+        blocks.push(block(b + 1, vec![], Terminator::Goto(BlockId(b + 3))));
+        blocks.push(block(b + 2, vec![], Terminator::Goto(BlockId(b + 3))));
+    }
+    blocks.push(block(n * 3, vec![], Terminator::Return(Some(i32c(0)))));
+
+    let mut m = valid_module();
+    m.funcs[0].blocks = blocks;
+    m.funcs[0].entry = BlockId(0);
+
+    let started = std::time::Instant::now();
+    let d = verify(&m);
+    let took = started.elapsed();
+    assert!(d.is_empty(), "the module is well-formed: {d:#?}");
+    assert!(
+        took < std::time::Duration::from_secs(5),
+        "3001 blocks took {took:?}; the verifier is super-quadratic in the block count and \
+         no engine budget can reach it, because it runs before execution"
+    );
+}
