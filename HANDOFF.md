@@ -1835,9 +1835,25 @@ typing the paths ever would.
    the engine survives the rest by degrading. The real fix is a CIR change — **135 sites**
    construct `InstKind::Call`, and the text format needs syntax for it.
 
-10. **`MemFault::BadRange`** — same class as `is_chiero_limit`, held back because three `step.rs`
-   tests use it as their only objectless non-fatal probe. Give them one (a new non-fatal
-   objectless *defect* fault, or a different keying fixture) and move it.
+10. ### **`MemFault::BadRange`** — ready to do, and the blocker has a route the note missed.
+   "unsupported-access-width" on a 32-byte AVX load is a sentence about **chiero**, not about the
+   program, so it belongs in `is_chiero_limit` beside `SymbolicByte`. It is held back because
+   three tests in `chiero-exec/tests/step.rs` use it as their probe for `FindingKey`'s
+   `func`/`span` components, needing a fault that is **objectless** (so those components are what
+   distinguish) **and non-fatal** (so two can occur).
+
+   ⚠️ **The note beside `is_chiero_limit` says `NullDeref`/`WildPointer` cannot serve "because
+   neither can produce two findings on one path" — true, and it does not have to be one path.**
+   A fatal fault ends *its own path*, not the run. Two paths of one run — `if (c) …null deref in
+   f… else …null deref in g…` — give two objectless findings in two functions, which is exactly
+   what `objectless_faults_in_two_functions_do_not_merge` asserts. **Verify the engine keeps both
+   findings across a fork before rewriting the tests**; if it does, no new fault kind needs
+   inventing, which was the alternative the note assumed.
+
+   Order: give the three tests the two-path probe, confirm they still **fail** if `FindingKey`'s
+   `func` component is removed (or they are not testing what they claim), then move `BadRange`
+   into `is_chiero_limit` and re-run `measure.sh` — §7.6's wide sweep had
+   `unsupported-access-width` in its findings list.
 
 11. **032 contract 18's corpus still has no `observed` entry** and the gate correctly exits 1
    saying "NOT MEASURED". Method, learned the hard way (§7.1): **revert a historical fix's `src/`
