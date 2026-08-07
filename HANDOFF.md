@@ -1239,6 +1239,40 @@ Commit message prefixes: `red:`, `green:`, `review:`, `spec:`, `chore:`.
 The user authorized subagents specifically for these reviews. (General standing
 instruction otherwise discourages unrequested subagent use — this is the carve-out.)
 
+### 8.3 🔁 THE WIDENING PATTERN — the standing job, and the highest-yield loop found so far
+
+**Every gate has a corpus, and every corpus has an edge. The defects live past the edge.**
+This has now paid out three times in a row, each time on the first run after a widening:
+
+| widened | cost | yield |
+|---|---|---|
+| `find-bugs`: 7 files → 56 → 92 plugins | a sweep each | 4 defects, then 3, then two panics and a true `Exact` |
+| `layout`: no bit-field records → runs modelled | one wave | 2 VPP findings, and a review found a `proven` wrong answer inside the fix |
+| contract-12 gate: 20 `vppinfra/` seeds → +1 `vnet/` seed | 86 files, ~5 min | **11 rejections, a defect in every TU that includes `<pthread.h>`** |
+
+The loop, and it is deliberately mechanical:
+
+1. **Find the edge.** Ask what the corpus *cannot* contain. `CORPUS_SEEDS` was twenty headers
+   from one directory — so no unnamed bit-field, no typedef-attribute, nothing `vlib` does.
+   The question is never "is the gate green", it is "what is the gate incapable of seeing".
+2. **Widen by one.** One seed, one directory, one file class. One, because the next step is
+   reading failures and a wide widening produces a pile nobody can attribute.
+3. **Read what it rejects, and do not fix it yet.** The first run's failure list is the
+   measurement. Record the count before touching anything — it is the number the wave is
+   judged by, and a fix applied before it is recorded destroys it.
+4. **Fix red-green, one defect at a time**, checking each answer against gcc rather than
+   against arithmetic. Re-run the gate after each: the list shrinks, and sometimes *grows*,
+   which is information — §7.10's 1 became 11 because the first fix let later assertions run.
+5. **Land the widening only when the gate is green.** A widening committed red makes every
+   later run unreadable. Keep the corpus copy out of the commit until then; §9 carries the
+   recipe so an unfinished one costs five minutes, not a session.
+6. **Record the yield** in the table above, so the next reader can see whether the pattern is
+   still paying and stop when it is not.
+
+⚠️ **The trap: a green gate is evidence about the corpus, not about the tree.** `vpp_layout_gate`
+passed for months while 014 mis-aligned every unnamed bit-field, because no seed had one. Before
+concluding "the tree does not do this", check whether the gate could have seen it if it did.
+
 ### 8.2 ⚠️ Never `git add -A` while another agent has the tree
 
 It swept a reviewer's throwaway test files into a commit once and mixed a finished fix into the
