@@ -1580,8 +1580,12 @@ typing the paths ever would.
 > panics on the C standard's own worked example, after four consecutive widenings of VPP-shaped
 > corpora had begun returning honest zeros. §11.3 carries the general form.
 >
-> **State: 2026-08-07 — `./check.sh` GREEN at 2215 passed across 263 suites**, measured after
-> the `BadRange` closure. Up from 2154 at the previous session's start and 2193/258 before the
+> **State: 2026-08-07 — `./check.sh` GREEN at 2221 passed across 264 suites, fmt and clippy
+> clean.** That is the first run verified against all three CI legs; the tree had been **red in
+> CI** (26 fmt diffs, 2 clippy errors) while the old one-leg script called it green. Closed this
+> session: `MemFault::BadRange` and 023 §8's `max_solver_rlimit`.
+>
+> *Earlier in the session, at 2215/263, measured after the `BadRange` closure:* Up from 2154 at the previous session's start and 2193/258 before the
 > last two preprocessor closures. Earlier in the session: §7.11's seven waves over the
 > preprocessor conformance corpus (nine defects), honest zeros on 014 contract 11, `vnet/ip/`
 > (§7.17) and 010 contract 11 (§7.18), then `push_macro`/`pop_macro` and `#pragma GCC
@@ -1883,6 +1887,22 @@ doubles the wake-ups.
   **There is no need for a waiter at all**: a `run_in_background` command notifies on
   completion. If a guard is genuinely wanted, match on something the waiter cannot contain
   (a pidfile, `pgrep -x cargo`, or the output file appearing).
+
+  ☠️ **Postscript, 2026-08-07: thirteen of them were still alive, the oldest at 2 days 17 hours.**
+  They survive a `/clear` and outlive the session that made them, so they accumulate: nine from
+  2026-08-05 waiting on `cargo test --workspace`, four from 2026-08-06 waiting on `measure.sh`.
+  All killed.
+
+  ⚠️ **And the first sweep at them reported "0 remaining" while eleven were still running** —
+  which is the same defect one more time, in the *cleanup*. Two causes, both worth knowing:
+  the pattern was narrower than the thing it was clearing, and the check **matched itself**, so
+  a live hit and the grep's own shell were indistinguishable. **A cleanup verified with the
+  pattern it cleaned with cannot report a miss.** What worked: list every process whose elapsed
+  time has a `D-` in it, read the command lines, and exclude the current shell by its absurd
+  `441077234-` etime rather than by a pattern.
+
+  Cheap standing check, since they cost nothing until they cost an hour:
+  `ps -eo pid,etime,cmd | awk '$2 ~ /^[0-9]+-/ && $2 !~ /^441077234/ && /until/ && /pgrep -f/'`
 - ⚠️ **Never edit a source file while `./check.sh` is running.** A full run is over an hour and
   cargo compiles once at the start, so an edit part-way through poisons it: `E0460: found
   possibly newer version of crate chiero_pp`, reported as `RED (cargo exit 1)` with **0 tests
