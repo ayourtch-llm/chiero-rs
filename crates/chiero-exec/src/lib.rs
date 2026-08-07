@@ -428,6 +428,19 @@ pub struct Budget {
     /// 023 §8.1's non-deterministic backstop. `None` — the default — is what the determinism
     /// contracts run under; a surface where somebody is waiting sets one.
     pub wall_clock: Option<std::time::Duration>,
+    /// 023 §8: how much work **one solver query** may do, in z3's deterministic units. `0` is
+    /// no limit, which is the default.
+    ///
+    /// This is the bound `wall_clock` cannot be. §8 records why the gap mattered: the clock is
+    /// checked *between* steps, so a single long query outlives it, and three of 477 VPP entry
+    /// points still had to be killed from outside. §8.1 is why it is not simply a shorter
+    /// clock — a wall-clock bound changes `Fidelity`, `assumptions` and `budget_hits`, all of
+    /// which are output, and contract 17 asks for identical results at 1, 2 and 8 threads.
+    ///
+    /// ⚠️ Arming it **replaces** the backend's `:timeout` option rather than adding to it;
+    /// `chiero_solver::TieredSolver::with_rlimit` says why, and the wall-clock watchdog is
+    /// unaffected either way.
+    pub max_solver_rlimit: u64,
 }
 
 impl Default for Budget {
@@ -446,6 +459,11 @@ impl Default for Budget {
             // one of this workspace's runs abortable would make contract 6 untestable by
             // construction — so the CLI sets 60 s and the library sets nothing.
             wall_clock: None,
+            // **Off, for the same reason the clock is** — and one more. Arming it displaces the
+            // backend's `:timeout`, so a non-zero default would silently disarm the polite half
+            // of the watchdog for every caller in this workspace, including the ones that never
+            // heard of it.
+            max_solver_rlimit: 0,
         }
     }
 }
@@ -1883,10 +1901,7 @@ impl<'m> Engine<'m> {
         // to exist before the borrow below hands it out.
         if self.solver.is_none() {
             self.solver_inits += 1;
-            self.solver = Some(match self.backend_for_run() {
-                Some(b) => TieredSolver::with_backend(b),
-                None => TieredSolver::new(),
-            });
+            self.solver = Some(self.new_solver());
         }
         let solver = self.solver.as_mut().expect("just created");
         let mut states = std::mem::take(&mut s.checker_states);
@@ -2043,6 +2058,21 @@ impl<'m> Engine<'m> {
             (None, SolverTier::LiteOnly) => None,
             (None, SolverTier::Discover) => SmtLib::discover(),
         }
+    }
+
+    /// The run's one solver, built the same way wherever it is built.
+    ///
+    /// **One construction point, because the run has one solver.** There were two identical
+    /// `match backend_for_run()` blocks, and 023 §8's `max_solver_rlimit` has to reach both —
+    /// a budget that applies to feasibility queries but not to checker queries is not a budget,
+    /// and nothing about the two call sites would have said so. §11.3's rule about fixing the
+    /// rule rather than the site, applied before the second copy could drift.
+    fn new_solver(&self) -> TieredSolver {
+        let s = match self.backend_for_run() {
+            Some(b) => TieredSolver::with_backend(b),
+            None => TieredSolver::new(),
+        };
+        s.with_rlimit(self.budget.max_solver_rlimit)
     }
 
     pub fn with_solver(mut self, t: SolverTier) -> Self {
@@ -4960,10 +4990,7 @@ impl<'m> Engine<'m> {
             // a freshly built solver reports one spawn for its own first query, which is
             // the same number the correct implementation reports for the whole run.
             self.solver_inits += 1;
-            self.solver = Some(match self.backend_for_run() {
-                Some(b) => TieredSolver::with_backend(b),
-                None => TieredSolver::new(),
-            });
+            self.solver = Some(self.new_solver());
         }
         let solver = self.solver.as_mut().expect("just built");
         // The path condition goes in as *assumptions* rather than assertions, so the

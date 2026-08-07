@@ -180,3 +180,138 @@ fn an_unknown_answer_is_not_charged_as_a_backend_error() {
         "and the hardest query in the run must not be the one that is asked twice"
     );
 }
+
+/// A fake solver that answers **`unknown` with a reason of my choosing**, and logs what it was
+/// told.
+///
+/// ⚠️ **This exists because the first version of this file did not have it, and the suite could
+/// not see the defect it was written about.** Three mutants were run against the tests above:
+/// making `with_rlimit` a no-op killed all three, and so did putting `unknown` back in the
+/// dead-pipe arm — but replacing the classification guard with `if true`, so that *every*
+/// `unknown` becomes `ResourceLimit`, **survived every one of them**. The module header
+/// describes that exact confusion at length and nothing tested it. §11.1: a mutation no
+/// fixture can observe is not a killed mutation.
+///
+/// A fake rather than a hard formula, for `smt_timeout.rs`'s reason: making z3 answer `unknown`
+/// for a *non*-limit reason means finding a theory it declines, which is a property of the z3
+/// build rather than of chiero. What is contracted is how chiero reads the answer.
+fn fake_unknown(tag: &str, reason: &str) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    if !cfg!(unix) {
+        return None;
+    }
+    let dir = std::env::temp_dir().join(format!("chiero-rlimit-{}-{tag}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).ok()?;
+    let log = dir.join("log");
+    let script = dir.join("faker");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\n\
+             while IFS= read -r line; do\n\
+             \tprintf '%s\\n' \"$line\" >> '{}'\n\
+             \tcase \"$line\" in\n\
+             \t*'(check-sat)'*) echo unknown;;\n\
+             \t*':reason-unknown'*) echo '(:reason-unknown \"{}\")';;\n\
+             \tesac\n\
+             done\n",
+            log.display(),
+            reason
+        ),
+    )
+    .ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).ok()?;
+    }
+    Some((script, log))
+}
+
+fn ask_fake(script: &std::path::Path, rlimit: u64) -> CheckResult {
+    let mut a = TermArena::new();
+    let q = hard(&mut a);
+    let mut s = TieredSolver::with_backend(SmtLib::at(script)).with_rlimit(rlimit);
+    for t in &q {
+        s.assert(*t);
+    }
+    s.check(&mut a, &[])
+}
+
+/// **`"canceled"` is the armed limit; anything else is the solver declining the goal.**
+///
+/// The negative row is the one that matters and the one that was missing. z3 answering
+/// `unknown` because it will not decide a theory is not a budget being spent, and reporting it
+/// as `ResourceLimit` tells a reader to raise a limit that was never reached — while hiding
+/// that the query is out of reach at any budget.
+#[test]
+fn only_a_canceled_unknown_is_the_resource_limit() {
+    let Some((limit_script, _)) = fake_unknown("cancel", "canceled") else {
+        eprintln!("SKIP: the fake solver needs a unix shell");
+        return;
+    };
+    let r = ask_fake(&limit_script, 2_000);
+    assert!(
+        matches!(r, CheckResult::Unknown(UnknownReason::ResourceLimit)),
+        "with the budget armed, `canceled` is the budget: {r:?}"
+    );
+
+    let Some((theory_script, _)) = fake_unknown(
+        "theory",
+        "smt tactic failed to show goal to be sat/unsat (incomplete (theory arithmetic))",
+    ) else {
+        return;
+    };
+    let r = ask_fake(&theory_script, 2_000);
+    match r {
+        CheckResult::Unknown(UnknownReason::BackendIncomplete(why)) => assert!(
+            why.contains("incomplete"),
+            "and it carries the reason verbatim, since nothing else says why: {why}"
+        ),
+        other => panic!("a theory z3 declines is not a budget that ran out: {other:?}"),
+    }
+
+    // And with **no** budget armed, `canceled` cannot be this budget — it is a `:timeout` the
+    // watchdog did not have to kill. Reporting `ResourceLimit` for a limit that was never set
+    // would be a claim about a knob nobody turned.
+    let r = ask_fake(&limit_script, 0);
+    assert!(
+        !matches!(r, CheckResult::Unknown(UnknownReason::ResourceLimit)),
+        "no budget was armed, so nothing of chiero's ran out: {r:?}"
+    );
+}
+
+/// **`:rlimit` displaces `:timeout`, and the preamble is where that is true or false.**
+///
+/// `Session::spawn` says the two are mutually exclusive because a spent `:rlimit` and a fired
+/// `:timeout` are indistinguishable in the answer — so arming both makes `ResourceLimit` a
+/// guess. That is a claim about bytes on the wire, and a recording fake is the only thing that
+/// can see them.
+#[test]
+fn arming_the_budget_replaces_the_timeout_option() {
+    let Some((script, log)) = fake_unknown("preamble", "canceled") else {
+        eprintln!("SKIP: the fake solver needs a unix shell");
+        return;
+    };
+
+    let _ = ask_fake(&script, 4_242);
+    let armed = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        armed.contains("(set-option :rlimit 4242)"),
+        "the solver has to be told the budget: {armed}"
+    );
+    assert!(
+        !armed.contains(":timeout"),
+        "and must not also be given a clock, or the two answers cannot be told apart: {armed}"
+    );
+
+    let Some((script2, log2)) = fake_unknown("preamble-off", "canceled") else {
+        return;
+    };
+    let _ = ask_fake(&script2, 0);
+    let unarmed = std::fs::read_to_string(&log2).unwrap_or_default();
+    assert!(
+        unarmed.contains(":timeout") && !unarmed.contains(":rlimit"),
+        "and with no budget the watchdog's polite half is still armed: {unarmed}"
+    );
+}

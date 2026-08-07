@@ -1593,7 +1593,19 @@ fn fold(k: BinKind, x: BvConst, y: BvConst) -> BvConst {
 pub enum UnknownReason {
     /// Outside the fragment `solver-lite` may answer `Unsat` over (022 §3.2).
     Incomplete(&'static str),
+    /// **023 §8**: the deterministic solver budget (`with_rlimit`) was spent.
+    ///
+    /// Distinct from `Timeout` in the way that matters to a caller: this one is *reproducible*,
+    /// so the same run on another machine or at another thread count is cut in the same place.
+    /// §8.1 is why that distinction is worth a variant.
     ResourceLimit,
+    /// The backend answered `unknown` for a reason of its own — z3's `(get-info
+    /// :reason-unknown)`, verbatim, typically a theory it declines to decide.
+    ///
+    /// Kept apart from `Incomplete`, which is tier 1's static fragment claim, and from
+    /// `BackendError`, which says the backend misbehaved. This one says it worked and had
+    /// nothing to offer, which is neither.
+    BackendIncomplete(String),
     /// **022 §4**: the wall-clock watchdog fired. A fact about the clock, not the formula
     /// — the distinction a caller needs to tell "ask again with more time" from
     /// `Incomplete`'s "this fragment is out of reach".
@@ -2321,7 +2333,7 @@ struct Session {
 }
 
 impl Session {
-    fn spawn(path: &std::path::Path, timeout: std::time::Duration) -> Option<Session> {
+    fn spawn(path: &std::path::Path, timeout: std::time::Duration, rlimit: u64) -> Option<Session> {
         let child = std::process::Command::new(path)
             .args(["-in", "-smt2"])
             .stdin(std::process::Stdio::piped())
@@ -2354,9 +2366,21 @@ impl Session {
         // and the option is decoration — chiero would still be killing processes it had
         // asked politely to stop. `smt_timeout_ms` is where that relationship lives, so the
         // two cannot drift apart.
+        //
+        // ⚠️ **`:rlimit` and `:timeout` are mutually exclusive here, and that is not tidiness.**
+        // 023 §8.1 wants a *deterministic* bound, and the two are told apart only by which one
+        // was armed: measured on z3 4.8.12, a spent `:rlimit` and a fired `:timeout` both report
+        // `(:reason-unknown "canceled")` inside `(push)`/`(pop)`, byte for byte, and `query`
+        // always uses `push`/`pop`. Arming both would make `Unknown(ResourceLimit)` a guess.
+        // The wall-clock watchdog is still there either way — it kills the process rather than
+        // asking it to stop, and reports `Timeout` by a different route entirely.
+        let budget = if rlimit > 0 {
+            format!("(set-option :rlimit {rlimit})\n")
+        } else {
+            format!("(set-option :timeout {})\n", smt_timeout_ms(timeout))
+        };
         s.send(&format!(
-            "(set-logic ALL)\n(set-option :produce-models true)\n(set-option :timeout {})\n",
-            smt_timeout_ms(timeout)
+            "(set-logic ALL)\n(set-option :produce-models true)\n{budget}"
         ))?;
         Some(s)
     }
@@ -2641,6 +2665,30 @@ impl Default for DumpDir {
     }
 }
 
+/// What one `(check-sat)` came back with — three-valued, like the answer it becomes.
+///
+/// It was `Option<(bool, Model)>`, and `None` meant both "the solver said `unknown`" and "the
+/// process died". Those want opposite responses: a death is retried (022 §4's restart-and-
+/// replay), and an `unknown` must not be, because replaying it spends the budget twice on the
+/// hardest query in the run to learn the same thing. Encoding them in one `None` is what made
+/// that indistinguishable, so the type carries the distinction now rather than a comment.
+enum Answer {
+    Sat(Model),
+    Unsat,
+    /// z3's `(get-info :reason-unknown)`, verbatim. Parsed by the caller, which is the layer
+    /// that knows which budget was armed.
+    Unknown(String),
+}
+
+/// 023 §8's `max_solver_rlimit`, as a newtype for the same reason [`BackendTimeout`] is one.
+///
+/// **Zero means no limit**, matching `$CHIERO_SMT_TIMEOUT=0` and z3's own reading of
+/// `:timeout 0`. Off by default: `:rlimit` displaces `:timeout` (see `Session::spawn`), so a
+/// default other than zero would silently disarm the watchdog's polite half for every caller
+/// in the workspace.
+#[derive(Debug, Clone, Copy, Default)]
+struct SolverRlimit(u64);
+
 /// The watchdog's duration, as a newtype so `TieredSolver` can keep deriving `Default`.
 ///
 /// `Duration::default()` is **zero**, and a derived default would have made every backend
@@ -2664,6 +2712,8 @@ pub struct TieredSolver {
     /// protected from is not protected. `$CHIERO_SMT_TIMEOUT` (seconds) overrides it, which
     /// is how a genuinely long-running analysis asks for more without a code change.
     timeout: BackendTimeout,
+    /// 023 §8's deterministic bound on one query's effort, in z3 work units. Zero is off.
+    rlimit: SolverRlimit,
     /// Where to write every backend query (022 §4), if anywhere.
     dump: DumpDir,
     asserted: Vec<Term>,
@@ -2721,6 +2771,22 @@ impl TieredSolver {
             backend: Some(b),
             ..Default::default()
         }
+    }
+
+    /// 023 §8's `max_solver_rlimit`: how much work one `(check-sat)` may do, in z3's
+    /// deterministic units. `0` is no limit.
+    ///
+    /// **Deterministic is the whole point** (§8.1). A wall-clock bound changes `Fidelity`,
+    /// `assumptions` and `budget_hits` — all of them output — and 023 contract 17 asks for
+    /// identical results at 1, 2 and 8 worker threads, which thread count alone would break.
+    /// Work units do not move with load.
+    ///
+    /// ⚠️ Setting this **replaces** `:timeout` rather than adding to it; `Session::spawn` says
+    /// why, and it is not a tidiness choice. The wall-clock watchdog is unaffected.
+    #[must_use]
+    pub fn with_rlimit(mut self, units: u64) -> Self {
+        self.rlimit = SolverRlimit(units);
+        self
     }
 
     /// 022 §6's counterexample cache. `None` means "ask someone else".
@@ -3107,7 +3173,25 @@ impl TieredSolver {
         }
         self.stats.backend_calls += 1;
         match r {
-            Some((true, m)) => {
+            // **An answer, not a failure.** Not counted in `backend_errors` — 022 contract 15
+            // exists so a *misbehaving* backend is visible in that number, and a solver saying
+            // it does not know is behaving correctly. Inflating the count hides a real one.
+            Some(Answer::Unknown(reason)) => Some(CheckResult::Unknown(
+                if self.rlimit.0 > 0 && reason.contains("canceled") {
+                    // Only one limit is ever armed (`Session::spawn`), so `"canceled"` names
+                    // this one. The guard is on the *armed budget* rather than on the string
+                    // alone because `"canceled"` is also what a fired `:timeout` says — the
+                    // string can separate a limit from z3 declining a theory, and nothing more.
+                    UnknownReason::ResourceLimit
+                } else {
+                    // Everything else is z3 saying the goal is out of its reach, which is the
+                    // same fact tier 1 reports with a different sentence. The reason is carried
+                    // verbatim rather than summarised: it is the only thing that says *why*,
+                    // and a reader chasing an `Unknown` has nowhere else to look.
+                    UnknownReason::BackendIncomplete(reason.trim().to_owned())
+                },
+            )),
+            Some(Answer::Sat(m)) => {
                 // Tier 2's answer is **not exempt from validation**. A backend returning
                 // a wrong model would otherwise be trusted purely for being external.
                 if all
@@ -3122,7 +3206,7 @@ impl TieredSolver {
                     )))
                 }
             }
-            Some((false, _)) => Some(CheckResult::Unsat),
+            Some(Answer::Unsat) => Some(CheckResult::Unsat),
             None => {
                 // **Counted** (022 contract 15). Without it a backend that answers
                 // nothing usable is invisible: every query comes back `Unknown`, every
@@ -3177,9 +3261,9 @@ impl TieredSolver {
         path: &std::path::Path,
         all: &[Term],
         vars: &[VarId],
-    ) -> Option<(bool, Model)> {
+    ) -> Option<Answer> {
         if self.session.is_none() {
-            self.session = Session::spawn(path, self.timeout.0);
+            self.session = Session::spawn(path, self.timeout.0, self.rlimit.0);
             self.stats.backend_spawns += 1;
         }
         let s = self.session.as_mut()?;
@@ -3229,13 +3313,31 @@ impl TieredSolver {
         match verdict.trim() {
             "unsat" => {
                 s.send("(pop 1)\n")?;
-                Some((false, Model::new()))
+                Some(Answer::Unsat)
             }
             "sat" => {
                 s.send("(get-model)\n")?;
                 let text = s.read_answer()?;
                 s.send("(pop 1)\n")?;
-                Some((true, parse_model(a, &text, vars)))
+                Some(Answer::Sat(parse_model(a, &text, vars)))
+            }
+            // **`unknown` is an answer.** It used to share this arm's `None` with a dead pipe,
+            // so the caller replayed the whole query and then called it a `BackendError` — the
+            // hardest query in a run charged twice and counted against a backend that was
+            // behaving correctly (022 contract 15).
+            //
+            // The reason is asked for because it is the only thing that separates *the armed
+            // limit* from z3 declining the theory. It cannot say *which* limit — see `spawn`,
+            // where that is why only one is ever armed — but `"canceled"` versus
+            // `"smt tactic failed… (incomplete (theory arithmetic))"` is a real distinction and
+            // the one a caller acts on.
+            "unknown" => {
+                let reason = s
+                    .send("(get-info :reason-unknown)\n")
+                    .and_then(|()| s.read_answer())
+                    .unwrap_or_default();
+                let _ = s.send("(pop 1)\n");
+                Some(Answer::Unknown(reason))
             }
             _ => {
                 let _ = s.send("(pop 1)\n");

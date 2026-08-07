@@ -2390,6 +2390,12 @@ fn every_deterministic_budget_is_present_and_reported() {
     assert!(b.max_states > 0);
     assert!(b.max_forks > 0);
     assert!(b.max_indirect > 0);
+    // **`max_solver_rlimit` is the one that defaults to off**, and deliberately: arming it
+    // displaces the backend's `:timeout` option, so a non-zero library default would disarm
+    // the watchdog's polite half for every run in this workspace. It is still a *deterministic*
+    // budget in §8's sense — reproducible when set — which is why it is reported below with
+    // the rest rather than treated as a clock.
+    assert_eq!(b.max_solver_rlimit, 0);
 
     let m = func(
         vec![block(0, vec![], Terminator::Return(Some(i32c(0))))],
@@ -2406,6 +2412,7 @@ fn every_deterministic_budget_is_present_and_reported() {
         max_indirect: 2,
         max_resolutions: 4,
         wall_clock: None,
+        max_solver_rlimit: 9_999,
     };
     let mut a = TermArena::new();
     let r = Engine::new(&m).with_budget(used).run(&mut a);

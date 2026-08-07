@@ -185,3 +185,128 @@ fn a_finding_names_the_solver_behind_it() {
         "the finding should name what decided the path it is on"
     );
 }
+
+/// A branch tier 1 **cannot** decide, so the query actually reaches the backend.
+///
+/// `branching()` is `x <s 10`, which tier 1's interval domain settles without spawning
+/// anything — a first draft of the test below used it and read an empty log, which is the
+/// right answer to a question nobody asked. Nonlinear is `smt_timeout.rs`'s reason too:
+/// 022 contract 6 uses the same shape for "escalation demonstrably happens".
+fn nonlinear() -> Module {
+    let mut m = branching();
+    let b = &mut m.funcs[0].blocks[0];
+    b.insts.insert(
+        1,
+        inst(
+            InstKind::Assign {
+                dst: ValueId(2),
+                rv: RValue::Bin {
+                    op: BinOp::Mul,
+                    a: Operand::Value(ValueId(0)),
+                    b: Operand::Value(ValueId(0)),
+                    ty: CTy::Int(32),
+                    signed: true,
+                },
+            },
+            7,
+        ),
+    );
+    b.insts[2] = inst(
+        InstKind::Assign {
+            dst: ValueId(1),
+            rv: RValue::Cmp {
+                op: CmpOp::Eq,
+                ty: CTy::Int(32),
+                a: Operand::Value(ValueId(2)),
+                b: k(7),
+            },
+        },
+        8,
+    );
+    m
+}
+
+/// A backend that records everything it is told and answers `sat` with an empty model.
+///
+/// Same instrument as `chiero-solver/tests/smt_timeout.rs`, and here for the same reason: the
+/// claim is about **bytes chiero sends**, and nothing observable in a `RunResult` can see them.
+fn recording_backend(tag: &str) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    if !cfg!(unix) {
+        return None;
+    }
+    let dir = std::env::temp_dir().join(format!("chiero-exec-rlimit-{}-{tag}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).ok()?;
+    let log = dir.join("log");
+    let script = dir.join("recorder");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\n\
+             while IFS= read -r line; do\n\
+             \tprintf '%s\\n' \"$line\" >> '{}'\n\
+             \tcase \"$line\" in\n\
+             \t*'(check-sat)'*) echo sat;;\n\
+             \t*'(get-model)'*) echo '(model )';;\n\
+             \tesac\n\
+             done\n",
+            log.display()
+        ),
+    )
+    .ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).ok()?;
+    }
+    Some((script, log))
+}
+
+/// **023 §8: `Budget::max_solver_rlimit` reaches the solver.**
+///
+/// §8 listed it among the fields that are specified and "not built", and called the absence
+/// load-bearing: the wall clock is checked *between* steps, so one long query outlives it, and
+/// three of 477 VPP entry points still had to be killed from outside.
+///
+/// The test is about the wire rather than about a verdict, because a field that is stored and
+/// never sent is exactly what "specified and not built" looked like from the outside: the
+/// struct had `wall_clock` beside it and a reader could not tell which of the two did anything.
+///
+/// Both halves are asserted. The default has to send **no** `:rlimit`, or arming it would stop
+/// being a decision anybody made — and since arming it displaces `:timeout`, a leaked default
+/// would quietly disarm the watchdog's polite half for every run in this workspace.
+#[test]
+fn the_budgets_solver_rlimit_reaches_the_backend() {
+    let Some((script, log)) = recording_backend("on") else {
+        eprintln!("SKIP: the recording backend needs a unix shell");
+        return;
+    };
+    let m = nonlinear();
+    let mut a = TermArena::new();
+    let _ = Engine::new(&m)
+        .with_backend(chiero_solver::SmtLib::at(&script))
+        .with_budget(Budget {
+            max_solver_rlimit: 7_777,
+            ..Default::default()
+        })
+        .run(&mut a);
+    let armed = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        armed.contains("(set-option :rlimit 7777)"),
+        "the run's budget has to be the solver's budget: {armed}"
+    );
+
+    let Some((script2, log2)) = recording_backend("off") else {
+        return;
+    };
+    let mut a = TermArena::new();
+    let _ = Engine::new(&m)
+        .with_backend(chiero_solver::SmtLib::at(&script2))
+        .run(&mut a);
+    let unarmed = std::fs::read_to_string(&log2).unwrap_or_default();
+    assert!(
+        !unarmed.contains(":rlimit"),
+        "and by default nothing is armed, or `:timeout` is displaced behind everyone's back: \
+         {unarmed}"
+    );
+}
