@@ -1575,25 +1575,26 @@ typing the paths ever would.
    the engine survives the rest by degrading. The real fix is a CIR change — **135 sites**
    construct `InstKind::Call`, and the text format needs syntax for it.
 
-6. ### **`MemFault::BadRange`** — ready to do, and the blocker has a route the note missed.
+6. ### **`MemFault::BadRange`** — the blocker is real, and I tested the way past it and it fails.
    "unsupported-access-width" on a 32-byte AVX load is a sentence about **chiero**, not about the
    program, so it belongs in `is_chiero_limit` beside `SymbolicByte`. It is held back because
    three tests in `chiero-exec/tests/step.rs` use it as their probe for `FindingKey`'s
-   `func`/`span` components, needing a fault that is **objectless** (so those components are what
-   distinguish) **and non-fatal** (so two can occur).
+   `func`/`span` components, needing a fault that is **objectless** and **non-fatal**.
 
-   ⚠️ **The note beside `is_chiero_limit` says `NullDeref`/`WildPointer` cannot serve "because
-   neither can produce two findings on one path" — true, and it does not have to be one path.**
-   A fatal fault ends *its own path*, not the run. Two paths of one run — `if (c) …null deref in
-   f… else …null deref in g…` — give two objectless findings in two functions, which is exactly
-   what `objectless_faults_in_two_functions_do_not_merge` asserts. **Verify the engine keeps both
-   findings across a fork before rewriting the tests**; if it does, no new fault kind needs
-   inventing, which was the alternative the note assumed.
+   ⚠️ **I recorded here that `NullDeref` on two paths would serve, since a fatal fault ends its
+   path and not the run. Measured: it does not.** A two-path fixture with a null store in two
+   different functions produces two findings *and passes with the `func` component of
+   `FindingKey` neutralised* — while the existing `BadRange` test **fails** under that same
+   mutant. Deduplication happens **within a path**, so two findings on two paths never compete
+   for one key and never exercise it. **The note's "on one path" was load-bearing and I read it
+   as incidental.**
 
-   Order: give the three tests the two-path probe, confirm they still **fail** if `FindingKey`'s
-   `func` component is removed (or they are not testing what they claim), then move `BadRange`
-   into `is_chiero_limit` and re-run `measure.sh` — §7.6's wide sweep had
-   `unsupported-access-width` in its findings list.
+   So the original options stand and there is no shortcut: either a **genuinely new objectless
+   non-fatal fault**, or a keying fixture that puts two objectless faults on one path some other
+   way. Before writing either, **mutate `FindingKey.func` to a constant and confirm the candidate
+   fails** — that mutant is three lines (the three `FindingKey {` construction sites, not the
+   struct definition, and not the `func:` fields of other structs) and it is the only thing that
+   distinguishes a probe from a fixture that merely passes.
 
 7. **032 contract 18's corpus still has no `observed` entry** and the gate correctly exits 1
    saying "NOT MEASURED". Method, learned the hard way (§7.1): **revert a historical fix's `src/`
