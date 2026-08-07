@@ -1689,8 +1689,32 @@ typing the paths ever would.
 
 5. **A step that outlives the clock.** Three find-bugs entries still need the outer `timeout`; one
    ran 10 s against a 5 s budget inside a symbolic-offset enumeration. The clock is only checked
-   *between* steps, and 022 §8's `max_solver_rlimit` — deterministic work units — is specified and
+   *between* steps, and 023 §8's `max_solver_rlimit` — deterministic work units — is specified and
    unimplemented. That is the principled bound for the solver half.
+
+   ✅ **Groundwork done 2026-08-07 — z3 4.8.12 measured, not assumed.** `UnknownReason::ResourceLimit`
+   already exists and is **constructed nowhere**; nothing reads `(get-info :reason-unknown)` at all.
+   What the real solver does:
+
+   | asked | answered |
+   |---|---|
+   | `(set-option :rlimit 1000)` on a hard `bvmul` | `unknown`, `(:reason-unknown "max. resource limit exceeded")` |
+   | the same at `:rlimit 100000000` | `sat` — so the bound is what cut it, not the formula |
+   | a hard query, then a trivial one, **one process** | `unknown` then `sat` — **`:rlimit` is per-`check-sat`, not cumulative.** This is the property that makes it usable at all: chiero keeps one long-lived process, and a cumulative budget would poison every query after the first expensive one |
+
+   ⚠️ **And the trap, which the obvious implementation walks straight into.** The documented
+   string only appears with the assertion stack at top level. **Inside `(push)`/`(pop)` — which
+   is how chiero *always* drives z3, since `Solver` has `push`/`pop` — the same exhaustion
+   reports `"canceled"`.** Worse, a `:timeout` firing under `push`/`pop` reports `"canceled"`
+   **too**, byte for byte. Measured both ways round.
+
+   So `(get-info :reason-unknown)` **cannot distinguish a resource limit from a timeout in the
+   mode chiero runs in**, and an implementation that matches `"max. resource limit exceeded"`
+   passes a hand-written smoke test and misclassifies every real query. The design that follows:
+   **infer `ResourceLimit` from which budget was armed, not from the string** — when
+   `max_solver_rlimit` is set, do not also arm `:timeout`. That is what 023 §8.1 already wants
+   anyway (CI runs the determinism gates with `wall_clock: None`), so the constraint and the
+   spec agree. `smt_timeout_ms` is the one place that relationship lives.
 
 6. **`InstKind::Call` carries no result type**, so an indirect call's result width is whatever
    candidate ran. The arity and parameter-type filters cut the wildest cases and cannot close it;
