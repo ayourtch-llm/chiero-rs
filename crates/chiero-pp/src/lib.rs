@@ -162,6 +162,15 @@ struct Tok {
     /// came from is exactly the thing it can no longer see. Marking at definition and letting
     /// the flag ride through substitution is what makes the three routes one fix.
     paste_op: bool,
+    /// This token was substituted for the **variadic** parameter (`__VA_ARGS__`, or a GNU
+    /// `args...` name), including the empty placemarker that stands in for an absent one.
+    ///
+    /// GNU comma-swallowing is a rule about `, ## <variadic>` and about nothing else. `, ## Y`
+    /// for an ordinary parameter is an ordinary paste against an empty argument and the comma
+    /// survives — so `paste` cannot decide by looking at the comma, or at emptiness, or at the
+    /// `##`. It has to know **what the right operand is**, and that is knowable only here, where
+    /// the parameter still has a name.
+    from_variadic: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -402,6 +411,7 @@ impl Engine {
                 text: lexed.text_at(index).unwrap_or("").to_owned(),
                 hide: HideSet::default(),
                 paste_op: false,
+                from_variadic: false,
             })
             .collect();
         let mut lex_diagnostics = BTreeMap::new();
@@ -773,6 +783,7 @@ impl Engine {
                 text: lexed.text_at(index).unwrap_or("").to_owned(),
                 hide: HideSet::default(),
                 paste_op: false,
+                from_variadic: false,
             })
             .collect()
     }
@@ -922,6 +933,7 @@ impl Engine {
                 text: lexed.text_at(index).unwrap_or("").to_owned(),
                 hide: HideSet::default(),
                 paste_op: false,
+                from_variadic: false,
             })
             .collect();
         let id = self
@@ -1853,6 +1865,7 @@ impl Engine {
             text,
             hide: call.hide.clone(),
             paste_op: false,
+            from_variadic: false,
         }
     }
 
@@ -1977,6 +1990,11 @@ impl Engine {
                         .cloned()
                         .unwrap_or_default()
                 };
+                // **The placemarker remembers which parameter it stands for.** An empty
+                // ordinary argument and an empty variadic one look identical by the time
+                // `paste` sees them, and the GNU comma rule distinguishes exactly those two.
+                let is_variadic_param = def.variadic_name.as_deref() == Some(body.text.as_str())
+                    || (def.std_variadic && body.text == "__VA_ARGS__");
                 if adjacent_paste && selected.is_empty() {
                     replacement.push(Tok {
                         token: PpToken {
@@ -1988,9 +2006,11 @@ impl Engine {
                         text: String::new(),
                         hide: HideSet::default(),
                         paste_op: false,
+                        from_variadic: is_variadic_param,
                     });
                 }
                 for (index, mut arg) in selected.into_iter().enumerate() {
+                    arg.from_variadic = is_variadic_param;
                     if arg.token.span.ctx.is_root() {
                         arg.token.span.ctx = expn;
                     }
@@ -2059,6 +2079,7 @@ impl Engine {
             text: format!("\"{inside}\""),
             hide: HideSet::default(),
             paste_op: false,
+            from_variadic: false,
         }
     }
 
@@ -2071,6 +2092,26 @@ impl Engine {
             // an argument the caller spelled, or from a previous paste — and the kind is
             // identical in all three. C11 6.10.3.3 makes only the first one an operator.
             if input[i].paste_op {
+                // **A comma the GNU group has already claimed is not available to paste into.**
+                // In `x ## , ## __VA_ARGS__` with an empty tail, the `, ## …` group takes the
+                // comma, so there is no `x ## ,` to attempt and no invalid paste to report —
+                // both compilers are silent. Left to the ordinary sweep, the earlier `##`
+                // arrives first and reports a paste nobody asked for.
+                //
+                // Only when the tail is **empty**: with `X5(1,2)` gcc really does call
+                // `1 ## ,` an error, so the claim is exactly as narrow as the swallow it
+                // protects.
+                let claimed_by_gnu_group = input
+                    .get(i + 1)
+                    .is_some_and(|t| matches!(t.token.kind, PpTokenKind::Punct(Punct::Comma)))
+                    && input.get(i + 2).is_some_and(|t| t.paste_op)
+                    && input
+                        .get(i + 3)
+                        .is_some_and(|t| t.from_variadic && t.text.is_empty());
+                if claimed_by_gnu_group {
+                    i += 1;
+                    continue;
+                }
                 let right = input.get(i + 1).cloned();
                 if right.is_none() {
                     if output
@@ -2088,7 +2129,14 @@ impl Engine {
                 };
                 let right = right.unwrap();
                 if right.text.is_empty() {
-                    if !matches!(left.token.kind, PpTokenKind::Punct(Punct::Comma)) {
+                    // **`right.from_variadic` is the whole GNU rule.** The extension is
+                    // `, ## __VA_ARGS__`; `, ## Y` for an ordinary parameter is an ordinary
+                    // paste against an empty argument, and the comma survives it — gcc and
+                    // clang both keep it. Deciding by "the left operand is a comma and the
+                    // right is empty" ate the comma out of `#define X2(Y) fo2{A,##Y}`.
+                    let swallow = right.from_variadic
+                        && matches!(left.token.kind, PpTokenKind::Punct(Punct::Comma));
+                    if !swallow {
                         output.push(left);
                     }
                     i += 2;
@@ -2098,13 +2146,20 @@ impl Engine {
                 // variadic argument. With tokens present it is not ordinary token
                 // pasting; retain comma and argument as two pp-tokens.
                 //
-                // **`right.paste_op` excludes the extension by saying what it applies to.** The
-                // right operand of `, ##` is the variadic *argument*, and an operator `##` is
-                // never argument tokens — it is the second half of an adjacent `## ##`, which is
-                // UB that both compilers reject. Letting it fall through to the ordinary path
-                // below is what produces the diagnostic; the branch was swallowing it, and
-                // answering `[x , y]` in silence where gcc and clang both hard-error.
-                if !right.paste_op && matches!(left.token.kind, PpTokenKind::Punct(Punct::Comma)) {
+                // **`right.from_variadic` says what the extension applies to**, and it
+                // subsumes the earlier `!right.paste_op` guard: an operator `##` and a paste's
+                // own result are both `from_variadic: false`, so neither reaches here.
+                //
+                // With a non-empty variadic tail the GNU form keeps the comma and the argument
+                // as two tokens and is legal — `#define X3(b,...) {b, ## __VA_ARGS__}` /
+                // `X3(foo, bar)` is `{foo, bar}` under both compilers. With an **ordinary**
+                // parameter it is an ordinary paste: `, ## z` forms `,z`, which is not a
+                // preprocessing token, and gcc rejects the program. Falling through is what
+                // reports that; this branch used to keep both tokens in silence for every
+                // right operand, so it hid a real invalid paste as well as eating a comma.
+                if right.from_variadic
+                    && matches!(left.token.kind, PpTokenKind::Punct(Punct::Comma))
+                {
                     output.push(left);
                     output.push(right);
                     i += 2;
@@ -2147,6 +2202,8 @@ impl Engine {
                     // paste's *result* is available for further replacement as an ordinary
                     // preprocessing token, never as the operator.
                     paste_op: false,
+                    // A pasted token is a new token; it stands for no parameter.
+                    from_variadic: false,
                     hide: {
                         let mut hide = left.hide.clone();
                         hide.extend(&right.hide);
@@ -2383,6 +2440,7 @@ fn synthetic_punct(text: &str, punct: Punct, at: Span) -> Tok {
         text: text.into(),
         hide: HideSet::default(),
         paste_op: false,
+        from_variadic: false,
     }
 }
 
@@ -2397,6 +2455,7 @@ fn synthetic_number(text: &str, at: Span) -> Tok {
         text: text.into(),
         hide: HideSet::default(),
         paste_op: false,
+        from_variadic: false,
     }
 }
 
