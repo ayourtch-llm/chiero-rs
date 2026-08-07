@@ -201,6 +201,9 @@ fn a_concrete_store_after_a_symbolic_one_still_lands() {
 /// what is happening — there is no surviving `maybe` here at all.
 #[test]
 fn a_concrete_byte_written_before_promotion_survives_it() {
+    if !harness::backend_or_skip("a_concrete_byte_written_before_promotion_survives_it") {
+        return;
+    }
     use chiero_solver::{CheckResult, Solver, TieredSolver};
     let m = harness::lower(
         "int probe(int i){ char ca[64]; ca[0] = 5; ca[(i & 31) + 32] = 7; return ca[0]; }",
@@ -269,6 +272,9 @@ fn an_uninitialized_read_invents_its_value_rather_than_using_one() {
 /// wave 254's rule says a test named after a decision it cannot observe is worse than no test.
 #[test]
 fn a_byte_written_before_a_symbolic_store_stays_initialized() {
+    if !harness::backend_or_skip("a_byte_written_before_a_symbolic_store_stays_initialized") {
+        return;
+    }
     let m =
         harness::lower("int probe(int i){ char ca[8]; ca[0] = 5; ca[i & 7] = 7; return ca[0]; }");
     let mut arena = TermArena::new();

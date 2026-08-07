@@ -329,6 +329,13 @@ bb2:
 
 #[test]
 fn tutorial_07_reachability() {
+    // The page's `unreachable` verdict is a proof that the search was exhaustive, which tier 1
+    // cannot produce — the tutorials index says the transcripts assume a solver, and this is
+    // the assertion that depends on it. 022 contract 2.
+    if chiero_solver::SmtLib::discover().is_none() {
+        eprintln!("skipping: the page's `unreachable` proof needs a backend (022 contract 2)");
+        return;
+    }
     // `if (x > 0) { if (x > 0) return 1; return 2; } return 3;`
     let classify = "\
 func @classify(%0: i32) -> i32 {

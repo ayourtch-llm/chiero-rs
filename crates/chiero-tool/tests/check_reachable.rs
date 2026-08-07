@@ -68,9 +68,24 @@ fn a_reachable_line_comes_with_an_input_that_reaches_it() {
     );
 }
 
+/// **A backend, or an honest skip** — 022 contract 2. A verdict of `unreachable` is a proof
+/// that the search was exhaustive, and an exhaustive search over a symbolic branch is a query
+/// tier 1 cannot settle: with no solver chiero correctly answers `not_shown_reachable` instead.
+/// CI runs one matrix leg with z3 installed so this is not where the coverage goes.
+fn backend_or_skip(what: &str) -> bool {
+    if chiero_solver::SmtLib::discover().is_some() {
+        return true;
+    }
+    eprintln!("skipping {what}: no SMT-LIB backend on PATH (022 contract 2)");
+    false
+}
+
 /// **Unreachable, with a proof.** The search was exhaustive and nothing arrived.
 #[test]
 fn an_exhaustively_unreached_line_is_proven_unreachable() {
+    if !backend_or_skip("an_exhaustively_unreached_line_is_proven_unreachable") {
+        return;
+    }
     let env = check_reachable(&m(DEAD), &cfg("f"), 3);
     let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
     assert_eq!(v["result"]["verdict"], "unreachable");
@@ -127,6 +142,9 @@ fn a_line_past_the_loop_bound_is_not_shown_reachable_and_says_so() {
 /// being a second opinion about it.
 #[test]
 fn the_two_negative_answers_are_structurally_distinct() {
+    if !backend_or_skip("the_two_negative_answers_are_structurally_distinct") {
+        return;
+    }
     let proven = check_reachable(&m(DEAD), &cfg("f"), 3);
     let unknown = check_reachable(&m(BEYOND_THE_BOUND), &cfg("f"), 9);
 

@@ -51,6 +51,10 @@ fn findings(src: &str) -> Vec<String> {
 /// has to survive a later write rather than merely be the last thing that happened.
 #[test]
 fn a_byte_written_at_a_symbolic_index_is_initialized_when_read_back() {
+    if !harness::backend_or_skip("a_byte_written_at_a_symbolic_index_is_initialized_when_read_back")
+    {
+        return;
+    }
     for (what, src) in [
         (
             "at the front of the object",

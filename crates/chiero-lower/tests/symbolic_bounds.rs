@@ -57,6 +57,9 @@ fn reports_oob(src: &str) -> bool {
 /// An unconstrained index can leave the object, and that is worth saying.
 #[test]
 fn an_unconstrained_index_is_reported_as_possibly_out_of_bounds() {
+    if !harness::backend_or_skip("an_unconstrained_index_is_reported_as_possibly_out_of_bounds") {
+        return;
+    }
     for (what, src) in [
         (
             "global array",
@@ -145,6 +148,9 @@ fn a_constrained_but_unenumerable_index_is_not_reported() {
 /// only if a lower bound other than zero ever appears.
 #[test]
 fn each_direction_out_of_the_object_is_reported() {
+    if !harness::backend_or_skip("each_direction_out_of_the_object_is_reported") {
+        return;
+    }
     let above = findings("int ga[64];\nint probe(int i){ if (i < 0) return 0; return ga[i]; }");
     assert!(
         above

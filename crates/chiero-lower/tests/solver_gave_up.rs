@@ -102,6 +102,9 @@ fn an_undecided_initialization_guard_is_a_maybe() {
 /// satisfied by a fix that made every guard undecided.
 #[test]
 fn the_same_guard_is_settled_when_a_solver_is_available() {
+    if !harness::backend_or_skip("the_same_guard_is_settled_when_a_solver_is_available") {
+        return;
+    }
     let f = discovered(&padded());
     assert!(
         f.iter()
@@ -127,6 +130,9 @@ fn the_same_guard_is_settled_when_a_solver_is_available() {
 /// certainty (the definite kind without the evidence).
 #[test]
 fn an_undecided_guard_weakens_the_verdict_rather_than_removing_it() {
+    if !harness::backend_or_skip("an_undecided_guard_weakens_the_verdict_rather_than_removing_it") {
+        return;
+    }
     let src = "int probe(int i){ char ca[64]; ca[(i & 31) + 32] = 7; return ca[0]; }";
     let l = lite(src);
     assert!(
@@ -168,6 +174,9 @@ fn tier_one_still_reports_what_needs_no_query() {
 /// because in those fixtures the first query comes back `Sat` and only the second is undecided.
 #[test]
 fn an_undecided_implication_is_a_maybe_and_not_silence() {
+    if !harness::backend_or_skip("an_undecided_implication_is_a_maybe_and_not_silence") {
+        return;
+    }
     let src = "int probe(int i){ char ca[64]; if ((i & 31) != 0) return 0; ca[i & 31] = 7; \
                return ca[0]; }";
     let l = lite(src);

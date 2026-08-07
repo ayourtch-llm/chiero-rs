@@ -34,6 +34,9 @@ fn findings(src: &str) -> Vec<String> {
 /// The fault names pointer *formation*, and does not claim an access.
 #[test]
 fn a_pointer_formed_out_of_range_is_not_reported_as_an_access() {
+    if !harness::backend_or_skip("a_pointer_formed_out_of_range_is_not_reported_as_an_access") {
+        return;
+    }
     for (what, src) in [
         (
             "never dereferenced",
@@ -80,6 +83,9 @@ fn a_genuine_out_of_bounds_access_still_says_access() {
 /// range" without saying *which object* or *how far* leaves them to re-derive it.
 #[test]
 fn the_report_names_the_object_and_the_offset() {
+    if !harness::backend_or_skip("the_report_names_the_object_and_the_offset") {
+        return;
+    }
     let f = findings("int ga[64];\nint probe(int i){ int *p = ga + i; return p != 0; }");
     let m = f.iter().find(|x| x.contains("pointer")).expect("reported");
     assert!(m.contains("ga"), "the object it left: {m}");
@@ -106,6 +112,9 @@ fn the_report_names_the_object_and_the_offset() {
 /// Waves 205 and 208 both take the witness out of exactly that model.
 #[test]
 fn the_offset_named_is_one_the_path_allows() {
+    if !harness::backend_or_skip("the_offset_named_is_one_the_path_allows") {
+        return;
+    }
     // Elements 64..95 of a 4-byte type: byte offsets 256..380, so 32 is not among them.
     let f = findings(
         "int pool[8];\nint probe(int i){ int *q = pool + ((i & 31) + 64); return q != 0; }",
@@ -138,6 +147,9 @@ fn the_offset_named_is_one_the_path_allows() {
 /// offset rather than trading one wrong constant for another.
 #[test]
 fn an_unconstrained_offset_still_names_something_reachable() {
+    if !harness::backend_or_skip("an_unconstrained_offset_still_names_something_reachable") {
+        return;
+    }
     let f = findings("int ga[64];\nint probe(int i){ int *p = ga + i; return p != 0; }");
     let m = f
         .iter()

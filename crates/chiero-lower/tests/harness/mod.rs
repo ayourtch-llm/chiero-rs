@@ -312,3 +312,25 @@ pub fn lower_maybe_with_map(src: &str) -> Option<(Module, chiero_span::SourceMap
     }
     Some((lowered.module, tu.source_map))
 }
+
+/// **A backend, or an honest skip** — 022 contract 2.
+///
+/// Several files here compare what tier 1 can settle against what a *complete* solver settles:
+/// an undecided guard must stay `maybe-uninitialized-read`, a refuted one must become definite,
+/// an unconstrained index must be reported as able to leave its object. Every one of those
+/// assertions is about a query only a backend can answer, and on a machine with none the engine
+/// correctly says less — 022 §3 permits tier 1 to be *unable* and never wrong.
+///
+/// So the tests skip rather than fail, and say so on the way out. **CI installs z3** in one leg
+/// of its matrix precisely so this is not where the coverage quietly goes: a skip that happens
+/// everywhere is 070 §4's "a gate nobody runs".
+///
+/// This was missing, and it is why the whole `chiero-lower` symbolic set was red on GitHub —
+/// which has no solver — while green on every developer machine that has one.
+pub fn backend_or_skip(what: &str) -> bool {
+    if chiero_solver::SmtLib::discover().is_some() {
+        return true;
+    }
+    eprintln!("skipping {what}: no SMT-LIB backend on PATH (022 contract 2)");
+    false
+}

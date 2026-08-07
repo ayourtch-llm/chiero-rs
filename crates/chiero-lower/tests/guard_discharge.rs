@@ -43,6 +43,9 @@ fn findings(src: &str) -> Vec<String> {
 /// The write cannot reach the byte, so the read is definitely uninitialized.
 #[test]
 fn a_guard_the_term_refutes_becomes_a_definite_report() {
+    if !harness::backend_or_skip("a_guard_the_term_refutes_becomes_a_definite_report") {
+        return;
+    }
     let f = findings("int probe(int i){ char ca[64]; ca[(i & 31) + 32] = 7; return ca[0]; }");
     assert!(
         f.iter().any(|x| x.starts_with("uninitialized-read")),
@@ -61,6 +64,9 @@ fn a_guard_the_term_refutes_becomes_a_definite_report() {
 /// without consulting the path would pass the first and fail this.
 #[test]
 fn a_guard_the_path_refutes_becomes_a_definite_report() {
+    if !harness::backend_or_skip("a_guard_the_path_refutes_becomes_a_definite_report") {
+        return;
+    }
     let f = findings(
         "int probe(int i){ char ca[64]; if ((i & 63) == 0) return 0; ca[i & 63] = 7; \
          return ca[0]; }",
@@ -74,6 +80,9 @@ fn a_guard_the_path_refutes_becomes_a_definite_report() {
 /// A guard the path *implies* is discharged the other way: no report at all.
 #[test]
 fn a_guard_the_path_implies_is_discharged_silently() {
+    if !harness::backend_or_skip("a_guard_the_path_implies_is_discharged_silently") {
+        return;
+    }
     let f = findings(
         "int probe(int i){ char ca[64]; if ((i & 63) != 0) return 0; ca[i & 63] = 7; \
          return ca[0]; }",

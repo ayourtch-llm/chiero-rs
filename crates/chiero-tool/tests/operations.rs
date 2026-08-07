@@ -487,6 +487,18 @@ fn no_operation_is_proven_without_being_exact() {
 /// written down, which is worse than none.
 #[test]
 fn each_operation_reaches_exact_or_declares_why_it_cannot() {
+    // **This is a claim about the implementation, and it needs a machine that can decide.**
+    // `prove_equivalent` reaches `Exact` by *proving* two functions agree over every input;
+    // with no backend on `PATH` that query comes back `Unknown` and no sample here can be
+    // proven — which is 022 contract 2 rather than a degenerate implementation, and telling
+    // them apart is what this test exists for. CI runs one leg with z3 so it is not skipped
+    // everywhere. (`never_exact` is deliberately *not* the answer: an operation that declares
+    // it can never be `Exact` and then is has a wrong reason written down, and "this machine
+    // has no solver" is not a property of the operation.)
+    if chiero_solver::SmtLib::discover().is_none() {
+        eprintln!("skipping: contract 4b needs a solver to be reachable (022 contract 2)");
+        return;
+    }
     let mut report = Vec::new();
     for op in OPS {
         let samples = (op.samples)();

@@ -67,6 +67,9 @@ fn an_unenumerable_index_does_not_invent_an_uninitialized_read() {
 /// as a concretization.
 #[test]
 fn the_replacement_value_is_not_a_fabricated_pointer() {
+    if !harness::backend_or_skip("the_replacement_value_is_not_a_fabricated_pointer") {
+        return;
+    }
     let (f, _) = run("int ga[64] = {7};\nint probe(int i){ return ga[i]; }");
     assert!(
         f.iter().any(|x| x.starts_with("pointer-outside-object")),
@@ -84,6 +87,9 @@ fn the_replacement_value_is_not_a_fabricated_pointer() {
 /// wave 193.
 #[test]
 fn the_out_of_range_pointer_is_still_reported() {
+    if !harness::backend_or_skip("the_out_of_range_pointer_is_still_reported") {
+        return;
+    }
     let (f, _) = run("int ga[64];\nint probe(int i){ int *p = ga + i; return p != 0; }");
     assert!(
         f.iter().any(|x| x.starts_with("pointer-outside-object")),

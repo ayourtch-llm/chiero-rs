@@ -37,20 +37,12 @@ jobs:
       fail-fast: false
       matrix:
         solver: [none, z3]
-    # ⚠️ **`none` does not gate yet, and that is a statement about the repository rather than
-    # about this file.** Measured 2026-08-06 on a machine with `$CHIERO_SMT_SOLVER` pointed at
-    # nothing: roughly a dozen suites fail there, every one of them a test that asserts a
-    # *proof* — a line proven unreachable, 390 arithmetic identities proven equal, an offset
-    # proven able to leave its object. Tier 1 cannot produce any of those, so `Unknown` is the
-    # correct answer and the assertions are measuring the absence of z3.
-    #
-    # Four were fixed to skip or to accept either cause before this landed; the rest need the
-    # same judgement one at a time, and rushing that is how a test gets weakened into passing.
-    # Until then this leg reports and does not block, so the gap is visible on every run
-    # instead of being invisible the way it was before the matrix existed.
-    #
-    # **It becomes a gate the day it is green** — delete this line then, not before.
-    continue-on-error: ${{ matrix.solver == 'none' }}
+    # **Both legs gate.** `none` was red when this matrix was added — a dozen suites, every one
+    # asserting a *proof* tier 1 cannot produce — and it is green as of 2026-08-07: each was
+    # either given an explicit skip (the claim is about what a complete solver decides) or
+    # widened to accept both causes (the claim survives either tier and only the recorded
+    # reason differs). One was neither, and was a real defect: `check_reachable` called a dead
+    # line `reachable` and `proven` because the state arrived through a branch nobody decided.
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

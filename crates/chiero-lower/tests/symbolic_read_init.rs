@@ -123,6 +123,9 @@ fn a_symbolic_read_disjoint_from_a_symbolic_write_reports() {
 /// (`maybe-uninitialized-read` contains `uninitialized-read`).
 #[test]
 fn the_guard_covers_every_bit_of_the_byte() {
+    if !harness::backend_or_skip("the_guard_covers_every_bit_of_the_byte") {
+        return;
+    }
     let src = "struct S { unsigned char f:1; };\n\
                int probe(int i){ struct S sa[40]; sa[0].f = 1;\n\
                char *p = (char *)sa; return p[i & 31]; }";

@@ -119,6 +119,9 @@ fn a_masked_index_into_an_int_array_reads_a_value() {
 /// value for an index that can leave the object.
 #[test]
 fn an_unconstrained_index_is_still_reported() {
+    if !harness::backend_or_skip("an_unconstrained_index_is_still_reported") {
+        return;
+    }
     let (f, _, _) = run("char ca[64];\nint probe(int i){ return ca[i]; }");
     assert!(
         f.iter().any(|x| x.starts_with("pointer-outside-object")),

@@ -1316,17 +1316,75 @@ pub fn check_reachable(module: &chiero_cir::Module, cfg: &BugCfg, line: u32) -> 
         // makes `Sat` self-certifying, which is exactly what "here is an input that gets
         // there" needs.
         let witness = witness_for_path(s, &mut arena, cfg.backend.clone());
-        return clock(Envelope::new(
-            serde_json::json!({
-                "verdict": "reachable",
-                "line": line,
-                "witness": witness,
-                "why": serde_json::Value::Null,
-            }),
-            // A path that arrived is a fact about this program, whatever else the run had
-            // to approximate: the state is *there*.
-            Fidelity::Exact,
-        ));
+        // **The arrival has to be a fact, and here is where that is checked.**
+        //
+        // This used to return `Exact` unconditionally, reasoning that "a path that arrived is a
+        // fact about this program, whatever else the run had to approximate: the state is
+        // *there*". True in general, false in the case that matters: 023 §7 takes a branch the
+        // solver could not decide rather than dropping a path that may exist, so a state can
+        // arrive **because** nobody decided the way in. Measured on
+        // `if (x != x) return 1;` with tier 1 alone: `reachable`, `proven`, on a line that is
+        // dead for every input, with a witness whose own `pinned: false` said there was no
+        // input. That is a proof resting on something chiero invented, which is the one thing
+        // 050 §2 exists to make impossible.
+        //
+        // **Two conditions, and each rules out a different way of being wrong:**
+        //
+        // - the state's own fidelity is `Exact` — every branch on the way in was decided, and
+        //   nothing on the path was modeled approximately;
+        // - every binding of the witness is `pinned` — a solver produced a model, which is what
+        //   "here is an input that gets there" means. An unpinned binding is a value the model
+        //   left free and 023 §9 marks rather than inventing.
+        //
+        // Neither implies the other: a path can be decided and leave an input free, and a model
+        // can pin every input on a path that rests on a havoc.
+        let decided = s.fidelity() == chiero_exec::Fidelity::Exact
+            && witness
+                .iter()
+                .all(|b| b["pinned"].as_bool().unwrap_or(false));
+        if decided {
+            return clock(Envelope::new(
+                serde_json::json!({
+                    "verdict": "reachable",
+                    "line": line,
+                    "witness": witness,
+                    "why": serde_json::Value::Null,
+                }),
+                Fidelity::Exact,
+            ));
+        }
+        // **Not `unreachable` either**, which would be the same overclaim pointing the other
+        // way. A path did arrive and chiero cannot say whether it exists, which is exactly what
+        // the third verdict is for — carrying the candidate witness, because a reader chasing
+        // this by hand wants the values that got the search there even when nothing certifies
+        // them.
+        let why: Vec<String> = s
+            .assumptions()
+            .iter()
+            .map(|a| a.detail.clone())
+            .collect::<Vec<_>>();
+        return clock(
+            Envelope::new(
+                serde_json::json!({
+                    "verdict": "not_shown_reachable",
+                    "line": line,
+                    "witness": witness,
+                    "why": if why.is_empty() {
+                        "a path reached this line but its inputs were not pinned, so no input \
+                         is known to get there"
+                            .to_string()
+                    } else {
+                        why.join("; ")
+                    },
+                }),
+                exec_fidelity(s.fidelity()),
+            )
+            .with_blind_spot(
+                "a path chiero explored did reach this line, and something on that path was \
+                 not decided — an undecided branch, or a value only a model could pin — so \
+                 the path may not exist and this is not a claim that the line runs",
+            ),
+        );
     }
 
     // Nothing arrived. Whether that is a proof depends entirely on whether the search was
