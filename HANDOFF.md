@@ -1728,7 +1728,28 @@ typing the paths ever would.
    See **§7.11** for the wave: the gate, three defects, two spec gaps, and the numbers.
    `cargo run -p xtask -- pp-gate`, checkout at `/home/ubuntu/simplecpp` (`74a5a63`).
 
-   **What is left in it, as of 2026-08-07 — 16 findings, 100 agree, and the residue is named:**
+   ### ⚖️ **Assessment after seven waves: this corpus is largely harvested. Move on.**
+   §8.3's table exists to say when a pattern stops paying, and this is that entry. Of the **14**
+   findings left, **none affects VPP**:
+
+   | class | files | why it is not the next wave |
+   |---|---|---|
+   | `__VA_OPT__` | 1 | out of v1 scope by measurement (012 §2.3); changing it is an owner call |
+   | UCN spelling | 2 | a **declared** divergence (011 §2.0), not a defect |
+   | `x######x` UB | 2 | gcc and clang disagree with each other; there is no answer to match |
+   | `_Pragma` / `push_macro` | 3 | gcc and clang agree, so these are real — but **VPP uses `push_macro` zero times** and `/usr/include` once |
+   | comma-swallow / backslash corners | 5 | real conformance corners; simplecpp fails them too |
+   | clang-only attribute names | 1 | persona-table rows for attributes gcc itself lacks |
+
+   The first seven waves each found something that mattered to the actual target codebase. What
+   is left is conformance polish on constructs VPP does not contain. **The next high-value work
+   is the find-bugs breadth widening** (`vnet/ip*`, plugins beyond one function per file), which
+   has yielded *engine* defects on every previous run — see the unwidened-surfaces item.
+
+   Keep `pp-gate` as a standing regression check; it costs two minutes and it is now the only
+   thing watching the preprocessor's dark corners.
+
+   **What is left in it, as of 2026-08-07 — 14 findings, 100 agree, and the residue is named:**
    - **`_Pragma` and `#pragma push_macro`/`pop_macro`** — 3 files. `_Pragma` is C11, not an
      extension, and chiero records pragmas rather than acting on them.
    - ~~**`__has_c_attribute`**, **scoped operands**, **`__has_cpp_attribute`**~~ — **all done
