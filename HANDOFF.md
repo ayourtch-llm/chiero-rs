@@ -1587,7 +1587,7 @@ typing the paths ever would.
 > corpora had begun returning honest zeros. §11.3 carries the general form.
 >
 > **State: 2026-08-07 — `./check.sh` GREEN at 2228 passed across 264 suites, fmt and clippy
-> clean.** That is the first run verified against all three CI legs; the tree had been **red in
+> clean, and the gate now takes **3m56s** rather than 6m51s.** That is the first run verified against all three CI legs; the tree had been **red in
 > CI** (26 fmt diffs, 2 clippy errors) while the old one-leg script called it green. Closed this
 > session: `MemFault::BadRange`; 023 §8's `max_solver_rlimit` and `max_memory_objects` — with
 > which **every budget in that sketch is built**; `--solver-rlimit` on the three commands that
@@ -1700,7 +1700,27 @@ typing the paths ever would.
    **a blocker records the world at a moment. Re-measure one before spending a wave routing
    around it** — this one cost nothing to check and had been standing for months.
 
-4. **⚠️ Settle the corpus runtime before widening much further.** Every corpus-consuming test
+4. ✅ **Mostly answered 2026-08-07 by a config block, and the entry below is kept for what is
+   left.** The whole item was written around `conversions` taking 53 s — which is the **default
+   dev profile**, not the code. The same test takes **7.95 s** built by release, and
+   `[profile.dev]` had no tuning at all. Setting `opt-level = 2` (with `debug-assertions` and
+   `overflow-checks` pinned on) takes the full three-leg `./check.sh` from **6m51s to 3m56s**,
+   both warm — 43%, about three minutes a run, against a one-off 7m12s rebuild.
+
+   ⚠️ **The first comparison was contaminated**: 6m14s, taken after editing `chiero-solver`, so
+   it carried a partial rebuild at the new opt-level. The tell was `user` time going *up* while
+   wall time went down. Re-take a timing when anything has been rebuilt in between.
+
+   ⚠️ **And the experiment turned the suite red for a reason that was not the experiment** — the
+   slicing ratio test was load-sensitive and only a full-workspace run had ever exercised it
+   under load. Fixed with an exact counter; see §11.1.
+
+   *Still open, and now the smaller half:* each test binary still rebuilds the corpus from
+   scratch, because Rust integration tests are separate processes. Serialising the analysis to
+   disk is the remaining idea, and **020's CIR text format may already be most of it** — but the
+   43% is banked, so the case for that work is now three minutes, not ten.
+
+4b. **⚠️ Original entry, for the record.** Every corpus-consuming test
    preprocesses, parses and analyses all 22 seeds. Sharing one `PreprocessorSession` across seeds
    bought ~15% (`conversions` 62→53 s, `vpp_layout_gate` 62→58 s, `vpp_corpus` 16→13 s) — **less
    than hoped, and it says where the cost is**: not lexing, but parse and analyse, which no cache
@@ -2085,6 +2105,19 @@ doubles the wake-ups.
   `findings().is_empty()` over files written so that absence is the property is close to asserting
   nothing. Requiring every path to terminate by *returning* is what broke it open — three separate
   defects in one sweep.
+- ⚠️ **Deterministic is not the same as discriminating, and I have now written two tests that
+  were the first without being the second** (2026-08-07). Replacing a flaky timing assertion
+  with a counter of nodes *visited* looked like a strict improvement — and the counter is
+  **identical** on the defective implementation, which allocated a whole-arena buffer per call
+  but still stamped only the nodes it walked. The test passed against the very code it was
+  written to catch. The discriminating counter was scratch *initialisation*: 16 003 200 against
+  0. **Ask what number the defect changes, not what number is easy to make deterministic** —
+  and mutate, because that question is answered by measurement and not by staring.
+- ⚠️ **A wall-clock assertion is a load measurement.** The same slicing test, written as a ratio
+  of two durations, passed run alone and went red under the full workspace run. A ratio is more
+  robust than an absolute and still not robust: the two measurements are taken at different
+  loads. **Prefer a counter the code can expose**; an intermittently red suite is worse than no
+  test, because it teaches everyone to re-run instead of to read.
 - **A mutation no fixture can observe is not a killed mutation.** A span-splice mutant needed a
   third fixture because a macro body's byte positions sit *below* its use site; an asm-label mutant
   was invisible to a 1.7M-token corpus because a wrong label still parses cleanly.
