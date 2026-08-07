@@ -381,6 +381,13 @@ struct Engine {
     conditionals: Vec<ConditionalRecord>,
     counter: u64,
     expansion_depth: usize,
+    /// `#pragma push_macro("X")` saves the **binding**, not the definition.
+    ///
+    /// A `MacroId` names one definition and is never reused (012 §1), so `macros` is
+    /// append-only and what push/pop moves is the entry in `by_name`. `None` is a saved
+    /// *absence* — pushing an undefined name and popping it must leave it undefined, which a
+    /// stack of bare indices could not express.
+    macro_stack: BTreeMap<String, Vec<Option<usize>>>,
     /// Feature-query names `features::TABLE` had no answer for, so each is reported once.
     ///
     /// `sys/cdefs.h` alone queries many times per TU, so a diagnostic per *query* would drown
@@ -432,6 +439,7 @@ impl Engine {
             source_map,
             lex_session,
             unknown_queries: BTreeSet::new(),
+            macro_stack: BTreeMap::new(),
             root_path: path.to_path_buf(),
             input,
             deps: vec![file],
@@ -1181,12 +1189,57 @@ impl Engine {
                     message: format!("#{}: {message}", directive.unwrap_or_default()),
                 });
             }
-            Some("pragma") => self.record_pragma_tokens(line.get(2..).unwrap_or_default()),
+            Some("pragma") => {
+                let rest = line.get(2..).unwrap_or_default();
+                self.apply_macro_stack_pragma(rest);
+                self.record_pragma_tokens(rest);
+            }
             Some(other) => self.diagnostics.push(Diagnostic {
                 span: line[1].token.span,
                 message: format!("unsupported preprocessing directive #{other}"),
             }),
             None => {}
+        }
+    }
+
+    /// `push_macro("X")` / `pop_macro("X")`, which gcc and clang both implement.
+    ///
+    /// The pragma is still recorded afterwards: a consumer that wants to see every pragma should,
+    /// and acting on one is not a reason to hide it.
+    ///
+    /// An **imbalanced pop is a no-op rather than an error** — the corpus fixture ends with a
+    /// stray push precisely to check that neither direction crashes, and gcc accepts both.
+    fn apply_macro_stack_pragma(&mut self, tokens: &[Tok]) {
+        let Some(op) = tokens.first() else { return };
+        let push = match op.text.as_str() {
+            "push_macro" => true,
+            "pop_macro" => false,
+            _ => return,
+        };
+        // `push_macro ( "X" )` — the operand is a string literal, so the quotes come off.
+        let Some(name) = tokens
+            .get(1)
+            .filter(|t| t.text == "(")
+            .and_then(|_| tokens.get(2))
+            .filter(|_| tokens.get(3).is_some_and(|t| t.text == ")"))
+            .and_then(|t| t.text.strip_prefix('"'))
+            .and_then(|t| t.strip_suffix('"'))
+            .map(str::to_owned)
+        else {
+            return;
+        };
+        if push {
+            let saved = self.by_name.get(&name).copied();
+            self.macro_stack.entry(name).or_default().push(saved);
+        } else if let Some(saved) = self.macro_stack.get_mut(&name).and_then(Vec::pop) {
+            match saved {
+                Some(index) => {
+                    self.by_name.insert(name, index);
+                }
+                None => {
+                    self.by_name.remove(&name);
+                }
+            }
         }
     }
 
