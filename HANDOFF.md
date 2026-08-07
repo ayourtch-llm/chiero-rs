@@ -1374,6 +1374,63 @@ rather than trusting them to still be there.
 nothing) and **2 accepted what both rejected**, a missing-diagnostic class that had been
 invisible. This is `sweep::Bucket::Miss`'s reasoning, one corpus later.
 
+### 7.12 The compiler persona, 2026-08-07 — and three things measurement caught that reasoning did not
+
+Second wave of the same session, and it came out of *reading what the pp-gate left behind*
+rather than out of the gate failing. `__has_attribute`/`__has_builtin` were registered as
+function-like macros with an **empty body**, so `#ifdef` succeeded — chiero claimed the
+capability — and every query answered 0 in silence, while calling itself gcc 13.
+
+**The decision, and it needed one** (an independent `fable` review, every load-bearing claim of
+which I re-checked against gcc). Recorded in full at 012 §4.1; the two arguments that carried it:
+
+- ⚠️ **Dropping the macros is not the conservative option.** With `__has_attribute` undefined,
+  `#if defined __has_attribute && __has_attribute (packed)` is a hard **error under gcc itself**
+  — `#if` parses the whole expression whatever short-circuiting would do — which is the exact
+  idiom `sys/cdefs.h`'s own comment exists to warn about.
+- **The error directions are not symmetric.** 0-where-gcc-says-1 silently swaps the analysed
+  program for one that never ships. 1-where-chiero-cannot-model is loud by construction (§4.13b's
+  havoc path, `Approximated`, a named assumption). **A loud approximation of the shipped program
+  beats an exact analysis of an unshipped one.**
+
+So `__has_attribute(x)` answers **what the impersonated compiler recognizes**, from
+`features::TABLE` — 163 rows measured from gcc 13, **46 of them `false`**, because there is no
+rule to derive them from (`packed` yes, `minsize` no; `__builtin_bswap128` yes,
+`__builtin_bit_cast` no).
+
+#### The three corrections, which are the transferable part
+
+| believed | measured |
+|---|---|
+| the queries can be rewritten before expansion | `__glibc_has_attribute(attr)` **expands to** `__has_attribute (attr)`, so a pre-expansion rewrite answered `NOT` to the idiom the whole design was built around |
+| they are preprocessor operators, so they belong to `#if` | **both compilers evaluate them in program text**: `int y = __has_attribute(packed);` → `int y = 1;`. The pp-gate found `__has_attribute` in an output stream where gcc and clang had put a number |
+| `__has_include` was already right | a wrapper macro `#define HI(x) __has_include(x)` had **never** worked — it expanded to nothing and read as `0`, silently answering NO to a header that exists |
+
+The second belief came from the review and the first two from me. ⚠️ **Neither source is an
+oracle; gcc is.** Every one was found by running something, not by thinking harder.
+
+#### The honesty mechanism paid on first contact
+
+A name **in** the table answered 0 is knowledge; a name **absent** is ignorance, answers 0
+because `#if` must yield a number, and earns one diagnostic naming it per distinct name per TU.
+On the first run, real `vppinfra` headers queried `__format_arg__` and `__returns_nonnull__` —
+outside the first table — and the diagnostic **named them**, which is the entire reason
+`answer()` returns `Option<bool>` rather than `bool`. That is §11.3's "did not look ≠ found
+nothing" in the one place where the in-band answer is *forced* to be a lie in one direction.
+
+⚠️ **The sibling defect, which made the first one maximal.** `__GNUC__` was baked and
+`__GNUC_MINOR__` was not, and `features.h` makes `__GNUC_PREREQ` constant `0` unless both
+exist — so every version shield in every glibc header collapsed for any consumer not populating
+defines from a real compiler, which is every test in this workspace. **A persona is only as good
+as its least-complete half**, and one absent predefine reconfigured a whole tree.
+
+Measured: pp-gate findings 18 → **17**, agreement **98 of 141**; `measure.sh` on the pinned 40
+gave 37 ok, 2 cut, **0 failed**, 20 findings (was 23).
+
+⚠️ **My own oracle raced and lied first.** The table test keyed its scratch file on the pid,
+which every test in a binary shares, so it failed in the suite and passed alone — reporting a
+table mismatch that did not exist. §11.2 again, on a harness written the same hour.
+
 ### 7.5 How to check the workspace is green — `./check.sh`
 
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
@@ -1422,6 +1479,7 @@ This has now paid out three times in a row, each time on the first run after a w
 | 013 contract 19's parse corpus: 6 `vppinfra/` seeds → +1 `vnet/` seed | free, the corpus was already there | **zero defects** — parses clean, 0 diagnostics, memory ratio 1.74x against a 10x bound. Coverage +45% in tokens and a new subsystem. An honest zero, recorded because a table of only wins cannot say when to stop |
 | both corpora → `+ vlib/vlib.h` | **free** — its whole 67-file closure was already there | **zero defects.** Layout gate 8492 → **10248 assertions**, 2238 records; parse 357k tokens, 0 diagnostics. It is the seed that reaches `vlib/trace.h`, so that header is now under the gate rather than only in an error message |
 | **a new *kind* of edge: simplecpp's `testsuite/`, 141 C preprocessor cases** | one wave | **the richest yield yet — see §7.11.** 22 findings on the first run including **2 panics on the C standard's own worked example**. Every corpus before it was real VPP code |
+| *reading what that gate left behind*, rather than what it failed on | one wave | §7.12: the compiler-persona defect — `__has_attribute` claimed the capability and answered 0 to everything, silently. **The residue of a gate is a corpus too** |
 
 The loop, and it is deliberately mechanical:
 
@@ -1482,8 +1540,9 @@ typing the paths ever would.
 > ### ⏭️ START HERE — **§8.3's widening pattern is the standing job, and the heartbeat runs it.**
 >
 > Read **§8.3** first: it is the loop, its yield table, and the trap that let a defect survive
-> for months (*a green gate is evidence about the corpus, not about the tree*). Then **item 2**
-> below for the next target — item 1 closed 2026-08-07 and §7.11 is what it found.
+> for months (*a green gate is evidence about the corpus, not about the tree*). Then §9.1 for
+> the next target — **items 1 and 2 both closed 2026-08-07** (§7.11, §7.12); the first unclaimed
+> one is the unwidened-surfaces entry, and the `-march` item stays parked.
 >
 > 🆕 **The newest entry in the yield table is the most useful one: change the *kind* of corpus,
 > not its size.** 141 preprocessor torture cases found three defects in a session, two of them
@@ -1587,8 +1646,21 @@ typing the paths ever would.
    Clone it to a stable path outside the repo before wiring a gate to it — a scratchpad is
    per-session and this must survive.
 
-2. ### 🎯 **NEXT: `__has_attribute` and `__has_builtin` claim the feature and answer 0 to everything**
-   *(found 2026-08-07 by reading what the pp-gate left behind; verified directly, not inferred.)*
+2. ### ✅ **DONE 2026-08-07 — the compiler persona.** See **§7.12**; 012 §4.1 is normative.
+   `__has_attribute`/`__has_builtin` now answer from `features::TABLE` (163 rows measured from
+   gcc, 46 `false`), in `#if` **and** in program text, **after** expansion, with an unknown name
+   answering 0 and saying so once per distinct name. `__GNUC_MINOR__` joined the baked persona.
+
+   **What is left of it, and it is small:**
+   - The table is a fact about **gcc 13.3 on this machine**, baked. `chiero-cli`'s frontend
+     already captures `cc -dM` at run time; the same upgrade path would let the *table* be
+     probed per configuration rather than baked. Not worth building until a second toolchain is
+     in play — but note the table's test would then need to follow the persona, not `gcc`.
+   - `__has_c_attribute`, `__has_extension`, `__has_feature` are still unregistered. gcc 13 has
+     `__has_c_attribute`; the other two are clang's. A header using them takes the undefined
+     path, which for `__has_feature` is what gcc does too.
+
+   *The finding as it was written, kept because the decision rests on it:*
 
    `Engine::new` registers both with `add_predefined_query`, which is a function-like macro with
    an **empty body**. So:
@@ -1914,6 +1986,16 @@ doubles the wake-ups.
   people write them*, which is a systematically biased sample — the dark corners are never in it,
   and no amount of widening within it reaches them. **When the yield table flattens, change the
   kind rather than the size.**
+- **The residue of a gate is a corpus.** Two of this session's three defects came from the
+  pp-gate *failing*; the third came from reading the rows it had already written off — 21 cases
+  filed as "neither compiler ran it" turned out to be the corpus's error-recovery half, and the
+  `Skipped` rows named a whole capability (`__has_attribute`) that was answering 0 to everything.
+  ⚠️ **When a gate goes green, read what it is not asserting**, not only what it now asserts.
+- **A persona is only as good as its least-complete half.** `__GNUC__` baked without
+  `__GNUC_MINOR__` makes glibc's `__GNUC_PREREQ` constant 0, which silently reconfigures every
+  system header. One absent predefine, whole-tree effect, no diagnostic anywhere. **When chiero
+  claims to be something, enumerate what that claim implies** rather than adding the parts that
+  came up.
 - **A catch-all match arm hides a missing feature.** The engine's terminator dispatch had an `_ =>`
   reporting "unsupported terminator" at run time, and `Switch` sat inside it for eight waves.
   Removing the arm makes the *compiler* reject an unhandled variant. `chiero-lower`'s statement and
