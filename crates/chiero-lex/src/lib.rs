@@ -247,6 +247,13 @@ impl LexSession {
                 pending_space: false,
                 at_bol: true,
             };
+            for at in &cooked.spaced_splices {
+                let pos = BytePos(source_file.start_pos.0 + u32::try_from(*at).unwrap_or(0));
+                lexer.diagnostics.push(LexDiagnostic {
+                    span: Span::new(pos, pos, Default::default()),
+                    message: "backslash and newline separated by space".into(),
+                });
+            }
             lexer.run();
             (lexer.tokens, lexer.diagnostics, lexer.spellings)
         };
@@ -318,12 +325,19 @@ struct Cooked<'a> {
     bytes: Cow<'a, [u8]>,
     starts: Option<Vec<usize>>,
     ends: Option<Vec<usize>>,
+    /// Raw offsets of splices whose backslash was **separated from the newline by whitespace**.
+    ///
+    /// Carried out rather than diagnosed here because phase 1/2 is a pure transformation with no
+    /// diagnostic channel — and it has to be carried, since gcc and clang both warn and silence
+    /// would accept what they call out.
+    spaced_splices: Vec<usize>,
 }
 
 impl<'a> Cooked<'a> {
     fn new(raw: &'a [u8], config: LexConfig) -> Self {
-        let has_splice = raw.windows(2).any(|pair| pair == b"\\\n")
-            || raw.windows(3).any(|triple| triple == b"\\\r\n");
+        let has_splice = raw.iter().enumerate().any(|(at, byte)| {
+            *byte == b'\\' && splice_len(raw, at).is_some()
+        });
         let has_trigraph = config.trigraphs
             && raw.windows(3).any(|triple| {
                 triple[0] == b'?' && triple[1] == b'?' && trigraph(triple[2]).is_some()
@@ -333,6 +347,7 @@ impl<'a> Cooked<'a> {
                 bytes: Cow::Borrowed(raw),
                 starts: None,
                 ends: None,
+                spaced_splices: Vec::new(),
             };
         }
         let mut phase1 = Vec::with_capacity(raw.len());
@@ -361,19 +376,18 @@ impl<'a> Cooked<'a> {
         let mut bytes = Vec::with_capacity(phase1.len());
         let mut out_starts = Vec::with_capacity(phase1.len());
         let mut out_ends = Vec::with_capacity(phase1.len());
+        let mut spaced = Vec::new();
         i = 0;
         while i < phase1.len() {
             // 011 §2.2: remove the splice for recognition, while the mapping retains
             // the full physical extent for any token crossing it.
-            if phase1[i] == b'\\' && phase1.get(i + 1) == Some(&b'\n') {
-                i += 2;
-                continue;
-            }
             if phase1[i] == b'\\'
-                && phase1.get(i + 1) == Some(&b'\r')
-                && phase1.get(i + 2) == Some(&b'\n')
+                && let Some(len) = splice_len(&phase1, i)
             {
-                i += 3;
+                if len > 2 || phase1.get(i + 1) == Some(&b'\r') && len > 3 {
+                    spaced.push(starts[i]);
+                }
+                i += len;
                 continue;
             }
             bytes.push(phase1[i]);
@@ -385,7 +399,30 @@ impl<'a> Cooked<'a> {
             bytes: Cow::Owned(bytes),
             starts: Some(out_starts),
             ends: Some(out_ends),
+            spaced_splices: spaced,
         }
+    }
+}
+
+/// The byte length of a line splice starting at `at`, if there is one.
+///
+/// C11 5.1.1.2p1.2 deletes a backslash *immediately* before a newline, so `\ ` + newline is not
+/// a splice by the letter of it. **gcc and clang both splice it anyway**, warning "backslash and
+/// newline separated by space", and C99 6.10.3.4p6's own worked example contains one — chiero
+/// answered *stray `\` in program* and lost the rest of the macro definition.
+///
+/// Horizontal whitespace only: a backslash followed by a blank *line* is not a splice under
+/// either compiler.
+fn splice_len(bytes: &[u8], at: usize) -> Option<usize> {
+    debug_assert_eq!(bytes.get(at), Some(&b'\\'));
+    let mut i = at + 1;
+    while matches!(bytes.get(i), Some(b' ' | b'\t' | 0x0b | 0x0c)) {
+        i += 1;
+    }
+    match bytes.get(i) {
+        Some(b'\n') => Some(i + 1 - at),
+        Some(b'\r') if bytes.get(i + 1) == Some(&b'\n') => Some(i + 2 - at),
+        _ => None,
     }
 }
 
