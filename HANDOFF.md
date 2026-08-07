@@ -1471,11 +1471,21 @@ typing the paths ever would.
 >    ones. Those are Apache-2.0-with-LLVM-exception and **GPL** respectively, carry no notice of
 >    their own in that directory, and must not be vendored here.
 >
->    **Extraction, measured**: `$SCRATCH/extract.py` pulls `static void NAME() { const char
->    code[] = "…"; ASSERT_EQUALS("…", preprocess(code)); }` triples — **196 cases with a fixture,
->    98 of them with a `preprocess()` expectation**. The extractor is deliberately conservative
->    (it skips `readfile`-only cases, `outputList` diagnostic cases, and bodies that build the
->    input some other way), so those are floors, not totals. Widen it before concluding coverage.
+>    **Extraction, measured — and the first measurement was three times too low.** A naive
+>    one-per-function regex found 98 expectations; counting properly finds **304**, because many
+>    functions carry several `ASSERT_EQUALS` and not all name their fixture `code`. The corpus
+>    is bigger than it first looked, in three tiers:
+>
+>    | | count | what it needs |
+>    |---|---|---|
+>    | `ASSERT_EQUALS("…", preprocess(…))` | **304** | the core: input + expected output |
+>    | `preprocess()` calls taking extra args | 160 | an include-file map and/or predefined macros — a second tier of harness |
+>    | functions checking `outputList` | 69 | diagnostic text and position, a third tier |
+>    | `ASSERT_EQUALS` total in the file | 869 | (the rest are `readfile`/tokenizer-level) |
+>
+>    ⚠️ **Do not quote 98.** It is in the git history of this file as a number I measured badly
+>    and it is the kind of figure that gets repeated. `$SCRATCH/extract.py` is the naive version;
+>    the counts above come from counting assertions rather than functions.
 >
 >    **The oracle question, and the answer that fits this project.** simplecpp's expected strings
 >    are in *its* normalisation — tokens space-separated, one output line per source line,
