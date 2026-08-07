@@ -162,3 +162,57 @@ fn a_line_the_function_does_not_have_is_not_unreachable() {
     assert_eq!(v["result"]["verdict"], "no_such_line");
     assert!(!env.proven, "{v}");
 }
+
+/// **A line that is reachable only because a branch was not decided is not `reachable`, and it
+/// is certainly not `proven`.**
+///
+/// `x != x` is false for every `x`, so `DEAD`'s line 3 is dead. With a solver chiero proves it:
+/// `unreachable`, `Exact`. With tier 1 alone the branch is undecided, the engine takes it
+/// anyway — which is 023 §7's rule and right, the alternative is dropping a path that may exist
+/// — a state arrives at line 3, and `check_reachable` reported:
+///
+/// ```text
+/// verdict: reachable
+/// witness:
+///   - origin: parameter 0
+///     value: 0
+///     pinned: false          ← there is no input; this number is invented
+/// proven — this holds for all inputs (Exact)
+/// ```
+///
+/// **A proof that a dead line is live**, on the operation whose entire purpose is keeping
+/// "nothing gets here" apart from "I did not get here". The witness confesses in the same
+/// breath — `pinned: false` is 023 §9's "an input the model leaves free is marked rather than
+/// quietly bound to zero" — and the verdict claimed a proof over the top of it.
+///
+/// The cause is one line of reasoning that is true in general and false here: *"a path that
+/// arrived is a fact about this program, whatever else the run had to approximate: the state is
+/// there."* It is not a fact when the **arrival itself** rests on a branch nobody decided.
+///
+/// This is the `_vec_update_len` shape again — a proof resting on something chiero invented —
+/// and it is why this test runs *without* a backend rather than skipping: the wrong answer only
+/// exists there.
+#[test]
+fn a_line_reached_through_an_undecided_branch_is_not_proven_reachable() {
+    let mut c = cfg("f");
+    // Tier 1 alone, whatever this machine has installed — the point is what chiero says when
+    // the branch cannot be decided, and on a machine with z3 that is otherwise unreachable.
+    c.backend = None;
+    let env = check_reachable(&m(DEAD), &c, 3);
+    let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
+    assert!(
+        !env.proven,
+        "line 3 is dead for every input; nothing here is proven: {v}"
+    );
+    assert_ne!(
+        v["result"]["verdict"], "reachable",
+        "no input was found that gets there — the witness is unpinned: {v}"
+    );
+    // **And it does not swing to `unreachable` either**, which would be the same overclaim
+    // pointing the other way: chiero did not show that nothing arrives, it failed to decide.
+    assert_ne!(v["result"]["verdict"], "unreachable", "{v}");
+    assert!(
+        v["result"]["why"].as_str().is_some_and(|w| !w.is_empty()),
+        "and it says what stopped it: {v}"
+    );
+}
