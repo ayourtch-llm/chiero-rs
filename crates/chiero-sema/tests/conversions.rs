@@ -467,9 +467,38 @@ fn no_operation_in_the_corpus_is_left_implicit() {
             let ExprKind::Binary { op, .. } = &p.parsed.ast.expr(*expr).kind else {
                 continue;
             };
+            // A pointer operand is legitimately of a different type from an integer one
+            // (`p + n`), and a comparison against a null constant likewise.
+            let scalarish =
+                |t| matches!(p.analysis.ty(t), Ty::Int { .. } | Ty::Float(_) | Ty::Error);
             // Shifts do not take the usual arithmetic conversions: each operand is
             // promoted on its own and the result has the left operand's type.
             if matches!(op, BinOp::Shl | BinOp::Shr) {
+                continue;
+            }
+            // **Nor do `&&` and `||`, and for a stronger reason.** C 6.5.13/6.5.14 say each
+            // operand is compared unequal to 0 *independently*; the only constraint is that
+            // each has scalar type (6.5.13p2). So "the two operands have one type" is not
+            // something C requires here, and asserting it was asking the wrong question —
+            // exposed the moment the corpus reached outside `vppinfra/`, which had no `&&`
+            // mixing signedness. Ten operations in one seed, every one of them this.
+            //
+            // ⚠️ **What this walk cannot see, and it is a real question**: lowering must still
+            // insert a compare-against-zero for each operand, and 014 §5 says the typed tree
+            // makes every implicit operation explicit. That is contract 11's subject and this
+            // census does not ask it — see HANDOFF §9. Skipping the wrong question is right;
+            // pretending the right one is answered would not be.
+            if matches!(op, BinOp::LogAnd | BinOp::LogOr) {
+                // The constraint C *does* impose, so these stay covered rather than dropped.
+                for &o in operands.iter().take(2) {
+                    let t = p.analysis.unqualified(typed.ty_of(o));
+                    assert!(
+                        scalarish(t) || matches!(p.analysis.ty(t), Ty::Ptr(_)),
+                        "{seed}: an operand of `&&`/`||` must have scalar type \
+                         (C 6.5.13p2), not {:?}",
+                        p.analysis.ty(t)
+                    );
+                }
                 continue;
             }
             if operands.len() != 2 {
@@ -483,10 +512,6 @@ fn no_operation_in_the_corpus_is_left_implicit() {
             // appeared here overnight, every one of them `u64` against `u64`.
             let a = p.analysis.unqualified(typed.ty_of(operands[0]));
             let b = p.analysis.unqualified(typed.ty_of(operands[1]));
-            // A pointer operand is legitimately of a different type from an integer one
-            // (`p + n`), and a comparison against a null constant likewise.
-            let scalarish =
-                |t| matches!(p.analysis.ty(t), Ty::Int { .. } | Ty::Float(_) | Ty::Error);
             if !scalarish(a) || !scalarish(b) {
                 continue;
             }

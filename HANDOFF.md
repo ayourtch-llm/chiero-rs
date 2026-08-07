@@ -1279,6 +1279,7 @@ This has now paid out three times in a row, each time on the first run after a w
 | `layout`: no bit-field records → runs modelled | one wave | 2 VPP findings, and a review found a `proven` wrong answer inside the fix |
 | contract-12 gate: 20 `vppinfra/` seeds → +1 `vnet/` seed | 86 files, ~5 min | **2 layout defects + 1 in the gate itself; 5482 → 8492 assertions** |
 | chasing one failure message out of `vlib/` | one wave | no defect — gcc agrees with chiero — but the message now names the type, which is what turned a compile into a read |
+| the *same* seed, reaching 014 contract 11's conversion census | free | the census was asking `&&`/`||` a question C does not ask; 10 false offenders |
 
 The loop, and it is deliberately mechanical:
 
@@ -1460,6 +1461,12 @@ typing the paths ever would.
 >      seed reaching it must come in through `vlib/vlib.h`, which sets the include order.
 >      The wave it did produce was a diagnostic: chiero now prints gcc's message verbatim,
 >      which is what made the answer a read rather than a compile.
+>    - **Contract 11's census does not ask its own question of `&&`/`||`.** It checks that
+>      both operands of an operator have one type — right for arithmetic, wrong for these
+>      (C 6.5.13/6.5.14 compare each against 0 independently), and now skipped with the
+>      constraint C *does* impose asserted instead. But lowering must still insert a
+>      compare-against-zero per operand, and 014 §5 says the typed tree makes every implicit
+>      operation explicit. **Nothing checks that.** It is the contract's actual subject.
 >    - **The sema corpus gate's own contract 11** (re-lex round trip) and contract 19
 >      (per-`ConfigId` sites) are listed in §7 as owed and have no corpus at all.
 > 2. **⏸️ PARKED at the owner's request 2026-08-07 — `-march`.** Do not start this without
