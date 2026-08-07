@@ -1525,8 +1525,8 @@ identity**.
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
 three xtask gates were red: a crate whose test *binary* fails to build emits no `test result`
 line at all, so counting successes cannot detect a missing success. `./check.sh` keys on
-cargo's exit status and prints the failing suites first. Current: **2178 passed, 256 suites**
-(2026-08-07, after §7.11-§7.13).
+cargo's exit status and prints the failing suites first. Current: **2188 passed, 257 suites**
+(2026-08-07, after §7.11-§7.14).
 
 ⏱️ **It now takes over an hour per leg**, and that is the session's dominant cost — see §9's
 note on the corpus. `conversions` and `semantics` are ~55 s each, the two VPP gates ~60 s, and
@@ -1648,11 +1648,11 @@ typing the paths ever would.
 > corpora had begun returning honest zeros. §11.3 carries the general form.
 >
 > **State: three waves landed 2026-08-07 — §7.11 (preprocessor conformance), §7.12 (compiler
-> persona), §7.13 (GNU comma-swallow). `./check.sh` GREEN: 2178 passed across 256 suites**, up
-> from 2154 at the session's start. The contract-12 layout gate is 22 seeds / 2238 records /
-> **10248 assertions put to gcc**; pp-gate is 141 C cases, **99 agree**, 16 findings, and the 3
-> on `Expected` priors are a declared scope limit (`__VA_OPT__`) plus two rows where gcc and
-> clang disagree with each other.
+> persona), §7.13 (GNU comma-swallow), §7.14 (universal character names), plus an honest zero on
+> 014 contract 11. `./check.sh` GREEN: 2188 passed across 257 suites**, up from 2154 at the
+> session's start. The contract-12 layout gate is 22 seeds / 2238 records / **10248 assertions
+> put to gcc**; pp-gate is 141 C cases, **100 agree**, 16 findings, and §9.1 item 1 names every
+> remaining one.
 >
 > ⏱️ **Budget the clock.** A full both-legs run is over an hour and dominated the last session.
 > Do not start a widening and a full run in the same breath.
