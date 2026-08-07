@@ -86,7 +86,15 @@ five-minute experiment is worse than no contingency.
     an external toolchain, the "modular reusable library" property is gone.
 - Rust 1.97.1, cargo 1.97.1. crates.io reachable.
 - 12 cores, 251 GB RAM. Parallel test/agent work is cheap.
-- Scratchpad: `/tmp/claude-1000/-home-ubuntu-rust-chiero-rs/7452d602-bc54-4f42-b1e5-54f072255730/scratchpad`
+- Scratchpad: whatever the session's own is — the path changes per session, so take it from
+  the harness rather than from this line.
+- **Remote: `git@github.com:ayourtch-llm/chiero-rs.git`**, first pushed 2026-08-06. The push
+  credential is a deploy key in `.deploy/` (gitignored, `700`): `./.deploy/push.sh` adds it to
+  an agent scoped to the script and pushes the current branch, `--check` only authenticates.
+  Nothing in `.deploy/` is committed — key, script and README are properties of this machine.
+- **Licence: MIT OR Apache-2.0**, both texts at the repository root, every one of the 23
+  packages inheriting the SPDX field. Left for the first publish: the texts are not inside each
+  crate's tarball and no manifest has a `description`.
 
 ## 4. Design digest
 
@@ -457,6 +465,8 @@ have entrenched conventions real lowering then had to match.)
 | **041 `prove_equivalent`** + §2/§3 | 🟡 contracts 1–6, 9–18, 21, 22, 24 | z3 proves `x*2 == x<<1` over all 2^32; finds `INT_MIN` as the one input two `abs()`s disagree on — and **gcc confirms it**, via `chiero-replay` |
 | **050 tool interface** | 🟡 10 operations + a CLI (contracts 1–3, 4b, 5–8, 11, 12 partly, 14) | envelope + `select_tests`, `expansion_sites`, `explain_macro_expansion`, `prove_equivalent`(+replay), `impact`, `find_bugs`, `check_reachable`, `find_optimizations`, `layout`; all reachable as `chiero <op>`. **No MCP/JSON-RPC server**, so contract 18 cannot run |
 | 040 checkers, 042 recipes, 060 vpp | partial | `chiero-check` runs **2** checkers by default; `chiero-recipe`, `chiero-vpp` exist |
+| **`layout` on real VPP** | ✅ fixed 2026-08-07 | anonymous members counted, partial field lists refuse a number, and each hole names the fields it sits between — §7.7 |
+| **CI** | ✅ both solver legs gate | `solver: [none, z3]`; `check-proof-surface` moved from prose into the workflow |
 | **`find-bugs` on real VPP** | 🟡 measured 2026-08-06 | pinned 40: **231 → 21 findings**, `--entry-ptr-nonnull` **1**. Plugins: **477 entries over 92 plugins → 18 findings, 1 `Exact` and it is true**; two engine panics found and fixed. §7.6 |
 
 **The two 032 contracts left, and why neither is "just work":**
@@ -1061,12 +1071,100 @@ destination** (021 §6, symbolic and initialized) rather than leaving it never-w
 | 1 | `lldp_api.c:135:7: no member named last_heard_age`, expanded from `120:3` inside `REPLY_MACRO_DETAILS4_END` |
 | 1 | `mactime_top.c`: `` `vl_msg_api_set_handlers` was not declared `` |
 
+### 7.7 Two defects the *user* found by running the tool, 2026-08-07
+
+Both arrived the same way — somebody pointed a command at real code and read the answer — and
+neither was reachable from the test suite as it stood. That is now three waves running where
+the operations found what the suite could not (§7.3, §7.6, this).
+
+#### `layout` said a 72-byte struct would be 8
+
+`chiero layout` on `plugins/acl/acl.h` reported `fib_route_path_t_` at 72 bytes with
+`recoverable: 64` — "would be 8 with its fields ordered by size". Size and alignment were
+**right** (gcc agrees, 72 and 8), which is what made the number read as an answer.
+
+`frontend::records` built each field as `names.text(fl.name?)` inside a `filter_map`, so a
+member with **no name** was skipped without a word — and that struct is mostly a 56-byte
+anonymous union. The ideal layout was then computed over the 7 bytes that were left, and
+"would be 8" is 7 rounded up to the struct's alignment.
+
+Two fixes, and the second generalises: anonymous members are counted (with a synthetic name,
+since the padding sum needs their extent), and a record whose field list is **knowingly
+partial** — a bit-field, whose extent is bits inside a storage unit its neighbours share —
+gets no padding proposal at all, with the envelope naming which records that happened to. A
+number computed from part of a struct is not a smaller number, it is a wrong one.
+
+Checked against gcc rather than arithmetic: a hand-reordered `fib_route_path_t` compiles to
+**64 bytes**, which is what chiero now reports as the floor. On that one header, 17 padding
+proposals became 12 and five had been wrong — `rusage` "144 → 32", `ip_adjacency_t_`
+"256 → 192", `vnet_tm_level_capa_params_` "96 → 24", `fib_prefix_t_` "20 → 4".
+
+Then the follow-up ask, which was the better half: **a total is not advice.** The proposal now
+names the fields each hole sits between, reconciles the holes against what a reorder actually
+recovers (9 bytes of padding, 8 recoverable, because alignment rounds the tail up whatever the
+order), and caps the list at eight saying how many it did not show.
+
+#### `check_reachable` proved a dead line live, when there was no solver
+
+`int f (int x) { if (x != x) return 1; return 2; }` — line 3 is dead for every input. With z3:
+`unreachable`, `Exact`. With tier 1 alone:
+
+```text
+verdict: reachable
+witness:
+  - origin: parameter 0
+    value: 0
+    pinned: false          ← there is no input; this number is invented
+proven — this holds for all inputs (Exact)
+```
+
+**A proof that a dead line is live**, from the operation built to keep "nothing gets here"
+apart from "I did not get here", with the witness confessing in the same breath. The cause was
+one sentence, true in general and false in the case that matters: *"a path that arrived is a
+fact about this program, whatever else the run had to approximate."* It is not a fact when the
+**arrival itself** rests on a branch nobody decided — 023 §7 takes an undecided branch rather
+than drop a path that may exist, which is right, and a proof does not follow from it.
+
+`reachable` now requires the state's fidelity to be `Exact` **and** every witness binding to be
+pinned. Neither implies the other. Otherwise: `not_shown_reachable`, carrying the candidate
+witness, with a blind spot saying a path did reach the line and may not exist.
+
+**This is the `_vec_update_len` shape a third time** — a proof resting on something chiero
+invented — and the lesson is not about solvers. Whenever an answer is `Exact`, ask what would
+have to be true for the *arrival at that answer* to be an artefact of a limit rather than a
+fact about the program.
+
+### 7.8 The two solver configurations, and why both are gates
+
+Reported from GitHub: five `chiero-check` tests failing there and passing everywhere else.
+**CI has no z3.** They asserted what a complete solver decides and never checked whether there
+was one — an asymmetry, not a flake.
+
+CI is now a matrix over `solver: [none, z3]`, and **both legs gate** as of 2026-08-07:
+
+| leg | what it is for |
+|---|---|
+| `z3` | the solver-dependent half of the suite, which was absent from CI entirely |
+| `none` | 022 contract 2 — a machine with no solver answers what tier 1 can and `Unknown` for the rest |
+
+The `none` leg pins `$CHIERO_SMT_SOLVER` at a path that does not exist rather than trusting the
+runner image to lack z3; a configuration resting on an unstated assumption is not one. Twenty
+tests needed handling, in three kinds — **skip** (the claim is about what a complete solver
+decides), **widen** (the claim survives both tiers and only the recorded cause differs), and
+**fix** (§7.7's false proof, which only that configuration could reach).
+
+⚠️ **Reproduce the solverless leg locally with `CHIERO_SMT_SOLVER=/nonexistent cargo test
+--workspace --no-fail-fast`.** `--no-fail-fast` is not optional: cargo stops at the first
+failing test *binary*, so the first measurement of this said three suites when the answer was
+eleven, and each fix revealed the next one.
+
 ### 7.5 How to check the workspace is green — `./check.sh`
 
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
 three xtask gates were red: a crate whose test *binary* fails to build emits no `test result`
 line at all, so counting successes cannot detect a missing success. `./check.sh` keys on
-cargo's exit status and prints the failing suites first. Current: **2137 passed, 252 suites**.
+cargo's exit status and prints the failing suites first. Current: **2144 passed, 252 suites**,
+and the same 2144 with `CHIERO_SMT_SOLVER=/nonexistent` (§7.8).
 
 **Every spec must end with a `## Testable contracts` section** — numbered, checkable
 assertions. Those become the RED tests. This is what makes the specs actually drive TDD
@@ -1117,7 +1215,29 @@ typing the paths ever would.
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE — **the plugins are swept: 477 entries, 92 plugins, two panics fixed and one true `Exact`.** §7.6 has the story.
+> ### ⏭️ START HERE — **the last two defects came from the owner running the tool, and one was a false proof.** §7.7.
+>
+> `chiero layout` on a VPP header said a 72-byte struct "would be 8" (it dropped every member
+> with no name — anonymous unions), and `chiero check-reachable` on a dead line answered
+> **`reachable`, `proven`** whenever there was no solver, with a witness whose own
+> `pinned: false` said there was no input. Both fixed; §7.7 has the reasoning and the gcc
+> cross-check. The lesson is the one this file keeps re-learning: **the operations find what
+> the suite cannot**, and an `Exact` deserves the question *what would make this arrival an
+> artefact rather than a fact?*
+>
+> **CI now runs both solver configurations and both gate** (§7.8): `z3` for the solver-dependent
+> half that was never running there, `none` for 022 contract 2. Reproduce the second with
+> `CHIERO_SMT_SOLVER=/nonexistent cargo test --workspace --no-fail-fast` — and **`--no-fail-fast`
+> is not optional**, cargo stops at the first failing binary and the first measurement said
+> three suites when the answer was eleven.
+>
+> ### 📦 The repository is on GitHub now
+>
+> `git@github.com:ayourtch-llm/chiero-rs.git`, pushed with a deploy key in `.deploy/`
+> (gitignored; `./.deploy/push.sh` adds the key and pushes, `--check` just authenticates).
+> Dual-licensed **MIT OR Apache-2.0** as of 2026-08-06, with both texts at the root.
+>
+> ### ⏭️ (previous) the plugins are swept: 477 entries, 92 plugins, two panics fixed and one true `Exact`. §7.6 has the story.
 >
 > Retake any measurement: `tests/corpus/vpp-findings/measure.sh` (~4 min for the pinned 40,
 > ~25 min for the plugin list; needs the VPP checkout at `/home/ubuntu/vpp`). Checked in so the
@@ -1181,27 +1301,32 @@ typing the paths ever would.
 >    solver decides; each got an explicit skip, or was widened to accept both causes where the
 >    claim survives either tier. **One was neither** — see §7.7.
 >
-> 1. **The 11 `failed` plugin entries, which are now one-line diagnoses** (§7.6 has the table).
+> 1. **`layout`'s remaining honesty gap, which §7.7 opened rather than closed.** A record with a
+>    bit-field now gets *no* padding proposal at all. That is right — `(offset, size)` cannot
+>    express a bit-field's extent — and it is also a hole: those structs are exactly the packed,
+>    hand-tuned ones where padding matters most. The fix is a field description that can carry
+>    bits, which is 014's shape to give and this analysis's to consume.
+> 2. **The 11 `failed` plugin entries, which are now one-line diagnoses** (§7.6 has the table).
 >    Seven are one cause: `frontend::predefines` asks gcc for its macros with **no `-march`**,
 >    while VPP builds `-march=x86-64-v2`, so `__SSE4_2__` is undefined and `vppinfra/crc32.h`
 >    never defines `clib_crc32c_with_init`. Passing `-march` through would then require parsing
 >    `x86intrin.h`, which is the part to think about before typing. The other four are two
 >    parser/sema gaps in generated API headers.
-> 2. **A step that outlives the clock.** Three entries still need the outer `timeout`; one ran
+> 3. **A step that outlives the clock.** Three entries still need the outer `timeout`; one ran
 >    10 s against a 5 s budget inside a symbolic-offset enumeration. The clock is only checked
 >    between steps, and 022 §8's `max_solver_rlimit` — deterministic work units — is specified
 >    and unimplemented. That is the principled bound for the solver half.
-> 3. **`InstKind::Call` carries no result type**, so an indirect call's result width is whatever
+> 4. **`InstKind::Call` carries no result type**, so an indirect call's result width is whatever
 >    candidate ran. The arity and parameter-type filters cut the wildest cases and cannot close
 >    it; the engine survives the rest by degrading. The real fix is a CIR change — 135 sites
 >    construct `InstKind::Call`, and the text format needs syntax for it.
-> 4. **`MemFault::BadRange`** — same class as `is_chiero_limit`, held back because three
+> 5. **`MemFault::BadRange`** — same class as `is_chiero_limit`, held back because three
 >    `step.rs` tests use it as their only objectless non-fatal probe. Give them one (a new
 >    non-fatal objectless *defect* fault, or a different keying fixture) and move it.
-> 5. **Widen again.** Every widening has paid: 7 files → four defects, 56 files → three more,
+> 6. **Widen again.** Every widening has paid: 7 files → four defects, 56 files → three more,
 >    92 plugins → two panics and a true `Exact`. `vnet/ip*` and `plugins/*/` beyond one function
 >    per file are untouched; `pick_entries.py --per-file N <files>` takes a list.
-> 6. 032 contract 18's corpus still has **no `observed` entry** and the gate correctly exits 1
+> 7. 032 contract 18's corpus still has **no `observed` entry** and the gate correctly exits 1
 >    saying "NOT MEASURED". The method is recorded below: revert a fix's `src/` diff onto HEAD
 >    rather than hunting for a commit whose parent fails.
 >
@@ -15746,3 +15871,12 @@ doubles the wake-ups.
 - ~~Don't start implementing before the user's spec-gate approval.~~ **Approved
   2026-07-27, full autonomy granted.** Build.
 - Update §7 and §9 of this file before every context refresh, and commit it.
+- **Run the suite both ways.** `./check.sh` covers the machine as it is; CI also runs
+  `CHIERO_SMT_SOLVER=/nonexistent`, and `--no-fail-fast` is required to see past the first
+  failing binary (§7.8).
+- **Re-measure after a fix, not only before it.** §7.6's 108 false findings were introduced by
+  a fix and caught only by re-running the corpus; nothing in 2136 tests moved.
+- ⚠️ **Writing Rust through a python heredoc mangles `\`-continued string literals** — python
+  eats the continuation and the run of indentation lands *inside* the string. It has shipped
+  three times this session (`single-threaded`, the padding blind spot, the hole text). Escape
+  as `\\` and check the output with `cat -A`, or edit the file directly.
