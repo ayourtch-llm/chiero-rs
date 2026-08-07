@@ -83,6 +83,21 @@ pub enum Verdict {
     MatchedOne { compiler: &'static str },
     /// The compilers agreed and chiero did not. **The finding.**
     Differs,
+    /// The token sequences differ but the **programs do not**: the two rendered the same result
+    /// differently, and re-lexing a rendering is lossy.
+    ///
+    /// Two causes, both real and neither a defect. `gcc -E` **normalizes** a universal character
+    /// name (`\u00AA` → `\U000000aa`) while chiero preserves what was written, because 010
+    /// contract 11 wants a token's bytes to re-lex to its own spelling (011 §2.0). And an
+    /// **unterminated** character constant — `-Dfoo='bar\'`, where `\'` is an escape — is one
+    /// token to both, but gcc's rendered output re-lexes into a literal that swallows the
+    /// following token.
+    ///
+    /// ⚠️ **Reported as its own verdict, never merged into `Agree`.** The comparison behind it is
+    /// deliberately coarser — UCN escapes canonicalized, then all whitespace stripped, which is
+    /// simplecpp's own `cleanup()` — and a coarser comparison that reported "agree" would be a
+    /// gate quietly lowering its own standard.
+    RendersDifferently,
     /// The compilers disagreed and chiero matched neither. Also a finding, and a worse one.
     MatchedNeither,
     /// Both compilers rejected the file **and so did chiero**. These are the corpus's negative
@@ -303,6 +318,65 @@ fn compiler_tokens(compiler: &str, case: &Case) -> Option<Vec<String>> {
     Some(lex_texts(&body))
 }
 
+/// Do two token sequences describe the same program, ignoring how it was rendered?
+///
+/// Canonicalize universal character names, concatenate, strip all whitespace. The last step is
+/// simplecpp's own `cleanup()` and is what makes an unterminated literal's differing token
+/// boundaries comparable at all.
+///
+/// **Only ever used to explain a difference, never to declare agreement** — see
+/// [`Verdict::RendersDifferently`].
+fn same_program(ours: &[String], theirs: &[String]) -> bool {
+    fn canonical(tokens: &[String]) -> Vec<u8> {
+        let joined: String = tokens.concat();
+        let bytes = joined.as_bytes();
+        let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'\\'
+                && let Some((code, len)) = ucn_at(bytes, i)
+            {
+                // **Decode to the character, not to a canonical escape.** gcc renders `\u00A8`
+                // as the literal `¨` in one file and as `\U000000a8` in another, so only the
+                // character itself is a form both spellings reach.
+                let mut buffer = [0_u8; 4];
+                out.extend_from_slice(
+                    char::from_u32(code)
+                        .unwrap_or('\u{fffd}')
+                        .encode_utf8(&mut buffer)
+                        .as_bytes(),
+                );
+                i += len;
+            } else {
+                // ⚠️ **Bytes, not `char`s.** Casting a byte to `char` is Latin-1, so a UTF-8
+                // `¨` became `Â¨` and never matched the decoded escape — the first version of
+                // this compared two manglings and reported a difference that was its own.
+                if !bytes[i].is_ascii_whitespace() {
+                    out.push(bytes[i]);
+                }
+                i += 1;
+            }
+        }
+        out
+    }
+    canonical(ours) == canonical(theirs)
+}
+
+/// `\uXXXX` / `\UXXXXXXXX` at `at`, as `(code point, byte length)`.
+fn ucn_at(bytes: &[u8], at: usize) -> Option<(u32, usize)> {
+    let digits = match bytes.get(at + 1) {
+        Some(b'u') => 4,
+        Some(b'U') => 8,
+        _ => return None,
+    };
+    let text = bytes.get(at + 2..at + 2 + digits)?;
+    if !text.iter().all(u8::is_ascii_hexdigit) {
+        return None;
+    }
+    let value = std::str::from_utf8(text).ok()?;
+    Some((u32::from_str_radix(value, 16).ok()?, 2 + digits))
+}
+
 fn lex_texts(text: &str) -> Vec<String> {
     use chiero_lex::{LexConfig, LexSession, PpTokenKind};
     let mut map = chiero_span::SourceMap::new();
@@ -426,6 +500,8 @@ pub fn run_case(
         (Some(g), Some(c)) if g == c => {
             if &ours == g {
                 Verdict::Agree
+            } else if same_program(&ours, g) {
+                Verdict::RendersDifferently
             } else {
                 Verdict::Differs
             }
@@ -435,6 +511,11 @@ pub fn run_case(
                 Verdict::MatchedOne { compiler: "gcc" }
             } else if c.as_ref() == Some(&ours) {
                 Verdict::MatchedOne { compiler: "clang" }
+            } else if g.as_ref().is_some_and(|t| same_program(&ours, t))
+                || c.as_ref().is_some_and(|t| same_program(&ours, t))
+            {
+                // The compilers split, and chiero renders the same program as one of them.
+                Verdict::RendersDifferently
             } else {
                 Verdict::MatchedNeither
             }
@@ -533,6 +614,7 @@ impl Report {
                 Verdict::Agree => "agree".to_owned(),
                 Verdict::MatchedOne { compiler } => format!("matched {compiler} only"),
                 Verdict::Differs => "DIFFERS".to_owned(),
+                Verdict::RendersDifferently => "same program, rendered differently".to_owned(),
                 Verdict::MatchedNeither => "MATCHED NEITHER".to_owned(),
                 Verdict::RefusedByAll => "rejected by all three".to_owned(),
                 Verdict::AcceptedWhatBothRejected => "ACCEPTED WHAT BOTH REJECTED".to_owned(),
