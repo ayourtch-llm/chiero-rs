@@ -45,6 +45,43 @@ pub enum PpTokenKind {
 }
 ```
 
+### 2.0 Identifiers contain universal character names
+
+C11 6.4.2.1 makes `identifier-nondigit` include *universal-character-name*, so `À` and
+`\U000000C0` are **identifier characters**, not escapes and not stray backslashes:
+
+```c
+int À = 1;          /* one identifier */
+int àb = 2;        /* one identifier */
+#define MÀ 7        /* a macro whose name contains one */
+```
+
+chiero rejected all three with *stray `\` in program*, which is a diagnostic on valid C. Raw
+UTF-8 in an identifier (`int À = 1;`) already worked — the byte-level rule `byte >= 0x80` admits
+it — so the gap was only the escaped spelling.
+
+Two constraints, both of which gcc enforces as errors and both measured against it:
+
+- **C11 6.4.3p2** — a UCN shall not designate a code point below `00A0` (other than `0024 $`,
+  `0040 @`, `0060 \``), nor one in `D800..=DFFF`. `A` is an error, not an `A`; this is what
+  stops `Abc` and `Abc` being two spellings of one identifier.
+- **C11 6.4.2.1p2 / Annex D.2** — an identifier shall not *begin* with a UCN from the combining
+  ranges (`0300..=036F`, `1DC0..=1DFF`, `20D0..=20FF`, `FE20..=FE2F`). gcc says "not valid at the
+  start of an identifier", and applies the same rule to the raw UTF-8 spelling.
+
+**A malformed UCN is not an error here.** `a\u12` has too few hex digits to be a
+universal-character-name at all, so it is not one — the backslash falls through to whatever it
+would otherwise be, exactly as gcc leaves it. Phase 3 does not diagnose what phase 7 might.
+
+⚠️ **The spelling is preserved, and this is a deliberate divergence from `gcc -E`'s output.**
+gcc *normalizes* a UCN in its preprocessed output — `À` comes back as `\U000000c0`, and
+`$` comes back as a literal `$`. chiero keeps the token text as written, because
+[010 §2.2](010-source-and-provenance.md)'s provenance model requires a token's `lo..hi` to
+re-lex to its own spelling (010 contract 11), and a normalized spelling is a byte range that
+does not exist in any file. So a differential comparison against `gcc -E` will show these tokens
+differing **by spelling and not by identity**, and that is the correct outcome rather than a
+defect to chase.
+
 ### 2.1 pp-number
 
 Phase 3 lexes `pp-number`, which is intentionally sloppier than a C numeric constant:
@@ -139,3 +176,10 @@ Consequences:
     cache is actually used).
 14. Trigraph `??=` lexes as three `Punct` tokens by default, and as `#` with
     `trigraphs = true`.
+15. **A universal character name is an identifier character** (§2.0). `int À = 1;` lexes
+    `À` as one `Ident`, as does `\U000000C0`; `à` is one `Ident`, not two tokens and
+    a stray backslash. `#define MÀ 7` defines a macro that `MÀ` invokes.
+    A UCN designating a basic-character-set code point (`A`) or a surrogate (`\uD800`)
+    is a diagnostic, and one from Annex D.2 at the **start** of an identifier (`̀`) is a
+    diagnostic — both of which gcc rejects too. `a\u12` is not a UCN at all and is not
+    diagnosed here.
