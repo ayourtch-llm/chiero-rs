@@ -40,6 +40,13 @@ const SEEDS: &[&str] = &[
     "vppinfra/format.h",
     "vppinfra/hash.h",
     "vppinfra/error.h",
+    // **The first seed from outside `vppinfra/`** — HANDOFF §8.3. This list and the sema
+    // harness's `CORPUS_SEEDS` are deliberately separate (they grade different things), but
+    // they were separately narrow in the same way: six headers from one directory cannot show
+    // what the parser does with `vlib`, `svm` or `vnet`. The corpus underneath already carries
+    // this seed's closure, so it costs nothing but the metric below — and the metric is the
+    // point.
+    "vnet/session/session_types.h",
 ];
 
 /// gcc's own include directories, asked of gcc rather than guessed.

@@ -1280,6 +1280,7 @@ This has now paid out three times in a row, each time on the first run after a w
 | contract-12 gate: 20 `vppinfra/` seeds → +1 `vnet/` seed | 86 files, ~5 min | **2 layout defects + 1 in the gate itself; 5482 → 8492 assertions** |
 | chasing one failure message out of `vlib/` | one wave | no defect — gcc agrees with chiero — but the message now names the type, which is what turned a compile into a read |
 | the *same* seed, reaching 014 contract 11's conversion census | free | the census was asking `&&`/`||` a question C does not ask; 10 false offenders |
+| 013 contract 19's parse corpus: 6 `vppinfra/` seeds → +1 `vnet/` seed | free, the corpus was already there | **zero defects** — parses clean, 0 diagnostics, memory ratio 1.74x against a 10x bound. Coverage +45% in tokens and a new subsystem. An honest zero, recorded because a table of only wins cannot say when to stop |
 
 The loop, and it is deliberately mechanical:
 
@@ -1456,9 +1457,15 @@ typing the paths ever would.
 >    contract-12 gate is 21 seeds, 113 corpus files, 1939 records, **8492 assertions**, green.
 > 1. **Widen again, per §8.3.** The pattern is now the standing job and the heartbeat runs it.
 >    Unwidened surfaces, roughly in order of expected yield:
->    - **`chiero-parse`'s `vpp_corpus.rs` keeps its *own* six-seed list**, still all `vppinfra/`.
->      The corpus it reads already has 113 files; adding `vnet/session/session_types.h` there
->      costs nothing but the pinned diagnostic metric, and that metric is the point.
+>    - ✅ **`chiero-parse`'s `vpp_corpus.rs`** — done, seven seeds now. Zero defects; the
+>      seed parses clean at 401k tokens (the largest in the corpus by 40%) with 0 diagnostics.
+>    - ⚠️ **The widening has a runtime cost and it is now the suite's dominant one.** Every
+>      corpus-consuming test preprocesses and analyses all 21 seeds, and the new one is ~5x the
+>      size of a `vppinfra/` header — `conversions` and `semantics` each went from ~60s to
+>      several minutes, and a full both-legs `check.sh` is now well over an hour. Before the
+>      next widening, decide whether these gates should share one analysis rather than each
+>      rebuilding it (`corpus_analyses()` already exists for exactly that and only two callers
+>      use it).
 >    - ~~A `vlib/` seed that pulls `trace.h`~~ — **not a parser gap; I was wrong to call it
 >      one.** gcc rejects `#include <vlib/node.h>` at the *same line and column*
 >      (`unknown type name 'vlib_buffer_t'`): that header is simply not self-contained. Any
