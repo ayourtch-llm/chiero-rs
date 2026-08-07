@@ -170,6 +170,33 @@ Two constraints keep this from being dangerous:
   otherwise it is `Estimated` or `Unquantified`. chiero has no cycle model and will not
   pretend to one.
 
+### 3.1 Bit-fields — the field description carries bits, and the reorder never repacks them
+
+A bit-field's extent is *bits inside a storage unit its neighbours share*, which `(offset,
+size)` cannot express. Dropping such a member and summing the rest is how a 72-byte struct
+was told it "would be 8" (§7.7 of the handoff), so the padding proposal was withheld for
+any record holding one — right, and a hole: those are exactly the packed, hand-tuned
+structs where padding matters most.
+
+So the field description carries an optional **bit extent** — bit offset from the start of
+the record, and width in bits, [014 §3](014-semantics-and-types.md)'s `BitField` verbatim
+— and the analysis models it as follows:
+
+- **A maximal run of consecutive bit-fields is one synthetic member** for the padding
+  arithmetic, spanning the first byte its first bit falls in through the last byte its last
+  bit falls in. Runs break at any non-bit-field member, exactly as gcc's allocation units
+  do, so the run's byte extent is a fact about the declared layout rather than a model of
+  the packing rules — which this crate must not re-derive.
+- **The reorder never repacks bits.** Moving the run as a unit is achievable by
+  declaration order alone; claiming the bits could be repacked tighter would require gcc's
+  straddling rules, and an unachievable floor is a number in the flattering direction. So
+  the recovered bytes are a lower bound, and the proposal is one gcc can be asked to check.
+- **Straddling still sees each bit-field individually**, since that finding is a statement
+  about one member and its byte extent is enough to make it.
+
+A record with a member the frontend could not size at all is still partial and still gets
+no padding number; a bit-field is no longer one of those cases.
+
 ## 4. What this crate will not do
 
 No auto-patching, ever — proposals are text. No performance *measurement*; chiero is not a
@@ -246,3 +273,15 @@ explicit advisory label.
 23. A strided loop with no prefetch over a hot structure is reported; adding a matching
     `CLIB_PREFETCH` silences it.
 24. All proposals and their order are byte-identical across runs.
+25. **Bit-fields (§3.1).** `struct { char tag; int big; unsigned a : 1; unsigned b : 1;
+    unsigned c : 1; unsigned d : 1; }` — 12 bytes, gcc — yields a padding proposal of **4
+    recoverable bytes**, and the reordered declaration gcc is handed to check it is 8. That
+    fixture rather than a rounder one **because it discriminates**: counting each bit-field
+    as its own byte sums to 9, rounds to 12, and produces no proposal at all, so an
+    assertion on a struct where the two models agree would pass without seeing anything.
+    The run `a`…`d` appears in the hole evidence under a name that says it is a bit-field
+    run, not under one member's name alone. `struct { char tag; unsigned a : 3; unsigned b
+    : 5; long big; }` — 16 bytes — yields **no** padding proposal, because there is nothing
+    to recover, and **no** blind spot saying the record could not be judged: the two must
+    stay distinguishable. A record holding a member the caller could not size at all still
+    yields neither the number nor silence about it.
