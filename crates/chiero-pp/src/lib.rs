@@ -1192,6 +1192,14 @@ impl Engine {
             Some("pragma") => {
                 let rest = line.get(2..).unwrap_or_default();
                 self.apply_macro_stack_pragma(rest);
+                if let Some(first) = rest.first() {
+                    let text = rest
+                        .iter()
+                        .map(|token| token.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    self.report_diagnostic_pragma(&text, first.token.span);
+                }
                 self.record_pragma_tokens(rest);
             }
             Some(other) => self.diagnostics.push(Diagnostic {
@@ -1241,6 +1249,40 @@ impl Engine {
                 }
             }
         }
+    }
+
+    /// `GCC error "…"` / `GCC warning "…"` — the pragmas that *are* diagnostics.
+    ///
+    /// Text-based rather than token-based so the **one** implementation serves both routes: the
+    /// `#pragma` directive joins its tokens with spaces, and `_Pragma` destringizes to the same
+    /// shape. `diagnostic-pragma-1.c` uses the operator inside a macro, so the message has to
+    /// fire where the macro is *used*, and a second implementation would have drifted from the
+    /// first the way §11.3's duplicated predicate did.
+    ///
+    /// ⚠️ **chiero's `Diagnostic` carries no severity**, so `warning` and `error` are equally
+    /// loud here. That is a real limit; reporting neither would be worse, and grading them needs
+    /// a severity channel this type does not have.
+    fn report_diagnostic_pragma(&mut self, text: &str, span: Span) {
+        let Some(rest) = text.strip_prefix("GCC ") else {
+            return;
+        };
+        let rest = rest.trim_start();
+        let severity = ["error", "warning"]
+            .into_iter()
+            .find(|kind| rest.starts_with(kind));
+        let Some(severity) = severity else { return };
+        let message = rest[severity.len()..].trim();
+        // The operand is one string literal; anything else is not this pragma.
+        let Some(message) = message
+            .strip_prefix('"')
+            .and_then(|m| m.strip_suffix('"'))
+        else {
+            return;
+        };
+        self.diagnostics.push(Diagnostic {
+            span,
+            message: format!("#pragma GCC {severity}: {message}"),
+        });
     }
 
     fn record_pragma_tokens(&mut self, tokens: &[Tok]) {
@@ -1779,9 +1821,11 @@ impl Engine {
                     continue;
                 };
                 {
+                    let text = destringize_pragma(&expanded[0].text);
+                    self.report_diagnostic_pragma(&text, token.token.span);
                     self.pragmas.push(PragmaRecord {
                         span: token.token.span,
-                        text: destringize_pragma(&expanded[0].text),
+                        text,
                     });
                     self.source_map.add_expansion(
                         token.token.span.ctx,
