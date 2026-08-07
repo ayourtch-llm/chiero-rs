@@ -306,13 +306,31 @@ pub struct Budget {
 
 **What exists today** (2026-08-06), because a sketch a reader takes for an inventory is worse
 than no sketch. Built: `max_depth`, `max_loop_iters`, `max_recursion_depth` (per `FuncId` in
-the active stack, §5), `max_states`, `max_forks`, `max_indirect`, `max_resolutions`, and
-`wall_clock`. **Not built: `max_memory_objects` and `max_solver_rlimit`.**
+the active stack, §5), `max_states`, `max_forks`, `max_indirect`, `max_resolutions`,
+`wall_clock`, and — since 2026-08-07 — **`max_solver_rlimit`**, reachable as `--solver-rlimit`.
+**Not built: `max_memory_objects`.**
 
-The second absence is load-bearing rather than cosmetic, and it is where the wall clock's own
-residue lives: the clock is checked *between steps*, so a single long solver query outlives it,
-and `:rlimit` is the deterministic bound that would cut one. Measured on VPP plugins, three
-entry points of 477 still had to be killed from outside for exactly this reason.
+`max_solver_rlimit` is still the right bound and still worth having: the clock is checked
+*between steps*, so a single long solver query outlives it, and `:rlimit` is the deterministic
+one that cuts it — deterministic being the point, since §8.1 forbids a clock from gating output.
+
+> ⚠️ **This paragraph used to end "Measured on VPP plugins, three entry points of 477 still had
+> to be killed from outside for exactly this reason." That attribution was wrong, and it is
+> retracted rather than quietly edited.**
+>
+> The rows were `plugins/unittest/fib_test.c` and `llist_test.c` (two by 2026-08-07, not three).
+> Neither moved under `--solver-rlimit` at any value, and neither moved under `--time-budget`.
+> A stack sample said why: **the time was not in the engine at all.** It was in
+> `chiero_cir::verify::dominators`, which runs before a single instruction executes — no clock,
+> no solver, so no budget this section defines could ever have reached it. The verifier was
+> super-quadratic in the block count (11.5 s for 3001 blocks in a release build, each doubling
+> costing about six times the previous); fixed, both entries complete, and the sweep has **no
+> `timeout` rows left**.
+>
+> The lesson is about the sentence, not the code: *"for exactly this reason"* was written from
+> the shape of the symptom — a step that outran the clock — and the one measurement that would
+> have tested it (does the proposed bound actually cut these rows?) was available the whole
+> time and never taken. **A spec that names a cause has made a claim, and it is testable.**
 
 ### 8.1 Determinism requires that time not gate output
 
