@@ -1305,7 +1305,10 @@ builtins = **382 rows, every value measured from gcc**, and a contract test re-a
 A name it does not cover answers 0 **and says so by name** — which is why `answer` returns
 `Option<u32>`, and which turned the last wave's fix from an investigation into a lookup.
 
-⚖️ **Assessment: harvested.** See §9.1 item 1 — of the 14 findings left, none affects VPP.
+⚖️ **Assessment: harvested.** Of the 14 findings left, **none affects VPP** — 1 is a declared
+scope limit (`__VA_OPT__`), 2 a declared spelling divergence, 2 UB where gcc and clang disagree,
+3 `_Pragma`/`push_macro` (VPP uses it **zero** times), 5 conformance corners simplecpp also fails,
+1 a row for an attribute gcc itself lacks.
 Keep `pp-gate` as a two-minute standing regression check.
 
 ### 7.17 `vnet/ip/` swept, 2026-08-07 — an honest zero, and the class §7.6 predicted
@@ -1499,8 +1502,8 @@ typing the paths ever would.
 > **State: 2026-08-07 — §7.11's seven waves over the preprocessor conformance corpus (nine
 > defects), plus an honest zero on 014 contract 11. `./check.sh` GREEN: 2191 passed across 257
 > suites**, up from 2154 at the session's start. The contract-12 layout gate is 22 seeds / 2238 records / **10248 assertions
-> put to gcc**; pp-gate is 141 C cases, **100 agree**, **14 findings**, and §9.1 item 1 names
-> every remaining one.
+> put to gcc**; pp-gate is 141 C cases, **100 agree**, **14 findings**, every one named and
+> classified in §7.11's assessment.
 >
 > ⏱️ **Budget the clock.** A full both-legs run is over an hour and dominated the last session.
 > Do not start a widening and a full run in the same breath.
