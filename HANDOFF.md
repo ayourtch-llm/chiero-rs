@@ -1552,8 +1552,9 @@ typing the paths ever would.
 >
 > Read **§8.3** first: it is the loop, its yield table, and the trap that let a defect survive
 > for months (*a green gate is evidence about the corpus, not about the tree*). Then §9.1 for
-> the next target — **items 1 and 2 both closed 2026-08-07** (§7.11, §7.12); the first unclaimed
-> one is the unwidened-surfaces entry, and the `-march` item stays parked.
+> the next target — **items 1 and 2 both closed 2026-08-07** (§7.11, §7.12). The first unclaimed
+> one is the **GNU comma-swallow defect**, which is verified against both compilers and scoped;
+> the `-march` item stays parked.
 >
 > 🆕 **The newest entry in the yield table is the most useful one: change the *kind* of corpus,
 > not its size.** 141 preprocessor torture cases found three defects in a session, two of them
@@ -1754,7 +1755,51 @@ typing the paths ever would.
    `-march=x86-64-v2`, so `__SSE4_2__` is undefined and `vppinfra/crc32.h` never defines
    `clib_crc32c_with_init`. The other four are two parser/sema gaps in generated API headers.
 
-4. **Unwidened surfaces, in rough order of expected yield** (§8.3 is the loop):
+4. ### 🎯 **NEXT, and it is a real defect rather than a missing assertion: GNU comma-swallow beside an ordinary paste**
+
+   From the pp-gate's `Todo` cluster (§7.11) — `macro_fn_comma_swallow.c`, and **gcc and clang
+   agree on every row**, so this is not one of the UB rows where the oracles split:
+
+   ```c
+   #define X5(x,...) x##,##__VA_ARGS__
+   5: X5(1)                              /* both compilers: `5: 1` */
+   ```
+
+   chiero answers with a diagnostic — ``token paste `1,` is not one preprocessing token`` — and
+   a wrong stream. It pastes left to right, so `x ## ,` fuses `1` with the comma **before** the
+   second `##` is considered; but that comma is the left operand of a GNU `, ## __VA_ARGS__`,
+   and with an empty variadic argument it is supposed to be *deleted*, leaving `1`.
+
+   So the rule is about **which `##` owns the comma**, and the ordinary left-to-right sweep
+   answers it wrongly by arriving first. Note `paste()` already has a `left is Comma` branch —
+   this session gave it a `!right.paste_op` guard — so the machinery is present and the
+   *sequencing* is what is wrong.
+
+   ⚠️ **Verify the other three rows in the same file before touching anything** (`X2`, `X3`,
+   `X4` above): the gate reports only the first divergence per file, so one fix may or may not
+   move the rest, and §11.2's "a dominant finding is a lid, not a summary" applies to a
+   per-file first-divergence report exactly as it did to the sweep.
+
+   Reproduce: `/home/ubuntu/simplecpp/testsuite/clang-preprocessor-tests/macro_fn_comma_swallow.c`,
+   or the four `#define`s above through `gcc -E -P` beside `preprocess_str`.
+
+5. **A missing assertion rather than a defect: 014 contract 11's other half.**
+   `chiero-sema`'s conversion census says in a comment what it cannot see — that lowering must
+   insert a compare-against-zero per operand of `&&`/`||`, which is contract 11's actual
+   subject. **Lowering does do this correctly** (`truth_of` per operand, checked), so this is a
+   guard, not a fix — but it guards a failure mode that has already bitten: a comparison emitted
+   at the *result* type made the verifier reject the function, so every `x && <double>` in every
+   program lowered to nothing.
+
+   It belongs in `crates/chiero-lower/tests/differential.rs`, which owns the gcc oracle — no
+   shape assertion can answer it, because what makes a wrong compare-against-zero wrong is the
+   number. Fixtures must discriminate (§10); these do, and gcc's answers are already measured:
+   `-0.0 && 1` → **0** (a bit-pattern comparison says 2), `(1LL<<32) && 1` → **1** (32-bit
+   narrowing says 0), `(2 && 4) + (2 || 4) * 10` → **11** (forwarding an operand says 44), plus
+   short-circuiting asserted in *both* directions, since the negative rows alone are passed by
+   an implementation that never evaluates the right operand at all.
+
+6. **Unwidened surfaces, in rough order of expected yield** (§8.3 is the loop):
    - **The sema corpus gate's contract 11** (re-lex round trip) and **contract 19**
      (per-`ConfigId` sites) are listed in §7 as owed and have **no corpus at all**.
    - **014 contract 11's census does not ask its own question of `&&`/`||`.** It checked that
@@ -1766,7 +1811,7 @@ typing the paths ever would.
    - `vnet/ip*` and `plugins/*/` beyond one function per file are untouched by the find-bugs
      sweep; `pick_entries.py --per-file N <files>` takes a list.
 
-5. **⚠️ Settle the corpus runtime before widening much further.** Every corpus-consuming test
+7. **⚠️ Settle the corpus runtime before widening much further.** Every corpus-consuming test
    preprocesses, parses and analyses all 22 seeds. Sharing one `PreprocessorSession` across seeds
    bought ~15% (`conversions` 62→53 s, `vpp_layout_gate` 62→58 s, `vpp_corpus` 16→13 s) — **less
    than hoped, and it says where the cost is**: not lexing, but parse and analyse, which no cache
@@ -1776,26 +1821,26 @@ typing the paths ever would.
    and reloaded — a real design question, and **020's CIR text format may already be most of the
    answer**.
 
-6. **A step that outlives the clock.** Three find-bugs entries still need the outer `timeout`; one
+8. **A step that outlives the clock.** Three find-bugs entries still need the outer `timeout`; one
    ran 10 s against a 5 s budget inside a symbolic-offset enumeration. The clock is only checked
    *between* steps, and 022 §8's `max_solver_rlimit` — deterministic work units — is specified and
    unimplemented. That is the principled bound for the solver half.
 
-7. **`InstKind::Call` carries no result type**, so an indirect call's result width is whatever
+9. **`InstKind::Call` carries no result type**, so an indirect call's result width is whatever
    candidate ran. The arity and parameter-type filters cut the wildest cases and cannot close it;
    the engine survives the rest by degrading. The real fix is a CIR change — **135 sites**
    construct `InstKind::Call`, and the text format needs syntax for it.
 
-8. **`MemFault::BadRange`** — same class as `is_chiero_limit`, held back because three `step.rs`
+10. **`MemFault::BadRange`** — same class as `is_chiero_limit`, held back because three `step.rs`
    tests use it as their only objectless non-fatal probe. Give them one (a new non-fatal
    objectless *defect* fault, or a different keying fixture) and move it.
 
-9. **032 contract 18's corpus still has no `observed` entry** and the gate correctly exits 1
+11. **032 contract 18's corpus still has no `observed` entry** and the gate correctly exits 1
    saying "NOT MEASURED". Method, learned the hard way (§7.1): **revert a historical fix's `src/`
    diff onto HEAD and run the suite** rather than hunting for a commit whose parent happens to
    fail. Two builds and ~40 minutes bought one rejected candidate the other way.
 
-10. **`:0` bit-fields in `layout`, deliberately left open** (§7.9). A record declaring a
+12. **`:0` bit-fields in `layout`, deliberately left open** (§7.9). A record declaring a
    zero-width bit-field still gets no padding number, because a `:0`-terminated run's cost depends
    on where the run is placed and this arithmetic sums constants. Closing it needs the run's
    allocation unit in the field description — `Field` would carry `unit_bits`, and the ideal
