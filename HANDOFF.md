@@ -1518,7 +1518,10 @@ and `clippy -D warnings` **two errors** — because CI runs three legs and it ra
 was honest about *what it measured*, and the word it printed was "GREEN". **When a local gate
 and a remote one disagree about scope, the local one is the one that lies**, because it is the
 one somebody trusts before pushing. Widened 2026-08-07; the one leg still missing is named in
-the file itself.
+the file itself. **It paid twice within the hour of being written** — an unformatted line on the
+first real use, then two `clippy -D warnings` errors on the second, both in code committed
+minutes earlier and both caught in seconds. The old script would have called each of those runs
+GREEN after an hour of tests, and CI would have refused the push.
 
 ⚠️ **And its twin: an *unchanged* number is evidence about the corpus too.** Retaking the pinned
 40 after `BadRange` left the defect list gave byte-identical numbers. The tempting readings are
@@ -1580,10 +1583,11 @@ typing the paths ever would.
 > panics on the C standard's own worked example, after four consecutive widenings of VPP-shaped
 > corpora had begun returning honest zeros. §11.3 carries the general form.
 >
-> **State: 2026-08-07 — `./check.sh` GREEN at 2221 passed across 264 suites, fmt and clippy
+> **State: 2026-08-07 — `./check.sh` GREEN at 2225 passed across 264 suites, fmt and clippy
 > clean.** That is the first run verified against all three CI legs; the tree had been **red in
 > CI** (26 fmt diffs, 2 clippy errors) while the old one-leg script called it green. Closed this
-> session: `MemFault::BadRange` and 023 §8's `max_solver_rlimit`.
+> session: `MemFault::BadRange`, 023 §8's `max_solver_rlimit`, and `--solver-rlimit` on the
+> three commands that run a solver.
 >
 > *Earlier in the session, at 2215/263, measured after the `BadRange` closure:* Up from 2154 at the previous session's start and 2193/258 before the
 > last two preprocessor closures. Earlier in the session: §7.11's seven waves over the
@@ -1721,9 +1725,33 @@ typing the paths ever would.
    fake solver answering `unknown` with a chosen reason; z3 cannot be made to decline a theory
    on demand, and that is a property of the z3 build rather than of chiero.
 
-   **Left here:** no surface sets it — `--solver-rlimit` on the CLI is the next step — and
-   023 §8's `max_memory_objects` is still unbuilt beside it. The three `timeout` rows in the
-   plugin sweep have not been re-measured against the new bound.
+   ✅ **`--solver-rlimit` shipped 2026-08-07**, on `find-bugs`, `check-reachable` and
+   `prove-equivalent` — and writing it found that the wave above had reached **one of three**
+   solver construction sites.
+
+   ⚠️ **The commit that built the budget claimed `Engine::new_solver` was "the single
+   construction point" and invoked *fix the rule, not the site* — while missing two sites and a
+   whole command.** A run builds a solver in three places: `Engine::new_solver` (feasibility and
+   checkers), `chiero-tool::witness_for_path` (`check-reachable`'s witness, built *outside*
+   `Engine` because a state that merely arrived carries no finding), and `chiero-opt::equiv`.
+   Only the first was wired, and the CLI never set the equivalence budget at all. **Saying "one
+   construction point" is not the same as making one** — `grep -rn "TieredSolver::" --include=*.rs`
+   is the four-second check that settles it, and it was not run.
+
+   The defect was invisible to every envelope field. What found it: a recording script as
+   `$CHIERO_SMT_SOLVER`, showing `(set-option :timeout 9000)` on the wire and **no `:rlimit`**.
+
+   **Two fixture traps worth keeping, both of which make a budget test vacuous:**
+   - **`x * 2` against `x << 1` — 041's own headline example — never reaches a backend.** Tier 1
+     settles it. A test built on it passes whatever the plumbing does. Count dumped queries
+     (`CHIERO_DUMP_QUERIES`) before believing a solver fixture exercises a solver.
+   - **At `:rlimit 1` z3 cannot even run `(push 1)`**, and emits an `(error …)` line that chiero
+     reports as "backend gave no usable answer". Honest, and a different sentence from the one
+     under test. Use 2000.
+
+   **Left here:** 023 §8's `max_memory_objects` is still unbuilt beside it, and the three
+   `timeout` rows in the plugin sweep have not been re-measured against the new bound — which is
+   the measurement that would say whether the feature earns its keep on real code.
 
    *The measurements that shaped it, kept because they are about z3 rather than about chiero:*
    `UnknownReason::ResourceLimit` existed and was **constructed nowhere**; nothing read
@@ -2004,6 +2032,18 @@ doubles the wake-ups.
   panic the commit was named for. ⚠️ **When a fix introduces a piece of state, ask separately who
   clears it**, and prefer one place at a boundary ("nothing leaves this pass still armed") over a
   guard in each branch that happens to leak today.
+
+  ⚠️ **Third instance, 2026-08-07, and this one is about the sentence rather than the code.** The
+  commit building `max_solver_rlimit` wrote *"`Engine::new_solver` replaces two identical
+  construction blocks… a budget that applied to feasibility queries but not to checker queries is
+  not a budget"* — correct reasoning, stated as though done, over **one of three** places a run
+  builds a solver. **Claiming a single construction point is not the same as making one.** The
+  census that settles it is one command (`grep -rn "TieredSolver::" --include=*.rs`) and takes
+  four seconds, and it was not run *because the commit message had already argued the point*.
+  §7.2's rule, from a new direction: a plausible rationale is not evidence, and writing an
+  emphatic one makes the check feel redundant exactly when it is not.
+  **When a commit message says "every" or "the single", run the enumeration before the sentence
+  ships** — the same discipline §11.3's last entry asks for on `ExprKind`'s variants.
 - **A corpus of a new *kind* beats a wider slice of the same kind.** Twenty VPP headers became
   twenty-two and found real defects; 141 preprocessor torture cases found three in one wave,
   including two panics on the C standard's own worked example. Real code exercises constructs *as
