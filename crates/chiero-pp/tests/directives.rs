@@ -279,15 +279,30 @@ fn lexer_diagnostics_are_promoted_only_on_active_lines() {
     assert!(inactive.diagnostics.is_empty());
 }
 
+/// ⚠️ **This asserted `diagnostics.is_empty()` and that is the assertion the feature-query wave
+/// removed on purpose.** A name `features::TABLE` does not cover is *ignorance*, and gcc
+/// happening to agree — it also answers 0 for `not_a_real_builtin` — does not turn a guess into
+/// knowledge. The value is still pinned; what is new is that the guess is now recorded.
+///
+/// The discriminating half is `__has_builtin(__builtin_expect)`, which the table *does* cover:
+/// it answers 1 as gcc does, in silence. Without that row this test would pass under an
+/// implementation that answered 0 to everything and complained about it, which is the previous
+/// defect wearing a diagnostic.
 #[test]
 fn predefined_and_feature_test_macros_drive_conditionals() {
     let src = "#if __STDC__ == 1 && defined(__x86_64__)\nplatform\n#endif\n\
-               #if __has_builtin(not_a_real_builtin)\nwrong\n#else\nfallback\n#endif\n";
+               #if __has_builtin(not_a_real_builtin)\nwrong\n#else\nfallback\n#endif\n\
+               #if __has_builtin(__builtin_expect)\nknown\n#else\nalso_wrong\n#endif\n";
     let tu = preprocess_str("predefined.c", src, Config::default());
-    assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
     assert_eq!(
         tu.token_texts().collect::<Vec<_>>(),
-        ["platform", "fallback"]
+        ["platform", "fallback", "known"]
+    );
+    assert_eq!(tu.diagnostics.len(), 1, "{:?}", tu.diagnostics);
+    assert!(
+        tu.diagnostics[0].message.contains("not_a_real_builtin"),
+        "the diagnostic must name the name it guessed about: {:?}",
+        tu.diagnostics
     );
 }
 

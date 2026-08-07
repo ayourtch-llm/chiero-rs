@@ -234,6 +234,44 @@ VPP does not build without these:
 nondeterministic preprocessor would break every golden test
 ([001 §5](001-architecture.md), determinism).
 
+### 4.1 The compiler persona, and what the feature queries answer for
+
+**chiero's predefine set is an impersonation of the build compiler, not a self-report.** The
+baked set claims **gcc 13.3 on x86-64**, and `chiero-cli` replaces it wholesale with a real
+`cc -dM` capture when one is available. Everything follows from that:
+
+- `__has_attribute(x)` and `__has_builtin(x)` answer **what the impersonated compiler
+  recognizes**, never what chiero models. chiero acts on four attributes and models a handful of
+  builtins; answering from *that* would make every system header configure for a compiler which
+  has never existed, and chiero would then analyse a program nobody compiles. By the same
+  argument `__GNUC__` would have to be undefined, which nobody proposes.
+- The answers live in a **table measured from the impersonated compiler**, because there is no
+  rule to derive them from: `packed` is supported and `minsize` is not, `__builtin_bswap128` is
+  and `__builtin_bit_cast` is not. A test re-asks the real compiler for every row, since a table
+  of remembered answers nobody re-checks drifts silently into deciding which branch every header
+  takes.
+- A name the table **does not cover** answers `0` — `#if` must yield a number and there is no
+  third value — and the guess is recorded as a diagnostic naming the name. That is the same
+  in-band/out-of-band split as `Selection::NeedsAst` and `Tier1Report::unreadable`: the number
+  cannot carry "I do not know", so something beside it must. One diagnostic per distinct name per
+  TU; `sys/cdefs.h` alone queries many times.
+- **The queries are evaluated in `#if` expressions and in program text**, because both gcc and
+  clang do: `int y = __has_attribute(packed);` compiles to `int y = 1;`. They are evaluated
+  *after* macro expansion, because that is where they arrive — `__glibc_has_attribute(attr)`
+  expands *to* `__has_attribute (attr)`. `defined` is the opposite case and is rewritten before
+  expansion, as C requires.
+- The names are **defined but never expanded**. `#ifdef __has_attribute` must be true as it is
+  under gcc, and expanding them would consume the query before it could be answered.
+
+⚠️ **Removing them from the predefine set is not a conservative option.** With `__has_attribute`
+undefined, `#if defined __has_attribute && __has_attribute (packed)` is a hard error under gcc
+itself — `#if` parses the whole expression whatever short-circuiting would do — which is the
+idiom `sys/cdefs.h`'s own comment exists to warn about.
+
+**Every version macro the persona implies must be present.** `__GNUC__` without
+`__GNUC_MINOR__` makes glibc's `__GNUC_PREREQ` constant `0`, collapsing every version shield in
+every header — a whole-tree configuration change from one absent predefine.
+
 ## 5. Output
 
 ```rust
@@ -302,3 +340,13 @@ mitigations: per-TU expansion tables dropped after lowering, retaining only the
     are the oracle; the corpus supplies inputs only. A case both compilers *reject* is
     reported as a distinct outcome according to whether chiero rejected it too — a
     missing diagnostic is a finding, not an unmeasured row.
+23. **The feature queries answer as the persona, and say when they are guessing** (§4.1).
+    `#if __has_attribute(packed)` and `#if __has_builtin(__builtin_expect)` are 1;
+    `__has_attribute(minsize)` and `__has_builtin(__builtin_debugtrap)` are 0 **with no
+    diagnostic**, because the table covers them and gcc agrees; a name the table does not cover
+    is 0 **with** a diagnostic naming it, once per distinct name. `#ifdef __has_attribute` is
+    true. The guarded idiom `#if defined __has_attribute && __has_attribute (packed)` evaluates,
+    as does the same query reached through a wrapper macro, and the same query in program text.
+    Every table row is re-asked of the real compiler.
+24. **`__GNUC_PREREQ(4,9)` is true under the baked persona** (§4.1). A `__GNUC__` with no
+    `__GNUC_MINOR__` makes it constant 0 and silently reconfigures every glibc header.

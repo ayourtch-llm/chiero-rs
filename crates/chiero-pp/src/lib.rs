@@ -209,6 +209,12 @@ impl HideSet {
 #[derive(Clone, Debug)]
 struct StoredMacro {
     def: MacroDef,
+    /// **Defined, and never expanded.** `__has_attribute` and friends must answer `defined()`
+    /// and `#ifdef` like gcc, but they are not macros: gcc evaluates them as operators inside a
+    /// `#if` expression and leaves them as ordinary identifiers in program text. Expanding them
+    /// would consume the query before `eval_if` could answer it — which is exactly what happened
+    /// to `__glibc_has_attribute(attr)`, whose expansion *produces* the query.
+    query_only: bool,
     name: String,
     params: Vec<String>,
     variadic_name: Option<String>,
@@ -366,6 +372,12 @@ struct Engine {
     conditionals: Vec<ConditionalRecord>,
     counter: u64,
     expansion_depth: usize,
+    /// Feature-query names `features::TABLE` had no answer for, so each is reported once.
+    ///
+    /// `sys/cdefs.h` alone queries many times per TU, so a diagnostic per *query* would drown
+    /// the channel it is reported in. One per distinct name is what makes an unknown name
+    /// readable as a to-do rather than as noise.
+    unknown_queries: BTreeSet<String>,
 }
 
 impl Engine {
@@ -409,6 +421,7 @@ impl Engine {
             config,
             source_map,
             lex_session,
+            unknown_queries: BTreeSet::new(),
             root_path: path.to_path_buf(),
             input,
             deps: vec![file],
@@ -438,7 +451,14 @@ impl Engine {
             ("__STDC__", "1"),
             ("__STDC_HOSTED__", "1"),
             ("__STDC_VERSION__", "201112L"),
+            // **The baked set is a persona: gcc 13.3 on x86-64.** `__GNUC_MINOR__` is not
+            // optional decoration — `features.h` defines `__GNUC_PREREQ(maj,min)` as constant
+            // `0` unless *both* it and `__GNUC__` exist, so omitting it collapsed every version
+            // shield in every glibc header for any consumer that does not populate
+            // `Config::defines` from a real compiler.
             ("__GNUC__", "13"),
+            ("__GNUC_MINOR__", "3"),
+            ("__GNUC_PATCHLEVEL__", "0"),
             ("__x86_64__", "1"),
         ] {
             engine.add_predefined_object(name, value);
@@ -465,6 +485,13 @@ impl Engine {
         let input = std::mem::take(&mut self.input);
         let root_path = self.root_path.clone();
         let output = self.process_tokens(input, &root_path, 0, loader);
+        // **The feature queries are answered in program text too, because both compilers answer
+        // them there.** Verified rather than assumed: `int y = __has_attribute(packed);` comes
+        // out of gcc *and* clang as `int y = 1;`. A first version of this left them alone
+        // outside `#if`, on the plausible-sounding rule that they are preprocessor operators —
+        // and the pp-gate caught it immediately, with `__has_attribute` sitting in the output
+        // token stream where both compilers had put a number.
+        let output = self.answer_feature_queries(output);
         // **A stray character is one that reaches the program** (C 6.4p3). 010 classifies a
         // character C has no use for as `Other` and says nothing, because at that point it does
         // not know: gcc takes `S(a\b)` where `#define S(x) #x` stringizes the backslash, and
@@ -795,6 +822,7 @@ impl Engine {
         let index = self.macros.len();
         // No body to mark: a builtin's replacement is computed at each use, not stored.
         self.macros.push(StoredMacro {
+            query_only: false,
             def: MacroDef {
                 id,
                 name: name_symbol,
@@ -821,6 +849,7 @@ impl Engine {
         let mut body = vec![synthetic_number(value, Span::DUMMY)];
         mark_paste_operators(&mut body);
         self.macros.push(StoredMacro {
+            query_only: false,
             def: MacroDef {
                 id,
                 name: name_symbol,
@@ -848,6 +877,10 @@ impl Engine {
         let mut body = vec![synthetic_number("0", Span::DUMMY)];
         mark_paste_operators(&mut body);
         self.macros.push(StoredMacro {
+            // Defined so `#ifdef __has_attribute` is true as it is under gcc, and never
+            // expanded so `eval_if` still sees the query — including the one that arrives by
+            // expanding `__glibc_has_attribute(attr)`.
+            query_only: true,
             def: MacroDef {
                 id,
                 name: name_symbol,
@@ -908,6 +941,7 @@ impl Engine {
         };
         mark_paste_operators(&mut body);
         self.macros.push(StoredMacro {
+            query_only: false,
             def: MacroDef {
                 id,
                 name: name_symbol,
@@ -1206,7 +1240,21 @@ impl Engine {
                 i += 1;
             }
         }
+        // **The feature queries are answered after expansion, because that is where they
+        // arrive.** `__glibc_has_attribute(attr)` *expands to* `__has_attribute (attr)`, so a
+        // pre-expansion rewrite sees `__glibc_has_attribute` and nothing else — which is how the
+        // first version of this answered `NOT` to the very idiom `sys/cdefs.h` is built around.
+        // gcc evaluates them at the same point for the same reason. `defined` is the opposite
+        // case and must stay before expansion, as C requires.
         let expanded = self.expand(prepared);
+        let expanded = self.answer_feature_queries(expanded);
+        // **`__has_include` arrives the same way and needs the same pass.** A wrapper like
+        // `#define HI(x) __has_include(x)` puts the query into the stream only *after*
+        // expansion, so the pre-expansion arm above never sees it — and once these names stopped
+        // being expandable, what used to expand to nothing and read as `0` became an identifier
+        // the expression parser choked on. Answered here, with the loader the pre-expansion arm
+        // already uses.
+        let expanded = self.answer_has_include(expanded, current, loader);
         let (value, parsed, ended_early) = {
             let mut parser = ExprParser {
                 tokens: &expanded,
@@ -1441,6 +1489,7 @@ impl Engine {
         };
         mark_paste_operators(&mut body);
         self.macros.push(StoredMacro {
+            query_only: false,
             def: MacroDef {
                 id,
                 name: name_symbol,
@@ -1490,6 +1539,95 @@ impl Engine {
             }
         }
         self.by_name.insert(name, index);
+    }
+
+    /// Replace a post-expansion `__has_include(...)` with `1` or `0`.
+    ///
+    /// Separate from [`Self::answer_feature_queries`] because it needs the file loader, and
+    /// because its operand is a header name — a token *sequence* (`<a/b.h>` lexes as several
+    /// tokens) rather than one identifier.
+    fn answer_has_include(
+        &mut self,
+        tokens: Vec<Tok>,
+        current: &Path,
+        loader: &mut dyn FileLoader,
+    ) -> Vec<Tok> {
+        if !tokens.iter().any(|token| token.text == "__has_include") {
+            return tokens;
+        }
+        let mut out = Vec::with_capacity(tokens.len());
+        let mut i = 0;
+        while i < tokens.len() {
+            if tokens[i].text == "__has_include"
+                && tokens.get(i + 1).is_some_and(|token| token.text == "(")
+                && let Some(close) = tokens[i + 2..]
+                    .iter()
+                    .position(|token| token.text == ")")
+                    .map(|offset| i + 2 + offset)
+            {
+                let operand: Vec<Tok> = tokens[i + 2..close].to_vec();
+                let value = self.probe_include(&operand, current, loader);
+                out.push(synthetic_number(
+                    if value { "1" } else { "0" },
+                    tokens[i].token.span,
+                ));
+                i = close + 1;
+            } else {
+                out.push(tokens[i].clone());
+                i += 1;
+            }
+        }
+        out
+    }
+
+    /// Replace `__has_attribute(NAME)` / `__has_builtin(NAME)` with `1` or `0`.
+    ///
+    /// Answers come from [`features::TABLE`] — gcc 13's, because chiero's predefine set is an
+    /// impersonation of the build compiler rather than a self-report. A name the table does not
+    /// cover answers `0`, since `#if` must yield a number, and says so once per distinct name.
+    fn answer_feature_queries(&mut self, tokens: Vec<Tok>) -> Vec<Tok> {
+        if !tokens
+            .iter()
+            .any(|token| matches!(token.text.as_str(), "__has_attribute" | "__has_builtin"))
+        {
+            return tokens;
+        }
+        let mut out = Vec::with_capacity(tokens.len());
+        let mut i = 0;
+        while i < tokens.len() {
+            if matches!(tokens[i].text.as_str(), "__has_attribute" | "__has_builtin")
+                && tokens.get(i + 1).is_some_and(|token| token.text == "(")
+                && tokens.get(i + 3).is_some_and(|token| token.text == ")")
+                && let Some(name) = tokens.get(i + 2)
+            {
+                let query = tokens[i].text.clone();
+                let value = match features::answer(&query, &name.text) {
+                    Some(supported) => supported,
+                    None => {
+                        if self.unknown_queries.insert(name.text.clone()) {
+                            self.diagnostics.push(Diagnostic {
+                                span: tokens[i].token.span,
+                                message: format!(
+                                    "`{query}({})` is not in chiero's compiler-persona table; \
+                                     answered 0, which may not be what the build compiler says",
+                                    name.text
+                                ),
+                            });
+                        }
+                        false
+                    }
+                };
+                out.push(synthetic_number(
+                    if value { "1" } else { "0" },
+                    tokens[i].token.span,
+                ));
+                i += 4;
+            } else {
+                out.push(tokens[i].clone());
+                i += 1;
+            }
+        }
+        out
     }
 
     fn expand(&mut self, input: Vec<Tok>) -> Vec<Tok> {
@@ -1568,6 +1706,10 @@ impl Engine {
                 output.push(token);
                 continue;
             };
+            if self.macros[macro_index].query_only {
+                output.push(token);
+                continue;
+            }
             let def = self.macros[macro_index].clone();
             if token.hide.contains(&def.def.id) {
                 output.push(token);

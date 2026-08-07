@@ -168,6 +168,65 @@ fn the_guarded_idiom_from_sys_cdefs_h_works() {
     assert_eq!(texts, vec!["PACKED"], "diagnostics: {:?}", tu.diagnostics);
 }
 
+/// `__has_include` reached **through a wrapper macro**, which is the same rule one query over.
+///
+/// A regression this wave introduced and then caught: once the query names stopped being
+/// expandable, `#define HI(x) __has_include(x)` left `__has_include` in the stream as an
+/// identifier the expression parser choked on. It had never *worked* — before, it expanded to
+/// nothing and read as `0`, silently answering NO to a header that exists — so the wrapper form
+/// is asserted here for the first time, in both directions, against gcc.
+#[test]
+fn has_include_is_answered_after_expansion_too() {
+    struct DiskLoader;
+    impl chiero_pp::FileLoader for DiskLoader {
+        fn load(&mut self, path: &std::path::Path) -> std::io::Result<String> {
+            std::fs::read_to_string(path)
+        }
+    }
+    let config = || Config {
+        system_paths: vec![
+            "/usr/include".into(),
+            "/usr/lib/gcc/x86_64-linux-gnu/13/include".into(),
+            "/usr/include/x86_64-linux-gnu".into(),
+        ],
+        ..Config::default()
+    };
+    for (source, expected) in [
+        ("#if __has_include(<stdio.h>)\nYES\n#else\nNO\n#endif\n", "YES"),
+        (
+            "#if __has_include(<no_such_header_xyzzy.h>)\nYES\n#else\nNO\n#endif\n",
+            "NO",
+        ),
+        (
+            "#define HI(x) __has_include(x)\n#if HI(<stdio.h>)\nYES\n#else\nNO\n#endif\n",
+            "YES",
+        ),
+        (
+            "#define HI(x) __has_include(x)\n#if HI(<no_such_header_xyzzy.h>)\nYES\n#else\nNO\n#endif\n",
+            "NO",
+        ),
+    ] {
+        let tu = chiero_pp::preprocess_with_loader("q.c", source, config(), &mut DiskLoader);
+        let texts: Vec<_> = tu.token_texts().collect();
+        assert_eq!(texts, vec![expected], "{source} — {:?}", tu.diagnostics);
+        assert!(tu.diagnostics.is_empty(), "{source} — {:?}", tu.diagnostics);
+    }
+}
+
+/// The queries evaluate in **program text**, not only in `#if`.
+///
+/// Both compilers do: `int y = __has_attribute(packed);` comes out of gcc *and* clang as
+/// `int y = 1;`. This is asserted because a plausible-sounding rule — "they are preprocessor
+/// operators, so they belong to `#if`" — was believed for one commit, and the pp-gate found
+/// `__has_attribute` sitting in an output stream where both compilers had put a number.
+#[test]
+fn the_queries_evaluate_in_program_text() {
+    let source = "int y = __has_attribute(packed);\n";
+    let tu = preprocess_str("q.c", source, Config::default());
+    let texts: Vec<_> = tu.token_texts().collect();
+    assert_eq!(texts, vec!["int", "y", "=", "1", ";"]);
+}
+
 /// `#ifdef __has_attribute` must stay true — gcc defines both names, and a header that checks
 /// before querying is the common case rather than the exception.
 #[test]
