@@ -1009,12 +1009,28 @@ real hazard, and the line between "chiero lost track of this pointer" and "this 
 wild pointer" is where the answer is. **Decide that before filtering**, or a real
 `WildPointer` class gets suppressed with them.
 
-⚠️ **`MemFault::BadRange` belongs to the `is_chiero_limit` class and deliberately is not in it.**
-"unsupported-access-width" on a 32-byte AVX load is the same sentence about chiero. It still
-reports because three tests in `chiero-exec/tests/step.rs` use it as their probe for
-`FindingKey`'s `func` and `span` components, and it is the only **objectless non-fatal** fault
-there is — `NullDeref` and `WildPointer` are both fatal, so neither can produce two findings on
-one path. Give those tests a probe first.
+~~⚠️ **`MemFault::BadRange` belongs to the `is_chiero_limit` class and deliberately is not in
+it.**~~ **Closed 2026-08-07** — it is in it, and a 32-byte AVX load now degrades to
+`Fidelity::Unknown` with a named assumption instead of appearing in a defect list.
+
+The blocker was never an argument, it was two fixtures: `BadRange` was the only **objectless
+non-fatal** fault there is (`NullDeref` and `WildPointer` are objectless and fatal), so it was
+the only way to put two findings agreeing on `object` on one path, and two of `FindingKey`'s
+component probes were written with it. **The way past it was to stop needing objectless at all**
+— what `func` and `span` defend against is two findings agreeing on the other three components,
+and a *shared* object reaches that just as well as an absent one. The probes are now one alloca
+`memcpy`'d onto itself in a callee and again in the caller.
+
+Two things that cost minutes and would have cost a wave each:
+
+- **`uninitialized-read` is not repeatable.** Two reads of the same uninitialized bytes are
+  **one** finding — the first read's invented value is written back, so the second has nothing
+  to say. A span probe built on it silently measures nothing. `overlapping-copy` is the
+  non-fatal fault that does repeat.
+- **The mutants are the evidence, not the reasoning** (§11.3). `func := FuncId(0)` at the three
+  `FindingKey {` construction sites kills the func probe and leaves the span one passing;
+  `span := Span::DUMMY` does the converse. Without running both, neither probe is distinguishable
+  from a fixture that merely passes.
 
 `--entry-ptr-nonnull` (`BugCfg::entry_ptr_nonnull`) and `--report-invented-bounds`
 (`BugCfg::report_invented_bounds`) are the two knobs this wave added; both are on `find-bugs`,
@@ -1536,9 +1552,8 @@ typing the paths ever would.
 > ✅ **The owner's close-the-gap ask is DONE — pp-gate reports 0 findings** (§7.11). Keep it as a
 > two-minute standing check.
 >
-> Next: §9.1's live items, the readiest being `MemFault::BadRange` (⚠️ its blocker is **real** —
-> I tested the way round and it fails; the mutant recipe is in the entry). The `-march` item
-> stays parked for the owner.
+> ✅ **`MemFault::BadRange` is CLOSED (2026-08-07)** — it degrades now instead of reporting.
+> Next: §9.1's remaining live items. The `-march` item stays parked for the owner.
 >
 > 🆕 **The newest entry in the yield table is the most useful one: change the *kind* of corpus,
 > not its size.** 141 preprocessor torture cases found three defects in a session, two of them
@@ -1623,26 +1638,13 @@ typing the paths ever would.
    the engine survives the rest by degrading. The real fix is a CIR change — **135 sites**
    construct `InstKind::Call`, and the text format needs syntax for it.
 
-6. ### **`MemFault::BadRange`** — the blocker is real, and I tested the way past it and it fails.
-   "unsupported-access-width" on a 32-byte AVX load is a sentence about **chiero**, not about the
-   program, so it belongs in `is_chiero_limit` beside `SymbolicByte`. It is held back because
-   three tests in `chiero-exec/tests/step.rs` use it as their probe for `FindingKey`'s
-   `func`/`span` components, needing a fault that is **objectless** and **non-fatal**.
-
-   ⚠️ **I recorded here that `NullDeref` on two paths would serve, since a fatal fault ends its
-   path and not the run. Measured: it does not.** A two-path fixture with a null store in two
-   different functions produces two findings *and passes with the `func` component of
-   `FindingKey` neutralised* — while the existing `BadRange` test **fails** under that same
-   mutant. Deduplication happens **within a path**, so two findings on two paths never compete
-   for one key and never exercise it. **The note's "on one path" was load-bearing and I read it
-   as incidental.**
-
-   So the original options stand and there is no shortcut: either a **genuinely new objectless
-   non-fatal fault**, or a keying fixture that puts two objectless faults on one path some other
-   way. Before writing either, **mutate `FindingKey.func` to a constant and confirm the candidate
-   fails** — that mutant is three lines (the three `FindingKey {` construction sites, not the
-   struct definition, and not the `func:` fields of other structs) and it is the only thing that
-   distinguishes a probe from a fixture that merely passes.
+6. ~~### **`MemFault::BadRange`**~~ — **CLOSED 2026-08-07.** See §7's entry. The two stated
+   options were both wrong because the premise was: the probes did not need an *objectless*
+   fault, only two findings agreeing on `object`, which a **shared** object gives just as well.
+   Both mutants confirm the replacements. ⚠️ The lesson generalises past this item —
+   **when a blocker is stated as "we need a thing of kind X", check whether the requirement is
+   X or the property X was being used for.** Two waves were spent hunting for an objectless
+   non-fatal fault that does not exist.
 
 7. **032 contract 18's corpus still has no `observed` entry** and the gate correctly exits 1
    saying "NOT MEASURED". Method, learned the hard way (§7.1): **revert a historical fix's `src/`
@@ -1890,6 +1892,15 @@ doubles the wake-ups.
   being an edge asserted without reading the corpus, a fact about gcc written from memory, and a
   queue entry naming the wrong spec. **Reasoning here is good enough to generate candidates and
   not good enough to skip verifying them.**
+- ⚠️ **A blocker stated as "this needs a thing of kind X" is a claim about X, and usually the
+  requirement is not X but the property X was being used for.** `BadRange` sat outside
+  `is_chiero_limit` for waves because two `FindingKey` probes needed an **objectless** non-fatal
+  fault and it was the only one in existence. A wave went into hunting for another; the note
+  even recorded a route that turned out to be wrong. What the probes actually needed was *two
+  findings agreeing on the `object` component* — and a **shared** object gives that as well as
+  an absent one does. The fix was a fixture, not a new fault kind.
+  **Restate a blocker as the property before accepting it as a search.** The tell is a
+  requirement phrased with a type name in it.
 - ⚠️ **A type coarser than the thing it models makes defects invisible to tests, not impossible
   in code.** `features::TABLE` held a `bool` for a query that returns a *version number*, so six
   rows claiming `1` where gcc says `201904` were agreed with by a test comparing `bool` to
