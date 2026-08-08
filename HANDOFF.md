@@ -1807,10 +1807,15 @@ typing the paths ever would.
 
    ⚠️ **A RED was attempted and thrown away, which is the useful part of this entry.** A `.cir`
    fixture looping over a symbolic entry pointer produced **one** binding and a 1 170-byte
-   envelope — nothing like the VPP case. Whatever mints ten thousand *distinct* lazy bindings is
-   not "read bytes through a symbolic pointer in a loop", and **finding out what it is comes
-   before writing the test.** Committing that fixture would have been a test passing for the
+   envelope — nothing like the VPP case. Committing it would have been a test passing for the
    wrong reason, which is the failure this file has recorded three times today.
+
+   ✅ **And then the mechanism was found, which is what the fixture needed.**
+   `Memory::materialize_fresh` (`chiero-mem/src/lib.rs`) mints **one 8-bit symbol per byte** —
+   `uninit_<objid>_<k>` — pushing a `MintedSymbol` each, and it does so for the whole `size` of a
+   single call. So *one wide read or copy of an uninitialised region mints thousands at once*,
+   which is exactly why reading a byte at a time through a symbolic pointer did not reproduce it.
+   **The fixture to write is a wide `copymem` out of a large uninitialised alloca**, not a loop.
 
 5c. 🆕 **Three `timeout` rows in `plugins/nsh/`** — `format_nsh_header`, `nsh_md2_decap`,
    `nsh_md2_encap`, from the widened sweep (2026-08-08). The verifier fix removed the cause the
