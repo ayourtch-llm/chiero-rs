@@ -1733,6 +1733,25 @@ typing the paths ever would.
    - **`__has_attribute(error)` answered 0; gcc answers 1** — the persona's own documented
      failure mode, found in 20 TUs that all build `_FORTIFY_SOURCE=2`.
 
+   🆕 **A second instrument, and it finds what the gate structurally cannot.** Intersect gcc's
+   401 predefines with the identifiers VPP actually tests in `#if`/`#elif`, subtract the
+   persona's baked set. Runs in seconds, needs no build, and reported **8 gaps** — six fixed,
+   two `-march`-gated and parked. Reproduce with the snippet in commit `4dc105a`'s test.
+
+   The one it found is the sharpest defect of the day: **the persona had no endianness, and "no
+   endianness" is not neutral — it is big-endian.** With `__BYTE_ORDER__`,
+   `__ORDER_LITTLE_ENDIAN__` and `__ORDER_BIG_ENDIAN__` all undefined, `#if` reads each as `0`,
+   so *both* of VPP's real call sites evaluated `0 == 0` and both branches were taken:
+   `vppinfra/byte_order.h:11` was right by accident, and `srv6-mobile/mobile.h:41` took the
+   **big-endian** branch — which redefines `BITALIGN2(A,B)` from `B; A` to `A; B`, declaring
+   every bit-field struct in that plugin in reverse member order.
+
+   ⚠️ **The corpus gate could not have found it.** Taking the wrong `#if` branch emits no
+   diagnostic; contract 17 counts diagnostics. The general form is in §11.3: *a corpus gate finds
+   what the tool says, never what it silently believes.* For the silent half you need a
+   differential instrument — something that compares chiero's state against the real compiler's,
+   rather than watching chiero's output.
+
    ⚠️ **This is why the gate is worth the 18 minutes.** The pp-gate reports 0 findings on its own
    corpus and has for weeks; none of these three was visible there, because none of them is about
    preprocessing *syntax* — they are about the persona and about which headers a real build
@@ -2787,6 +2806,16 @@ doubles the wake-ups.
 
 ### 11.3 About the design, and the distinction this project keeps re-deriving
 
+- 🆕 **A corpus gate finds what the tool *says*; it never finds what the tool silently
+  *believes*.** 012 contract 17 preprocesses 1967 VPP TUs and counts diagnostics, and it found
+  three real defects that way. It was structurally incapable of finding the fourth and worst:
+  the persona defined no `__BYTE_ORDER__`, so `#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__` read
+  `0 == 0`, took the big-endian branch on x86, and reversed the member order of every bit-field
+  struct in `srv6-mobile` — emitting nothing, because a taken branch is not an error.
+  **For the silent half, build a differential instrument**: compare chiero's state against the
+  real compiler's (here, gcc's 401 predefines ∩ the identifiers VPP tests in `#if`, minus the
+  baked set — seconds to run, no build, 8 gaps found). Output-watching and state-comparison are
+  two different searches and neither substitutes for the other.
 - 🆕 **A cause without an address is not addressable — and the asymmetry hides in instruments
   that report two kinds of thing.** 012 contract 17's corpus run printed an example path for each
   distinct *panic* and only a count for each distinct *diagnostic*. That cost a wave: I reasoned
