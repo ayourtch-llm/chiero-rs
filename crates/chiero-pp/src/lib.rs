@@ -532,6 +532,16 @@ impl Engine {
             ("_LP64", "1"),
             ("__amd64__", "1"),
             ("__amd64", "1"),
+            // **x86-64 baseline SIMD, and *not* the parked `-march` item.** gcc defines both with
+            // no `-march` at all, at `-march=x86-64-v2` and at `v3` — they do not vary per
+            // translation unit the way `__SSE4_2__` and `__AVX2__` do, so a fixed persona has a
+            // right answer for them. Verified against gcc at all three levels, not assumed.
+            //
+            // Without them `vppinfra/vector.c:8` leaves the global `u32x4_compare_word_mask_table`
+            // undefined — a table that exists in the shipped program and did not exist in the one
+            // chiero analysed — and `clib.h:160` swaps `sfence` for `__sync_synchronize()`.
+            ("__SSE__", "1"),
+            ("__SSE2__", "1"),
             ("__SIZEOF_POINTER__", "8"),
             // **The persona had no endianness, and "no endianness" is not neutral — it is
             // big-endian.** With all three undefined, `#if` reads each as `0`, so *both* of VPP's
