@@ -94,7 +94,11 @@ fn native_arc_ingest_does_not_grow_quadratically_in_arcs_per_function() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("scratch dir");
 
-    const SIZES: [usize; 4] = [50, 200, 800, 3200];
+    // **12800 is here because the earlier top end stopped being informative.** After the fixes of
+    // 2026-08-08 the n=3200 point runs in ~0.1 s, where process startup, file I/O and gcc's own
+    // output size are a visible share of the measurement — a "ratio" there is partly noise. A
+    // curve has to keep growing past the point where the thing it measures dominates the clock.
+    const SIZES: [usize; 5] = [50, 200, 800, 3200, 12800];
     // **Two shapes, and the difference between them is the finding.** One statement per line
     // gives each source line a single block, and the per-line work looks linear. Put the same
     // statements on *one* line and every block lands on it — which is exactly what a
