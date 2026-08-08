@@ -2148,11 +2148,23 @@ typing the paths ever would.
    so havoc'd reads are stable. 021 §6's twin holds already: not knowing a value is not
    permission to give it two.
 
-   ⚠️ **So the cause of the `units` finding is still open**, and the obvious explanation is now
-   excluded rather than merely unconfirmed, which is worth more than it sounds: `format` havocking
-   `c` before the guard cannot by itself explain offset 48. The next thing to check is whether the
-   finding is even at that subscript — the function has other array accesses, and the message
-   names `units` without naming the line.
+   ⚠️ **The cause is still open, but reading the full finding records narrows it and corrects two
+   things I had asserted.** Fidelity is **`Unknown`**, not `Approximated` — that was generalised
+   from the out-of-bounds class and is wrong for this one. And the duplicate pairs are not a
+   deduplication gap: `units[c->unit]` appears in *both* the guard and the body, so two source
+   sites give two findings, which is right.
+
+   The `unwitnessed` text is the lead: *"this path reads the contents of an object written by code
+   with no model (ObjectId(38)), **whose value is a whole array rather than a number**"*. The
+   havoc'd object was promoted to an SMT **`Array`** (020 §4.13b's `ite_threshold`), and there is
+   no witness because a witness binds numbers.
+
+   ❓ **Which is a refinement of the refuted hypothesis, not a repeat of it.** The probe that
+   refuted it used a small object in **`Bytes`** representation. Whether repeated reads are equally
+   stable through the **`Array`** representation is a *different* question and untested. Same
+   decisive shape — two loads of one address, branch on `a != b` — but the object must first be
+   promoted past the threshold. ⚠️ If it is stable there too, the guard-versus-subscript story is
+   dead entirely and the next suspect is how the guard's comparison is built over an array select.
 
    Between this and 5h, **36 of the 44 `vnet/` findings are characterised**: one class traced to
    an architectural cause, one to a precise open question. Neither is chiero claiming something
