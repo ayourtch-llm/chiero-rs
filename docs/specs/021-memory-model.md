@@ -183,6 +183,17 @@ unknown *values*. Conflating "we don't know the value" with "nobody wrote it" tu
 UCSE run into a false-positive storm, and is the single easiest way to make this whole
 subsystem useless.
 
+**And an unknown value is *one* value.** Once a byte has been materialized, every read of that
+address on that path yields the **same term** until something writes it. This was left implicit
+until 2026-08-08, when it turned out not to hold: a lazy object plus an unmodeled call gave
+`Term(3)` to one read and `Term(27)` to the next, with no faults, so a guard on the first
+constrained nothing the second used. That produced 19 of the 44 findings in a `vnet/` sweep — a
+guarded array subscript reported as escaping its object, which is the commonest idiom in C.
+
+It is written down because **nothing in this section forbade it**: "unknown values" and contract
+7's "no finding" are both satisfied by handing out a fresh symbol each time. The rule that makes
+memory memory has to be stated to be testable — see contract 7b.
+
 ## 4. Lifetime
 
 - **Globals** are created at module load, initialized from `GlobalInit`, `Live` forever.
@@ -503,6 +514,12 @@ API. The API is specified so that swap does not touch callers.
     an uninitialized read, and one at the written offset does not.
 7. Reading a never-written stack byte yields exactly one uninitialized-read finding and a
    fresh symbol; reading a lazily-initialized parameter's bytes yields **no** finding.
+7b. **A materialized byte reads the same twice.** Two reads of one address on one path, with
+    no intervening write, yield the same term — for a lazily-initialized parameter, for a
+    havoc'd object, and across a promotion to `Array`. ⚠️ **Not met as of 2026-08-08**: with a
+    lazy object and an unmodeled call the two reads return different terms. The reproduction is
+    `probe_lazy_two_loads` in `chiero-tool/tests/find_bugs.rs`, committed `#[ignore]`d, and it is
+    this contract's test — it passes when the contract does.
 8. `free(p)` then `*p` is exactly one use-after-free finding naming both spans;
    `free(p); free(p)` is exactly one double-free.
 9. `realloc` shrinking an object preserves the retained prefix bytes exactly, and a

@@ -796,7 +796,7 @@ entry:
 /// 📌 021 §6's family: a read path that does not end in *the same* symbol. The fix belongs there
 /// as a design question, not at this site.
 #[test]
-#[ignore = "reproduces an open defect; see the table above"]
+#[ignore = "021 contract 7b, not yet met; see the doc comment"]
 fn probe_lazy_two_loads() {
     // An entry pointer (lazy object). Load a byte, guard it < 5, then in the guarded block load
     // the *same* byte again and use it to index a 40-byte local. If the two loads are the same
