@@ -193,11 +193,27 @@ Neither appears in `ninja -t commands all`'s 2945 entries, nor in `src/vnet/CMak
 are dead source that has never compiled, which is exactly why the defects survived — and chiero
 is right about both.
 
-📌 **The actionable half is about this harness.** `pick_entries.py` globs the tree, so `failed`
-mixes two unrelated things: what chiero cannot read, and what *nothing* can read. `ninja -C
-$VPPBUILD -t commands all` is the authoritative list of what ships and costs **63 ms**; filtering
-the entry list through it would make every `failed` row a statement about compiled code. Worth
-doing before the next sweep rather than after.
+✅ **Fixed the same day: `pick_entries.py --built-only`.** `failed` was mixing two unrelated
+things — what chiero cannot read, and what *nothing* can. The flag reads `ninja -t commands all`,
+keeps only files the build passes to a compiler with `-c`, and **prints how many it dropped**:
+
+```text
+$ python3 pick_entries.py --built-only --per-file 1 $(cat /tmp/vnetfiles) > /tmp/vnet.tsv
+pick_entries: --built-only kept 420 of 427 file(s); 7 are not compiled by this build
+```
+
+Both defect files above are among those seven, with `interface_types_api.c`, `mma_template.c`,
+`sr_test.c`, `tcp_cc.c` and `pcap2cinit.c`. The pinned `entries.tsv` is byte-identical without
+the flag, so the default sample is untouched.
+
+⚠️ It **refuses** rather than falling back when the build directory is missing: quietly keeping
+everything would turn an absent `$VPPBUILD` into a sweep measuring the wrong corpus, which is the
+failure the option exists to end. And it reads `-c <source>` rather than a constructed path,
+because object paths cannot be derived from source paths under CMake object libraries — the trap
+`probe.sh` documents.
+
+⚠️ **The numbers in this section were taken *without* it**, so their 7 `failed` rows include the
+two uncompilable files. Re-run with `--built-only` before comparing against anything later.
 
 The other five: two `-march`-family intrinsics (`u32x4_gather`, `clib_crc32c_u32`, the parked
 item), a generated API type, and an unresolved `api_sr_localsid_add_del_v2`.
