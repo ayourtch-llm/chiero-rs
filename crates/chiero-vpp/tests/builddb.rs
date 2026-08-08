@@ -376,6 +376,28 @@ fn vpps_own_compile_database_parses_and_every_c_unit_is_configured() {
         );
     }
 
+    // **Multiarch, per translation unit** — 060 §1.1 and §9.1's `-march` item. Reported rather
+    // than asserted exactly, because the set moves when VPP is reconfigured; what must hold is
+    // that the flags are *there*, since a corpus with none would make per-TU personas pointless.
+    let with_target: Vec<_> = c.iter().filter(|u| !u.target_flags.is_empty()).collect();
+    let mut marches: Vec<&str> = with_target
+        .iter()
+        .flat_map(|u| u.target_flags.iter())
+        .filter_map(|f| f.strip_prefix("-march="))
+        .collect();
+    marches.sort_unstable();
+    marches.dedup();
+    eprintln!(
+        "  target flags: {} of {} C units carry one; distinct -march: {:?}",
+        with_target.len(),
+        c.len(),
+        marches
+    );
+    assert!(
+        !with_target.is_empty(),
+        "no C unit carries a -m flag; per-TU personas would have nothing to select on"
+    );
+
     // Loose bounds, not the exact figures: the numbers move when VPP is reconfigured, and a
     // test that pins them would fail for the wrong reason. What must hold is the *shape* —
     // a large corpus that collapses hard, and a source→TU mapping that is genuinely 1:N.
@@ -398,4 +420,43 @@ fn vpps_own_compile_database_parses_and_every_c_unit_is_configured() {
         multi > 100,
         "only {multi} units share a source with another"
     );
+}
+
+/// **The target flags a unit was actually compiled with** — 060 §1.1's multiarch, and the last
+/// piece of HANDOFF §9.1's `-march` item.
+///
+/// `__SSE4_2__` and `__AVX2__` exist only under the right `-march`, and VPP compiles the same
+/// source repeatedly under different ones. A `Persona` probed with no flags describes a compiler
+/// nobody used: every AVX2 path in vppinfra had never once been compiled by a chiero measurement.
+///
+/// These are kept **apart from `defines`/`include_paths`**, because they are not preprocessor
+/// configuration in the same sense — they select a *persona*, and only the compiler knows what
+/// each implies. `-mtune` rides along deliberately: it is the compiler's business whether it
+/// changes a predefine, not this ingest's.
+#[test]
+fn a_unit_reports_the_target_flags_it_was_compiled_with() {
+    let d = db(&[
+        entry(
+            "/src/a.c",
+            "/b",
+            "-march=x86-64-v3 -mtune=generic -mavx2 -DFOO -I/src -O3",
+            "a.o",
+        ),
+        entry("/src/b.c", "/b", "-DFOO -I/src -O3", "b.o"),
+    ]);
+    assert_eq!(
+        d.units()[0].target_flags,
+        vec!["-march=x86-64-v3", "-mtune=generic", "-mavx2"],
+        "in command-line order, and nothing that is not a -m flag"
+    );
+    assert!(
+        d.units()[1].target_flags.is_empty(),
+        "a unit with no -m flags reports none, rather than a guessed default"
+    );
+    // The flags do not leak into the configuration halves.
+    assert_eq!(
+        d.units()[0].defines,
+        vec![("FOO".to_string(), "1".to_string())]
+    );
+    assert_eq!(d.units()[0].include_paths, vec![PathBuf::from("/src")]);
 }

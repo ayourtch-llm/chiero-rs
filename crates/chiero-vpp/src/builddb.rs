@@ -41,6 +41,18 @@ pub struct TranslationUnit {
     pub defines: Vec<(String, String)>,
     /// `-I` in command-line order, which is search order, resolved against `dir`.
     pub include_paths: Vec<PathBuf>,
+    /// **`-m…` in command-line order — the flags that select a compiler persona.**
+    ///
+    /// Kept apart from [`Self::defines`] and [`Self::include_paths`] because they are not
+    /// preprocessor configuration in the same sense: `__SSE4_2__` and `__AVX2__` exist only under
+    /// the right `-march`, and **only the compiler knows what each flag implies**. Hand these to
+    /// `chiero_pp::Persona` (via a `cc -dM -E` probe) rather than interpreting them here.
+    ///
+    /// VPP compiles the same source repeatedly under different `-march` (060 §1.1), so this is
+    /// per translation unit, not per project — which is why the whole item was per-TU from the
+    /// start. `-mtune` rides along deliberately: whether it moves a predefine is the compiler's
+    /// business, not this ingest's.
+    pub target_flags: Vec<String>,
     /// **Flags that would change the configuration and that this ingest does not model.**
     ///
     /// None of them occurs in VPP's database — that is measured, not assumed — so building
@@ -182,6 +194,7 @@ fn unit_from(e: &serde_json::Value) -> Result<Option<TranslationUnit>, String> {
 
     let mut defines = Vec::new();
     let mut include_paths = Vec::new();
+    let mut target_flags = Vec::new();
     let mut unhandled = Vec::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -203,6 +216,8 @@ fn unit_from(e: &serde_json::Value) -> Result<Option<TranslationUnit>, String> {
             defines.push((name, val));
         } else if let Some(rest) = a.strip_prefix("-I").and_then(|_| split(a, &mut it)) {
             include_paths.push(resolve(&dir, &rest));
+        } else if a.starts_with("-m") && a.len() > 2 {
+            target_flags.push(a.clone());
         } else if let Some(f) = UNHANDLED.iter().find(|f| a.starts_with(**f)) {
             unhandled.push(a.clone());
             // The separated spelling eats its argument too, or it would be read as a source.
@@ -220,6 +235,7 @@ fn unit_from(e: &serde_json::Value) -> Result<Option<TranslationUnit>, String> {
         args,
         defines,
         include_paths,
+        target_flags,
         unhandled,
         config,
     }))
