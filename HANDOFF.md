@@ -2177,10 +2177,25 @@ typing the paths ever would.
    because "an unmodeled extern handed a pointer *wrote* something there". Symbolic contents
    should read back stably.
 
-   ❓ **So the live question is the combination neither probe covered: havoc'd (symbolic) contents
-   in an object that is *also* `Array`-promoted.** `Bytes` + havoc is stable (tested).
-   `Array` + never-written is unstable (tested, and possibly correct). `Array` + havoc is
-   **untested**, and it is the one the finding actually involves.
+   ✅ **All three combinations are now tested, and the story is dead.**
+
+   | object | contents | two reads of one address |
+   |---|---|---|
+   | `Bytes` | havoc'd (symbolic) | **stable** — one state |
+   | `Array`-promoted | havoc'd (symbolic) | **stable** — one state |
+   | `Array`-promoted | never written | unstable — two states, and defensible: reading indeterminate memory twice is not obliged to agree |
+
+   So unstable reads do **not** explain the `units` finding, and the guard-versus-subscript story
+   is finished. What remains true and unexplained: the offset check is path-sensitive (it probes
+   `s.path`), the guard is `c->unit < 5`, and offset 48 is nonetheless satisfiable.
+
+   📌 **The next suspect has to come from somewhere other than the read path.** Two candidates
+   neither tested nor guessed at yet: whether the *guard's own comparison* is decidable over an
+   array-select value (if the branch is undecided, 023 §3 takes it anyway and the constraint never
+   lands), and whether the finding's `PtrAdd` is even downstream of the guard in the lowered CFG.
+   ⚠️ The second is checkable by reading the lowering; the first needs a probe. **Check the CFG
+   first** — it is free, and this entry has already spent four probes on hypotheses about the
+   wrong input.
 
    📌 And read `chiero-lower/tests/symbolic_offset_store.rs` first: it carries six waves of
    analysis of this exact sentence, ending at a real cause — `report_faults` discharges faults for
