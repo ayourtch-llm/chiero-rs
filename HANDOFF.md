@@ -2336,9 +2336,18 @@ typing the paths ever would.
    O(V × (V+E))** — what changed is that straight-line code no longer funds a search that cannot
    succeed. The cycle path stays covered by the `cyc.gcno` fixture.
 
-   **Still open:** 13.8x per 4x arcs against a linear 4x, so `tests/growth.rs` still fails on
-   purpose. The remaining cost is no longer in `cycles_count` — **re-profile before assuming
-   where it is**, since this entry's track record on that question is 3 wrong, 3 right.
+   **Still open:** ~14x per 4x arcs against a linear 4x, so `tests/growth.rs` still fails on
+   purpose, and **the remaining cost is unlocated**.
+
+   ⚠️ **Tested and ruled out after the early-out landed:** the `accumulate_line_info` predecessor
+   hoist was re-applied on the theory that `cycles_count` had been masking it. It changed nothing
+   again (1.00 s / 1.07 s against 1.05 s / 1.15 s — noise) and was reverted a second time. So the
+   scan genuinely is not the cost, at either scale.
+
+   That leaves the `.gcno`/`.gcda` parse itself, `solve_flow_graph`'s conservation loop, and the
+   `IndexMap` traffic in `accumulate_line_info` — **none of them measured**. Add a counter to one
+   before touching it. Scoreboard on this entry: **4 hypotheses wrong, 3 right**, and every one of
+   the wrong four looked obvious in the source.
 
    ⚠️ *Kept below: three hypotheses that were tried first and moved nothing.* **Do not read.
    Profile.**
