@@ -2166,23 +2166,27 @@ typing the paths ever would.
 
    > `a load produced no value, so its result is invented`
 
-   **A load from an `Array`-promoted object does not produce a value, and the result is invented
-   per load** — so two reads of one address get two unrelated fresh symbols, their inequality is
-   satisfiable, and the branch forks. That is why `c->unit < ARRAY_LEN (units)` never constrains
-   the subscript: the guard binds one invented value and the subscript reads another.
+   ⚠️⚠️ **RETRACTED WITHIN THE HOUR — the probe did not test what I claimed.** I wrote that "a load
+   from an `Array`-promoted object invents per read" and that this explains the `units` finding.
+   The probe promoted an object with a symbolic-offset store and then read a byte **nothing had
+   ever written**. That byte is *genuinely uninitialized*, and inventing a fresh value per read
+   may well be correct there — reading indeterminate memory twice is not obliged to agree.
 
-   ⚠️ **The earlier hypothesis was right about the effect and wrong about the cause**, which is
-   why the refutation had to be kept: havoc'd `Bytes` reads *are* stable, and the instability is
-   the `Array` read path inventing rather than returning.
+   The `units` case is a **different** input: `format` havocs the object, and 024 contract 21e
+   makes an unmodeled extern's havoc `HavocInit::Symbolic`, **not** `Uninitialized` — precisely
+   because "an unmodeled extern handed a pointer *wrote* something there". Symbolic contents
+   should read back stably.
 
-   📌 **This is §11.3's recurring family, and the rule there says what to do**: *"chiero not
-   knowing a value is not the program failing to write one… when you find the ninth, do not fix
-   the site — ask which read path does not end in a symbol."* This is that read path. Not knowing
-   the value is honest; inventing a **different** one on each read of one address is not — memory
-   is memory within a path.
+   ❓ **So the live question is the combination neither probe covered: havoc'd (symbolic) contents
+   in an object that is *also* `Array`-promoted.** `Bytes` + havoc is stable (tested).
+   `Array` + never-written is unstable (tested, and possibly correct). `Array` + havoc is
+   **untested**, and it is the one the finding actually involves.
 
-   The fix is a design question (return a stable symbol per address, or refuse the read and say
-   so) and it should be settled against 021 §6 rather than patched where it shows.
+   📌 And read `chiero-lower/tests/symbolic_offset_store.rs` first: it carries six waves of
+   analysis of this exact sentence, ending at a real cause — `report_faults` discharges faults for
+   *reporting* and the value decision then consults the **raw** list, so a proof that was paid for
+   is ignored where the value is chosen. `a_concrete_byte_written_before_promotion_survives_it`
+   passes, so that half is fixed. **Do not re-derive any of that.**
 
    Between this and 5h, **36 of the 44 `vnet/` findings are characterised**: one class traced to
    an architectural cause, one to a precise open question. Neither is chiero claiming something
