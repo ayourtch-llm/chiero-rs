@@ -121,6 +121,61 @@ fn identifiers(line: &str) -> Vec<String> {
     out
 }
 
+/// What `name` expands to under gcc, as text. `None` for anything that is not a plain
+/// object-like macro (a function-like one needs arguments and is not comparable this way).
+fn gcc_expansion(name: &str, dir: &Path) -> Option<String> {
+    let path = dir.join(format!("v_{name}.c"));
+    std::fs::write(&path, format!("{name}\n")).ok()?;
+    let out = std::process::Command::new("gcc")
+        .args(["-E", "-P"])
+        .arg(&path)
+        .output()
+        .ok()?;
+    let _ = std::fs::remove_file(&path);
+    out.status.success().then(|| {
+        String::from_utf8_lossy(&out.stdout)
+            .split_whitespace()
+            .collect()
+    })
+}
+
+/// What the persona expands `name` to.
+fn persona_expansion(name: &str) -> String {
+    preprocess_str("v.c", &format!("{name}\n"), Config::default())
+        .token_texts()
+        .collect()
+}
+
+/// **Divergences that are deliberate, each with the reason it is deliberate.**
+///
+/// Unlike the allowlist removed above, this one *fires* — every entry is a difference the gate
+/// really sees on every run, kept visible rather than filtered by a pattern.
+const DELIBERATE: &[(&str, &str)] = &[
+    // 013 makes the parser C11 + GNU extensions. gcc's default here is gnu17, so it reports
+    // `201710L`. Claiming C17 in the persona while the parser implements C11 would be a *worse*
+    // lie than the one this gate exists to catch, so the difference stays until the language
+    // level is a decision someone has made rather than a number that drifted. See §9.1.
+    (
+        "__STDC_VERSION__",
+        "the parser is C11 (013); gcc's default -std here is gnu17",
+    ),
+    // Deliberately not constant across runs, by 012 contract 15.
+    (
+        "__DATE__",
+        "012 contract 15 — not constant across compilers",
+    ),
+    (
+        "__TIME__",
+        "012 contract 15 — not constant across compilers",
+    ),
+    (
+        "__FILE__",
+        "names the file being preprocessed, which differs by construction",
+    ),
+    ("__LINE__", "names the line, which differs by construction"),
+    ("__COUNTER__", "stateful by design"),
+];
+
 /// **The gate.** A gcc predefine that VPP tests and the persona does not bake is a silent
 /// divergence: `#if` reads the missing macro as `0` and picks a branch nobody chose.
 ///
@@ -172,5 +227,53 @@ fn every_gcc_predefine_vpp_tests_is_one_the_persona_has_an_answer_for() {
          diagnostic at all: {:?}",
         gaps.len(),
         gaps.iter().map(|(n, ..)| n.as_str()).collect::<Vec<_>>()
+    );
+
+    // **Definedness is only half the question.** A persona that answered `__GNUC__ 4` would have
+    // passed everything above; `#if __GNUC__ > 4` is three lines of VPP's own crypto engine.
+    // So compare what each side actually *expands to*, for the same set of names.
+    let dir = std::env::temp_dir().join(format!("chiero-persona-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let mut differing = Vec::new();
+    let mut compared = 0;
+    for name in tested.keys().filter(|n| gcc.contains(*n)) {
+        let Some(theirs) = gcc_expansion(name, &dir) else {
+            continue;
+        };
+        // A macro that expands to its own name is one gcc did not really define as an object.
+        if theirs == *name {
+            continue;
+        }
+        compared += 1;
+        let ours = persona_expansion(name);
+        if ours != theirs {
+            differing.push((name.clone(), ours, theirs));
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        compared > 10,
+        "only {compared} values compared; the value half of this gate is not running"
+    );
+
+    let (excused, live): (Vec<_>, Vec<_>) = differing
+        .iter()
+        .partition(|(n, ..)| DELIBERATE.iter().any(|(d, _)| d == n));
+    eprintln!(
+        "persona values: {compared} compared, {} differ",
+        differing.len()
+    );
+    for (name, ours, theirs) in &excused {
+        let why = DELIBERATE.iter().find(|(d, _)| d == name).unwrap().1;
+        eprintln!("  deliberate  {name}: chiero {ours:?} vs gcc {theirs:?} — {why}");
+    }
+    for (name, ours, theirs) in &live {
+        eprintln!("  DIFFERS     {name}: chiero {ours:?} vs gcc {theirs:?}");
+    }
+    assert!(
+        live.is_empty(),
+        "{} predefine value(s) VPP tests disagree with gcc, with no recorded reason: {:?}",
+        live.len(),
+        live.iter().map(|(n, ..)| n.as_str()).collect::<Vec<_>>()
     );
 }
