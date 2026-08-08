@@ -2414,10 +2414,21 @@ typing the paths ever would.
    `accumulated`'s iteration order, which feeds downstream merges. *Measured as an experiment and
    thrown away — that is the cheap way to hold an opinion.*
 
-   **Unmeasured candidates that remain:** the `.gcno`/`.gcda` parse, and the rest of the
-   `IndexMap` traffic in `accumulate_line_info` (`acc.entry((bl.file.clone(), line))` clones the
-   filename per line). **Counter first** — right five times on this entry, and the two hypotheses
-   since have both been refuted by measurement in under a minute each.
+   ⚠️ **Also ruled out: `cycles_count`'s per-call allocations.** It is invoked once per *line*
+   — Θ(n) times — and each call sized `in_bs` and `indegree` by the **max block index**, i.e.
+   Θ(n), for Θ(n²) in allocation alone. It also predicted `line` being worse than `onelin`, which
+   is what the curve shows. Replacing both with |bs|-sized structures moved nothing (13.7x /
+   10.9x against 12.8x / 10.7x). Reverted; the experiment was deliberately semantically wrong for
+   cyclic input and existed only to answer the question.
+
+   **Remaining suspect, by elimination: the `.gcno`/`.gcda` parse itself.** Conservation is
+   linear, `circuit` is never entered, `accumulate_line_info`'s scan and its `shift_remove` are
+   ruled out, and so are the allocations. ⚠️ **Elimination is not measurement** — this file's
+   record on inference is 4 wrong to 5 right. **Put a counter in the parse before believing it.**
+
+   *Method note, and it is the cheap thing to copy:* the last three hypotheses each cost about a
+   minute — change it, run the 25-second curve, revert regardless of the result. Nothing was
+   shipped and three plausible readings were disposed of.
 
    Scoreboard on this entry: **4 hypotheses wrong, 5 right.** Every wrong one looked obvious in
    the source; every right one came from a counter or a curve.
