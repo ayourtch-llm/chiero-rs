@@ -196,6 +196,13 @@ of `vnet/*/*.c` at one entry per file — §11.3's "change the kind, not the siz
 | 423 entries, globbed | `ok` 406, `cut` 7, `nofn` 3, `failed` 7, **`timeout` 0**, `noinc` 0 |
 | **417 entries, `--built-only`** | `ok` 404, `cut` 7, `nofn` 3, **`failed` 3**, `timeout` 0, `noinc` 0 |
 | findings | **44** either way, of which **0** are `Exact` |
+| **retaken after 021 contract 7b** | same rows, **40** findings |
+
+⚠️ **The 7b retake is the honest version of a prediction that failed.** Fixing the
+materialized-byte defect (021 contract 7b) was expected to remove *most* of the 19
+`pointer-outside-object` findings. It removed **4** — 19 → 15, total 44 → 40, every other kind
+unchanged. `pointer-outside-object` has more than one cause, and **a shared message is not a
+shared cause**. The remaining 15 each need finding out separately.
 
 **`--built-only` is the number to quote.** `failed` drops 7 → 3 and the four that vanish are
 exactly the rows from files the build never compiles — the duplicate definition, `pcap_read`
