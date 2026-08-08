@@ -1856,12 +1856,28 @@ typing the paths ever would.
    | wide `copymem` out of an entry pointer | 0 bindings, **but the right mint** (`obj=2 size=10640`) |
    | the same, with the fault *depending on* a copied byte | still 0 bindings |
 
-   The last row is the one that should have worked on the fork theory and did not, so **the fork
-   explanation is incomplete too**. ⚠️ **Four fixtures, four misses: stop writing fixtures.** The
-   next move is to instrument the *real* case at the witness site — the same print that produced
-   the `minted=0` / `minted=10640` pair — and see which state carries its finding and what its
-   path looks like. Guessing the shape has now been wrong four times; watching it has been right
-   twice.
+   ✅ **The real case, instrumented at the same site, gives the difference in one line:**
+
+   ```text
+   WITNESS minted=10657 inputs=1 requires=0 findings=1 path=1     # nsh_md2_encap: ONE state
+   WITNESS minted=0     inputs=0 requires=0                       # the fixture: TWO states,
+   WITNESS minted=10640 inputs=0 requires=0                       #   and the fault is on the first
+   ```
+
+   **`nsh_md2_encap` terminates a single state; every fixture forks.** So the mints and the
+   finding are on the same state there and on different states here — which is why the fault
+   depending on a copied byte still changed nothing, and why the fork theory was incomplete
+   rather than wrong.
+
+   ⚠️ **The next fixture must not fork.** The likely source is `copymem`'s aliasing check between
+   an alloca and a lazy entry pointer (one branch where they overlap, one where they do not) —
+   worth confirming before writing anything, since that guess is the fifth of its kind and the
+   first four were wrong. Also worth noting from the same line: the real path condition has
+   **one** constraint and still yields 10 657 bindings, so binding count is not driven by the
+   path.
+
+   **Nothing else in the queue is blocked on this**; it is a reporting defect on one VPP entry,
+   with a reproduction command, and four measured dead ends.
 
 5c. 🆕 **Three `timeout` rows in `plugins/nsh/`** — `format_nsh_header`, `nsh_md2_decap`,
    `nsh_md2_encap`, from the widened sweep (2026-08-08). The verifier fix removed the cause the
