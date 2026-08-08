@@ -2211,6 +2211,25 @@ typing the paths ever would.
    two paragraphs up says *"the ratio had not moved, so only the constant had"*, and here not even
    the constant moved.
 
+   🆕 **And then the curve itself turned out to be the problem.** The generator put one statement
+   per source line, so every line carried one block. Adding a second shape — all statements on
+   *one* line, which is what a multi-statement macro expansion produces and VPP is macro-heavy —
+   changes the answer completely:
+
+   | shape | 200→800 | 800→3200 | n=3200 |
+   |---|---|---|---|
+   | `line` (one statement per line) | 11.5x | 16.4x | 1.10 s |
+   | `onelin` (all on one line) | 21.2x | **50.5x** | **17.1 s** |
+
+   **A growth curve is only as good as the shape it grows.** A generator that varies one parameter
+   while holding the interesting one at 1 reports a clean answer forever — and three wrong
+   conclusions came out of exactly that below.
+
+   It also **rehabilitates the hypothesis dismissed with a bad argument**: `cycles_count` was ruled
+   out because the generated code has no loops, but its cost is `for &start in bs { circuit(...) }`
+   — one DFS per block *on the line*, which runs whether or not a cycle exists. It is the only
+   thing in the file that scales with blocks-per-line. **Chase the `onelin` curve.**
+
    **Next reader: do not read. Profile.** Three hypotheses were tried in one session and the
    ratio moved on none of them:
 
