@@ -1597,8 +1597,20 @@ typing the paths ever would.
 > **None of them was visible to the pp-gate**, which has reported 0 findings for weeks: none is
 > about preprocessing *syntax*. A gate that has been green for weeks is an untested surface.
 >
-> **State: 2026-08-08 — `./check.sh` GREEN at 2248 across 267 suites, fmt and clippy clean.**
+> **State: 2026-08-08 — `./check.sh` GREEN at 2249 across 268 suites, fmt and clippy clean.**
 > Verified on all three CI legs and pushed.
+>
+> **This session's closes:** 060 contract 1 (`chiero_vpp::builddb` — VPP's compile database;
+> 1967 C units → 423 configurations); 012 contract 17 (1967 TUs preprocessed under VPP's own
+> flags, 0 panics, diagnosed 25 → 0); 012 contract 25 (system-header diagnostics separated, not
+> deleted); `pick_entries.py --verify-cir`. Five persona defects, each found by measurement:
+> the three spellings of `__linux__`, `__has_attribute(error)`, the endianness triple,
+> `__SSE__`/`__SSE2__`, and `_LP64`/`__amd64`/`__SIZEOF_POINTER__`.
+>
+> **Two standing gates exist now and they ask different questions.** `preprocess_corpus`
+> (18 min) watches what chiero *says*; `persona_gap` (0.1 s) compares what chiero *believes*
+> against gcc, in both definedness and value. The second found the worst defect of the day and
+> the first could never have. §11.3 carries the general form.
 >
 > **Closed:** `MemFault::BadRange`; 023 §8's `max_solver_rlimit` and `max_memory_objects` — every
 > budget in that sketch is now built; `--solver-rlimit` on the three solver commands; the CIR
