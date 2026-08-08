@@ -3795,8 +3795,9 @@ impl Memory {
             // the question was asked of one representation and answered into the other: every
             // read of a materialized byte minted a **new** symbol. Two reads of one address then
             // returned different terms, a guard on the first constrained nothing the second used,
-            // and 19 of the 44 findings in a `vnet/` sweep were guarded array subscripts reported
-            // as escaping their object.
+            // and guarded array subscripts were reported as escaping their object. Measured on a
+            // `vnet/` sweep: this accounts for **4** of 19 such findings (44 → 40 total), so it is
+            // one cause of that shape and not the only one.
             //
             // This is `memoize_via`'s bug one field over: that function exists because "the
             // initialization lives in an array, so writing the mask was a no-op there". The

@@ -2103,7 +2103,8 @@ typing the paths ever would.
    and the assumptions name `max_indirect` and the unresolvable callee. **This is noise a reader
    must filter, not a claim chiero got wrong**, which is a different and much smaller failure.
 
-5i. 🆕 **The other dominant `vnet/` class, `pointer-outside-object` (19 of 44), and a precise
+5i. 🆕 **The other dominant `vnet/` class, `pointer-outside-object` (19 of 44 before the 7b fix,
+   **15 of 40** after — see below), and a precise
    open question.** They cluster on a very common C idiom: a **static array indexed by a value
    from a lazily-materialised struct**, where the program *does* guard the index.
 
@@ -2235,8 +2236,7 @@ typing the paths ever would.
 
    **Two reads of one address return different terms**, no faults, on the non-null path. The
    guard binds `Term(3)`; the subscript indexes with `Term(27)`; nothing relates them, so index 6
-   is satisfiable and the pointer lands at offset 48. This explains **19 of the 44** `vnet/`
-   findings.
+   is satisfiable and the pointer lands at offset 48.
 
    Three controls, each measured:
 
@@ -2267,10 +2267,28 @@ typing the paths ever would.
    fixed and `sym` was left. A `sym_via` twin would have been the third copy of one asymmetry
    waiting for a fourth field, so both sides are written in one place instead.
 
-   ⏭️ **Owed: re-measure the `vnet/` sweep.** It should lose most of the 19
-   `pointer-outside-object` findings; §10 says re-measure after a fix, not only before, and this
-   is exactly the case that rule was written for. The `--built-only` list is `/tmp/vnet_built.tsv`
-   (regenerate with `pick_entries.py --built-only --per-file 1`).
+   ⚠️⚠️ **RE-MEASURED, AND THE PREDICTION WAS WRONG.** I said the sweep should lose *most* of the
+   19 `pointer-outside-object` findings. Same 417 entries, same flags, only the fix different:
+
+   | kind | before | after |
+   |---|---|---|
+   | `pointer-outside-object` | 19 | **15** |
+   | out-of-bounds | 17 | 17 |
+   | null-dereference / uninitialized-read | 4 / 4 | 4 / 4 |
+   | **total** | **44** | **40** |
+
+   **It accounts for 4, not 19.** The fix is right and contract 7b is met, but the class has more
+   than one cause and I attributed all of it to the first one I found — the fourth time on this
+   entry that a whole category got pinned on a single mechanism.
+
+   📌 **The remaining 15 are open, and the lesson is the reusable part: a shared *message* is not
+   a shared *cause*.** `pointer-outside-object` says the offset can leave the object; that can
+   happen for as many reasons as there are ways to lose a constraint. The next one needs the same
+   treatment from scratch — pick one, `chiero cir` it, instrument the boundary — and not the
+   assumption that it is this bug again.
+
+   §10 exists for exactly this: **re-measure after a fix, not only before.** The prediction was
+   confident, cheap to check, and wrong.
 
    *(Historical, and the reason the fix landed in this order: 021 was silent, so it needed a
    sentence before it needed code.)* §3.1 says a lazily-materialized object is "fully `Yes` with unknown *values*", and

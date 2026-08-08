@@ -741,8 +741,9 @@ entry:
 /// it is committed failing-but-ignored so the next person has an executable minimal case instead
 /// of a paragraph. Run it with `cargo test -p chiero-tool -- --ignored probe_lazy`.
 ///
-/// Reduced from `vnet/dev/counters.c`, which produces 19 of the 44 findings in the `vnet/` sweep
-/// (§9.1). The C is the commonest guarded-subscript idiom there is:
+/// Reduced from `vnet/dev/counters.c`. ⚠️ Fixing this removed **4** of that sweep's 19
+/// `pointer-outside-object` findings, not all of them — I predicted otherwise and re-measured.
+/// The C is the commonest guarded-subscript idiom there is:
 ///
 /// ```c
 /// s = format (s, "%s", c->name);                       /* unmodeled: havocs *c */

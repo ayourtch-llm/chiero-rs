@@ -187,8 +187,10 @@ subsystem useless.
 address on that path yields the **same term** until something writes it. This was left implicit
 until 2026-08-08, when it turned out not to hold: a lazy object plus an unmodeled call gave
 `Term(3)` to one read and `Term(27)` to the next, with no faults, so a guard on the first
-constrained nothing the second used. That produced 19 of the 44 findings in a `vnet/` sweep — a
-guarded array subscript reported as escaping its object, which is the commonest idiom in C.
+constrained nothing the second used. Measured: fixing it removed **4** of the 19
+`pointer-outside-object` findings in a `vnet/` sweep (44 → 40). The other 15 have some other
+cause and are still open — a guarded array subscript reported as escaping its object is the
+commonest idiom in C, and one defect did not account for all of it.
 
 It is written down because **nothing in this section forbade it**: "unknown values" and contract
 7's "no finding" are both satisfied by handing out a fresh symbol each time. The rule that makes
