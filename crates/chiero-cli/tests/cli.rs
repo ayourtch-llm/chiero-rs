@@ -1408,10 +1408,17 @@ fn cir_prints_the_lowered_module_in_the_normative_format() {
     );
     // **And it must round-trip**, which is what makes it the normative format rather than a
     // rendering: 020 contract 5 says a well-formed module re-parses.
-    let m = chiero_cir::text::parse(&r.out).expect("the dump must re-parse (020's round trip)");
+    //
+    // ⚠️ Compared against the output **minus the newline `main`'s `println!` adds**. The printer
+    // already ends the module with one; the extra is the CLI's, not the format's. Trimming it
+    // here rather than changing the printer is deliberate — the round trip is 020 contract 5's
+    // property of the *format*, and a printer altered to satisfy a test about stdout would break
+    // every golden that depends on it.
+    let dump = format!("{}\n", r.out.trim_end_matches('\n'));
+    let m = chiero_cir::text::parse(&dump).expect("the dump must re-parse (020's round trip)");
     assert_eq!(
         chiero_cir::text::print(&m),
-        r.out,
+        dump,
         "printing the re-parsed module must reproduce the dump byte for byte"
     );
 }

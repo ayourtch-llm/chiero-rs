@@ -53,6 +53,11 @@ OPERATIONS:
     expansion-sites <file.c> --macro <NAME> [--cursor <n>] [--limit <n>]
             Every place a macro expands in this translation unit.  (050 §3)
 
+    cir <file.c> [--entry <fn>]
+            Print the lowered module in 020's normative textual format. The
+            answer is about chiero rather than about your program, so it
+            carries no envelope -- it round-trips instead.
+
     explain-macro <file.c> --line <n> [--col <n>]
             What macro chain produced the code on a line, innermost first.
 
@@ -136,6 +141,14 @@ fn run(args: &[String]) -> Result<String, Fault> {
     }
 
     let opts = Options::parse(&args[1..])?;
+    // **Not an envelope, and deliberately so.** Every other operation answers a question about a
+    // program and carries 050's fidelity/assumptions with it. This one answers a question about
+    // *chiero* — "what did lowering produce?" — and the honest form of that answer is 020's
+    // normative text, which round-trips. Wrapping it in an envelope would attach a fidelity to a
+    // dump, which means nothing.
+    if args[0] == "cir" {
+        return cir(&opts);
+    }
     let env = match args[0].as_str() {
         "prove-equivalent" => prove_equivalent(&opts)?,
         "find-bugs" => find_bugs(&opts)?,
@@ -471,6 +484,47 @@ fn check_reachable(o: &Options) -> Result<chiero_tool::Envelope, Fault> {
     cfg.budget.wall_clock = o.wall_clock();
     cfg.budget.max_solver_rlimit = o.solver_rlimit;
     Ok(chiero_tool::check_reachable(&m, &cfg, line))
+}
+
+/// Print the lowered module in 020's normative textual format.
+///
+/// **The instrument that was missing.** 020 makes this format normative and its round trip a
+/// contract, and until now nothing outside Rust could see it — so every question about what a
+/// function lowered to was answered by reading `chiero-lower` and guessing. A
+/// `pointer-outside-object` investigation on 2026-08-08 spent four probes on hypotheses that one
+/// `grep` over this output would have settled.
+///
+/// `--entry <fn>` prints **just that function**, because a VPP translation unit lowers to a
+/// quarter of a million lines and the question is almost always about one of them. It is a
+/// filter on the printed text, not a module rewrite: the result is therefore *not* guaranteed to
+/// re-parse on its own, since it names globals and callees the excerpt no longer declares.
+/// Without it the whole module is printed, and that is the form the round trip is about.
+fn cir(o: &Options) -> Result<String, Fault> {
+    let f = o.files(1, "cir")?;
+    let m = lower(&f[0], &read(&f[0])?, o.frontend()).map_err(Fault::Failed)?;
+    let Some(entry) = o.entry.as_deref() else {
+        return Ok(chiero_cir::text::print(&m));
+    };
+    // **Refuse rather than print everything.** A named entry that is not there is a typo or a
+    // function the configuration removed, and silently dumping the whole module would answer a
+    // question nobody asked — the `nofn` lesson from the sweep harness, one layer up.
+    if !m.funcs.iter().any(|x| &*x.name == entry) {
+        return Err(Fault::Usage(format!(
+            "no function named `{entry}` in {}; this translation unit defines {} function(s)",
+            f[0].display(),
+            m.funcs.len()
+        )));
+    }
+    // Text in, text out: find the `func @name(` header and stop at the closing brace in column
+    // zero, which is where the printer puts it.
+    let all = chiero_cir::text::print(&m);
+    let head = format!("func @{entry}(");
+    let Some(start) = all.find(&head) else {
+        return Ok(all);
+    };
+    let rest = &all[start..];
+    let end = rest.find("\n}\n").map_or(rest.len(), |i| i + 3);
+    Ok(rest[..end].to_string())
 }
 
 fn layout(o: &Options) -> Result<chiero_tool::Envelope, Fault> {
