@@ -218,10 +218,19 @@ two uncompilable files. Re-run with `--built-only` before comparing against anyt
 The other five: two `-march`-family intrinsics (`u32x4_gather`, `clib_crc32c_u32`, the parked
 item), a generated API type, and an unresolved `api_sr_localsid_add_del_v2`.
 
-⚠️ `nofn` 3 — `pick_entries.py` is still picking macro-registered names as functions
-(`clear_session_dbg_clock_cycles_fn`, `create_simulated_srp_interfaces`). Same cause as the
-`VLIB_CLI_COMMAND` row that created the `nofn` status; it was fixed for that shape and not this
-one.
+⚠️ **`nofn` 3, and it is not the macro problem — it is the preprocessor.** All three names are
+real function definitions in the source. `clear_session_dbg_clock_cycles_fn` sits inside
+`#if SESSION_DEBUG > 0`, and `session_debug.h` defines `SESSION_DEBUG` as `0`, so the function
+does not exist in the *configured* translation unit. chiero is right and the row is honest.
+
+The corpus is what is wrong: `pick_entries.py` reads raw text with a regex and cannot see
+conditional compilation, so it names functions the configuration removes. `--built-only` does
+not help — the file **is** compiled, just not that part of it.
+
+📌 The fix is to pick entries from **what chiero lowers** rather than from the text, which would
+make every entry a function that exists by construction. Bigger than a flag, and the honest
+interim is that `nofn` is a corpus artefact rather than a chiero limitation — which is what the
+status was invented to make visible.
 
 **It found two source-triggerable panics**, which is what a sweep is for — both recorded as
 `failed`, the same row a file that will not preprocess gets, so two crashes on real code looked

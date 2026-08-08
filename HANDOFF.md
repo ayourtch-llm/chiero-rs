@@ -1887,6 +1887,17 @@ typing the paths ever would.
    `ptrace_scope=1` workaround. ⚠️ A `timeout` row is a run that measured **nothing** — it is a
    lead, not a statistic.
 
+5g. 🆕 **`pick_entries.py` picks functions the preprocessor removes.** Three `nofn` rows in the
+   `vnet/` sweep, and none is the known macro-name problem: all three are real definitions in the
+   source. `clear_session_dbg_clock_cycles_fn` is inside `#if SESSION_DEBUG > 0` and
+   `session_debug.h` defines `SESSION_DEBUG` as `0`, so it is absent from the *configured* TU.
+   chiero is right and the row is honest.
+
+   `--built-only` does not help — the file is compiled, just not that part of it. **The fix is to
+   pick entries from what chiero lowers rather than from the text**, which makes every entry a
+   function that exists by construction. Until then `nofn` is a corpus artefact, not a chiero
+   limitation, which is exactly what the status was invented to make visible.
+
 5f. 🆕 **The sweep analyses files VPP does not compile — and that is how it found a real VPP
    defect.** `src/vnet/fib/fib_entry_src_default.c` defines `fib_entry_src_default_deinit`
    **twice**, at lines 22 and 35, both `static void … {}`. chiero refuses it; **gcc gives the
