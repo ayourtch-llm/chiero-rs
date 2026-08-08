@@ -930,20 +930,33 @@ fn solve_arcs(
 /// A block's execution count is the flow **into** it — except the entry block, which nothing
 /// flows into and whose count is the flow out.
 fn block_counts(f: &NoteFunction, arcs: &[u64]) -> Vec<u64> {
-    let mut counts = vec![0u64; f.blocks as usize];
-    for b in 0..f.blocks {
-        let (mut into, mut out) = (0u64, 0u64);
-        for (i, a) in f.arcs.iter().enumerate() {
-            if a.to == b {
-                into = into.saturating_add(arcs[i]);
-            }
-            if a.from == b {
-                out = out.saturating_add(arcs[i]);
-            }
+    // **One pass over the arcs, not one pass per block.** This scanned every arc for every block
+    // — Θ(blocks × arcs) — and was **90% of the whole native ingest's clock** at 12800 arcs,
+    // growing 16x per 4x arcs where 4x is linear. Identical arithmetic: summing the arcs into `b`
+    // in arc order is what `for a in f.arcs { if a.to == b }` did, one block at a time.
+    //
+    // ⚠️ Found by *splitting the clock*, not by reading. §9.1 had recorded the `ArcCoverage`
+    // index building as the last suspect; timing `ingest_into` apart from the arc-index walk put
+    // 90% of the cost on the other side of that guess, and two throwaway experiments — skip
+    // `line_counts`, then skip this — moved the ratio from 15.4x to 4.9x. The same fix as the
+    // conservation fixpoint's, one function away, and the third time this file has paid for
+    // re-deriving a graph inside a loop over it.
+    let n = f.blocks as usize;
+    let (mut into, mut out) = (vec![0u64; n], vec![0u64; n]);
+    for (i, a) in f.arcs.iter().enumerate() {
+        // An arc naming a block this function does not have was skipped by the per-block scan
+        // (nothing equalled it), so it is skipped here too rather than panicking on the index.
+        if (a.to as usize) < n {
+            into[a.to as usize] = into[a.to as usize].saturating_add(arcs[i]);
         }
-        counts[b as usize] = if b == 0 { out } else { into };
+        if (a.from as usize) < n {
+            out[a.from as usize] = out[a.from as usize].saturating_add(arcs[i]);
+        }
     }
-    counts
+    // The entry block has no arcs into it; what it was executed is what left it.
+    (0..n)
+        .map(|b| if b == 0 { out[0] } else { into[b] })
+        .collect()
 }
 
 /// The line counts one function contributes, as `(file, line, count)`.
@@ -1013,13 +1026,33 @@ fn line_counts(f: &NoteFunction, arc_counts: &[u64], blocks: &[u64]) -> Function
     let mut cyc_in_bs = vec![false; f.blocks as usize];
     let mut cyc_indeg = vec![0usize; f.blocks as usize];
     let mut graphed: IndexMap<(String, u32), u64> = IndexMap::new();
+    // **Membership by index, not by scanning `bs`.** `bs` holds every block on one line, so this
+    // was Θ(preds × |bs|) — quadratic in blocks-per-line, which is exactly what a multi-statement
+    // macro expansion produces and VPP is macro-heavy. Measured on the `onelin` curve: the line
+    // half went from 7.9x per 4x arcs to **4.1x, linear**, and from 75% of the clock to 25%.
+    // Duplicates in `bs` are deliberate (see above) and do not affect membership either way.
+    let mut on_this_line = vec![false; f.blocks as usize];
     for (key, bs) in &on_line {
         let mut count: u64 = 0;
         for &b in bs {
+            if let Some(m) = on_this_line.get_mut(b as usize) {
+                *m = true;
+            }
+        }
+        for &b in bs {
             for &i in preds.get(b as usize).into_iter().flatten() {
-                if !bs.contains(&f.arcs[i].from) {
+                if !on_this_line
+                    .get(f.arcs[i].from as usize)
+                    .copied()
+                    .unwrap_or(false)
+                {
                     count = count.saturating_add(arc_counts[i]);
                 }
+            }
+        }
+        for &b in bs {
+            if let Some(m) = on_this_line.get_mut(b as usize) {
+                *m = false;
             }
         }
         count = count.saturating_add(cycles_count(
@@ -1030,9 +1063,17 @@ fn line_counts(f: &NoteFunction, arc_counts: &[u64], blocks: &[u64]) -> Function
             &mut cyc_in_bs,
             &mut cyc_indeg,
         ));
-        acc.shift_remove(key);
         graphed.insert(key.clone(), count);
     }
+    // **The two maps must be disjoint, and taking the key out one at a time was Θ(lines × |acc|).**
+    // `IndexMap::shift_remove` is a shift; `retain` is one pass and keeps the order of what
+    // survives, which is the property that made `swap_remove` unacceptable when this was last
+    // looked at — `accumulated`'s order feeds the downstream merge.
+    //
+    // ⚠️ **It was measured and honestly ruled out once, and the null result was true at the time.**
+    // It moved the ratio not at all while `block_counts` was 90% of the clock. Re-test a reverted
+    // optimisation after the dominant cost moves (§9.1) — that is now twice on this one curve.
+    acc.retain(|k, _| !graphed.contains_key(k));
 
     FunctionLines {
         accumulated: acc,

@@ -36,16 +36,25 @@
 //! third attempt, after the two costs hiding it were gone — the `accumulate_line_info` hoist that
 //! had been reverted twice for moving nothing.
 //!
-//! **This test still fails, on purpose, and the residual is UNLOCATED.** ⚠️ Do not read the
-//! paragraph above as pointing at it: `circuit` now runs **zero** times on this input, and the
-//! enumeration is not the cost. Everything measured is linear — both decodes, the structure
-//! build, the conservation fixpoint — and together they are under 3% of the clock at n=12800,
-//! while the whole grows ~13.5x per 4x arcs.
+//! ✅ **This test PASSES as of 2026-08-08 — the first time.** `line` 6.2–7.0x, `onelin` 4.7–5.8x
+//! against the 8.0x threshold it asserts, and 1.42 s → ~0.24 s at n=12800.
 //!
-//! The next counter belongs in the `ArcCoverage` index building, and it must measure a unit whose
-//! cost **tracks time**: a genuinely quadratic cell count (327 808 014) was fixed here and moved
-//! the clock by ~7%. See §9.1 — six hypotheses on this item have been refuted by measurement, and
-//! every one of them looked obvious in the source.
+//! ⚠️ **It passes; it is not linear.** 4x is linear and the `line` shape sits at 6–7x with a
+//! ±0.8x band across runs, so tightening the threshold much below 8.0 would make it flake rather
+//! than make it stricter. The remaining superlinearity is in the line half of that shape (its
+//! `line-half` column reads 8–9.5x while `onelin`'s reads 4.1x) — three `IndexMap`s keyed by
+//! `(String, u32)`, one entry per distinct source line, plus the per-object merge. Real, and
+//! smaller than anything already fixed.
+//!
+//! **How the residual was finally located, because the method is the reusable part.** Not by a
+//! counter this time: by **splitting the clock**. `arc_coverage` does the whole ordinary line
+//! ingest (`ingest_into`, which re-reads both artifacts) and *then* walks the functions again to
+//! build the arc index; "the post-decode pipeline" was one name for two amounts of work. Timing
+//! them apart put **90% of the clock on the line half** — the opposite side from the
+//! `ArcCoverage` index building that §9.1 had recorded as the last suspect. Two throwaway
+//! experiments then bisected it in four minutes: skip `line_counts` + `object.add` (ratio barely
+//! moved), then also skip `block_counts` (15.4x → 4.9x). That is the seventh refuted hypothesis
+//! and the eighth measurement that beat a reading.
 //!
 //! # ⚠️ The input shape decides which defect is visible, and that is the real lesson here
 //!
@@ -122,7 +131,7 @@ fn native_arc_ingest_does_not_grow_quadratically_in_arcs_per_function() {
     const SHAPES: [(&str, &str); 2] = [("\n", "line"), (" ", "onelin")];
     let mut verdicts: Vec<(&str, f64)> = Vec::new();
     for (sep, tag) in SHAPES {
-        let mut points: Vec<(usize, f64, u64, u64, f64, f64)> = Vec::new();
+        let mut points: Vec<(usize, f64, u64, u64, f64, f64, f64)> = Vec::new();
         for n in SIZES {
             let Some(stem) = build_and_run(&dir, n, sep, tag) else {
                 eprintln!("SKIPPED: gcc could not build the n={n} probe");
@@ -155,6 +164,16 @@ fn native_arc_ingest_does_not_grow_quadratically_in_arcs_per_function() {
             let data = d0.elapsed().as_secs_f64();
             assert!(!drecs.is_empty(), "n={n} parsed no data records");
 
+            // **The line half, timed apart from the arc half.** `arc_coverage` runs
+            // `ingest_into` — the whole ordinary line-coverage ingest, which re-reads both
+            // artifacts — and then walks the functions again to build the arc index. "the
+            // post-decode pipeline" was one name for two amounts of work, which is the same
+            // conflation that sent the parse elimination astray one measurement ago.
+            let l0 = Instant::now();
+            let mut idx = chiero_gcov::CoverageIndex::default();
+            chiero_gcov::native::ingest_into(&mut idx, None, &dir, &stem).expect("line ingest");
+            let line_half = l0.elapsed().as_secs_f64();
+
             chiero_gcov::native::reset_circuit_starts();
             let start = Instant::now();
             let cov = chiero_gcov::native::arc_coverage(&dir, &stem).expect("ingest");
@@ -166,20 +185,23 @@ fn native_arc_ingest_does_not_grow_quadratically_in_arcs_per_function() {
                 !cov.functions().is_empty(),
                 "n={n} ingested no functions, so the curve would time nothing"
             );
-            points.push((n, secs, starts, visits, parse + data, build));
+            points.push((n, secs, starts, visits, parse + data, build, line_half));
         }
 
         eprintln!("native arc ingest, ratio per 4x arcs (4x = linear, 16x = quadratic):");
         let mut worst: f64 = 0.0;
         for w in points.windows(2) {
-            let ((n0, t0, c0, v0, p0, b0), (n1, t1, c1, v1, p1, b1)) = (w[0], w[1]);
+            let ((n0, t0, c0, v0, p0, b0, l0), (n1, t1, c1, v1, p1, b1, l1)) = (w[0], w[1]);
             // A floor keeps a sub-millisecond first point from inventing a huge ratio out of noise.
             let ratio = t1 / t0.max(1e-4);
             eprintln!(
                 "  {n0:>5} -> {n1:>5}   {t0:>8.4}s -> {t1:>8.4}s   {ratio:>6.1}x   \
-                 circuit {c0}->{c1}  conservation {v0}->{v1}  |  parse+data {:.1}x  build {b0:.4}s->{b1:.4}s = {:.1}x",
+                 circuit {c0}->{c1}  conservation {v0}->{v1}  |  parse+data {:.1}x  build {b0:.4}s->{b1:.4}s = {:.1}x  \
+                 line-half {l0:.4}s->{l1:.4}s = {:.1}x ({:.0}% of the clock)",
                 p1 / p0.max(1e-4),
-                b1 / b0.max(1e-4)
+                b1 / b0.max(1e-4),
+                l1 / l0.max(1e-4),
+                100.0 * l1 / t1
             );
             if n0 >= 200 {
                 worst = worst.max(ratio);
