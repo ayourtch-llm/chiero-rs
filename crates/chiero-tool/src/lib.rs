@@ -780,8 +780,16 @@ fn witness_omitted_json(w: &chiero_exec::Witness) -> Option<serde_json::Value> {
     (d.omitted > 0).then(|| {
         serde_json::json!({
             "count": d.omitted,
+            // **The number that decides whether the printed witness can reproduce anything.**
+            // Zero normally, since pinned bindings are shown first; above zero it means a value
+            // the path constrained is missing, and no reader could infer that from the shown
+            // list — VPP's `nsh_md2_encap` shows 64 bindings and every one of them is pinned.
+            "pinned_omitted": d.pinned_omitted,
             "kinds": d.omitted_by_label,
-            "shown_first": "bindings the path pinned",
+            // ⚠️ Not "the bindings that matter": `pinned` means the *model* gave the input a
+            // value, which a solver returning a total model does for nearly all of them. It is
+            // the best available ordering, not a claim that what is shown is sufficient.
+            "shown_first": "bindings the model pinned",
         })
     })
 }
@@ -1301,7 +1309,10 @@ pub fn find_bugs(module: &chiero_cir::Module, cfg: &BugCfg) -> Envelope {
         .count();
     if truncated > 0 {
         env = env.with_blind_spot(&format!(
-            "{truncated} finding{} carr{} a witness too long to print; the rendering shows the              bindings the path pinned and `witness_omitted` counts the rest by kind, so the              printed input alone will not replay it",
+            "{truncated} finding{} carr{} a witness too long to print. The rendering prefers \
+             bindings the model pinned, and `witness_omitted.pinned_omitted` says how many of \
+             those were still dropped — measured at 10 580 on one VPP entry, so treat a \
+             truncated witness as an input that will not replay rather than a shortened one",
             if truncated == 1 { "" } else { "s" },
             if truncated == 1 { "ies" } else { "y" },
         ));

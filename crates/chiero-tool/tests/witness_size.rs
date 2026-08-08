@@ -191,3 +191,19 @@ fn truncating_the_report_does_not_truncate_the_proof_condition() {
         "every one of the 100 inputs is pinned, and only 64 are printed: {v}"
     );
 }
+
+/// **Whether a *pinned* binding was dropped is the number that decides if the printed witness
+/// can reproduce anything**, and nothing in the shown list reveals it.
+///
+/// Measured on VPP's `nsh_md2_encap`: 64 bindings shown and all 64 pinned. From that alone a
+/// reader cannot tell whether there was a 65th, so the count says it explicitly.
+#[test]
+fn the_omission_says_whether_a_pinned_binding_was_among_it() {
+    let f = finding(200);
+    assert_eq!(
+        f["witness_omitted"]["pinned_omitted"].as_u64(),
+        Some(0),
+        "the four pinned bindings are shown, so none was dropped: {}",
+        f["witness_omitted"]
+    );
+}

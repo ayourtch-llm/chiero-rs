@@ -135,6 +135,12 @@ impl Witness {
     /// walk happened to touch, and the model left it free. A bound that took the first *k* would
     /// therefore drop every value the finding depends on and keep *k* that it does not.
     ///
+    /// ⚠️ **`pinned` is not a synonym for "load-bearing", and the real case says so.** It means
+    /// the *model* gave the input a value; a solver that returns a total model pins nearly
+    /// everything. On VPP's `nsh_md2_encap` **10 580 of the 10 594 omitted bindings are pinned**,
+    /// so this ordering is the best available one rather than a claim that what survives it is
+    /// enough to reproduce anything. That is what [`WitnessDigest::pinned_omitted`] is for.
+    ///
     /// Order is preserved within each group, so a reader sees the pinned inputs in the order the
     /// path met them.
     ///
@@ -150,6 +156,7 @@ impl Witness {
             return WitnessDigest {
                 shown: self.bindings.iter().collect(),
                 omitted: 0,
+                pinned_omitted: 0,
                 omitted_by_label: Vec::new(),
             };
         }
@@ -159,12 +166,15 @@ impl Witness {
         // **Counted by identity, not by value**: two bindings may be equal and still be two
         // inputs, and a reader asking "how many were left out" is asking about inputs.
         let mut omitted_by_label: Vec<(String, usize)> = Vec::new();
-        let mut omitted = 0usize;
+        let (mut omitted, mut pinned_omitted) = (0usize, 0usize);
         for b in &self.bindings {
             if shown.iter().any(|s| std::ptr::eq(*s, b)) {
                 continue;
             }
             omitted += 1;
+            if b.pinned {
+                pinned_omitted += 1;
+            }
             let label = b.origin.label();
             match omitted_by_label.iter_mut().find(|(l, _)| *l == label) {
                 Some((_, n)) => *n += 1,
@@ -175,6 +185,7 @@ impl Witness {
         WitnessDigest {
             shown,
             omitted,
+            pinned_omitted,
             omitted_by_label,
         }
     }
@@ -215,6 +226,14 @@ pub struct WitnessDigest<'a> {
     /// Pinned bindings first, then free ones, each in the order the path met them.
     pub shown: Vec<&'a Binding>,
     pub omitted: usize,
+    /// How many of the omitted bindings the **path had pinned**.
+    ///
+    /// Zero when the pinned bindings fit, and when it is not zero it is the most important number
+    /// here: the printed witness is missing values the model bound, so nobody should expect it to
+    /// reproduce. **Measured on VPP's `nsh_md2_encap`: 64 shown, all 64 pinned — and 10 580 more
+    /// pinned bindings dropped.** From the shown list alone a reader would conclude the opposite,
+    /// which is the whole reason this field is not an implementation detail.
+    pub pinned_omitted: usize,
     /// What was left out, by [`InputOrigin::label`], most numerous first.
     ///
     /// The label is what makes the omission actionable: "10 593 lazily-materialized bytes" tells
