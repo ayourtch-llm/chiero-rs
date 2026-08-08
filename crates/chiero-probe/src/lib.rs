@@ -43,6 +43,7 @@ pub struct Probe {
     personas: Mutex<BTreeMap<Vec<String>, Persona>>,
     includes: OnceLock<Vec<PathBuf>>,
     persona_probes: AtomicUsize,
+    failed: Mutex<Vec<Vec<String>>>,
 }
 
 impl Default for Probe {
@@ -64,6 +65,7 @@ impl Probe {
             personas: Mutex::new(BTreeMap::new()),
             includes: OnceLock::new(),
             persona_probes: AtomicUsize::new(0),
+            failed: Mutex::new(Vec::new()),
         }
     }
 
@@ -144,6 +146,17 @@ impl Probe {
         &self.cc
     }
 
+    /// The flag-sets the compiler could not be asked about, in the order they were tried.
+    ///
+    /// **A substitution nobody can see is a lie the run tells its own metrics.** When a probe
+    /// fails, the answer handed back is the baked persona — the right fallback, and *not* the
+    /// persona for the flags requested. A caller reporting "5 personas probed" while two of them
+    /// were substitutions is reporting a configuration it did not analyse under, which is the
+    /// exact class of defect the persona type was built to fix.
+    pub fn failed_probes(&self) -> Vec<Vec<String>> {
+        self.failed.lock().expect("persona cache").clone()
+    }
+
     fn run_persona_probe(&self, target_flags: &[String]) -> Persona {
         // ⚠️ `-std=gnu11` deliberately: 013 makes the parser C11 + GNU extensions, and a persona
         // announcing C17 over a C11 parser would be a worse lie than the one the persona exists to
@@ -152,17 +165,37 @@ impl Probe {
         args.extend(target_flags.iter().cloned());
         args.extend(["-x".into(), "c".into(), "/dev/null".into()]);
         self.persona_probes.fetch_add(1, Ordering::Relaxed);
-        let Ok(out) = std::process::Command::new(&self.cc).args(&args).output() else {
-            // No compiler is a fact about the machine, not about the code — fall back to the set
-            // chiero has always baked rather than to an empty persona, which would predefine
-            // nothing and send every real header down its `#else`.
-            return Persona::baked();
-        };
         let name = if target_flags.is_empty() {
             self.cc.clone()
         } else {
             format!("{} {}", self.cc, target_flags.join(" "))
         };
-        Persona::from_defines(name, &String::from_utf8_lossy(&out.stdout))
+        // **Three ways to learn nothing, and one rule: a probe answers, or it failed.** The
+        // process may not start; it may start and refuse the flags (`cc -march=nonsense` exits
+        // non-zero, printing no `#define`); or it may succeed and print none anyway. The first was
+        // the only one handled, because the code asked whether the process *started* rather than
+        // whether it *answered* — and the other two produce an **empty** persona, which is not a
+        // neutral result: `__GNUC__`, `__linux__` and `__x86_64__` all undefined sends every real
+        // header down its `#else` and analyses a program nobody compiles.
+        //
+        // So the fallback is the set chiero has always impersonated, and the flag-set is recorded,
+        // because a substitution that shows up nowhere is a lie a run tells its own metrics.
+        let probed = match std::process::Command::new(&self.cc).args(&args).output() {
+            Ok(out) if out.status.success() => Some(Persona::from_defines(
+                name,
+                &String::from_utf8_lossy(&out.stdout),
+            )),
+            _ => None,
+        };
+        match probed {
+            Some(p) if !p.is_empty() => p,
+            _ => {
+                self.failed
+                    .lock()
+                    .expect("persona cache")
+                    .push(target_flags.to_vec());
+                Persona::baked()
+            }
+        }
     }
 }

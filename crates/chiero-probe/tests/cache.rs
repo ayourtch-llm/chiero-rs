@@ -113,4 +113,15 @@ fn a_probe_that_produces_no_defines_falls_back_rather_than_answering_nothing() {
         chiero_pp::Persona::baked(),
         "an unusable probe falls back to the set chiero has always impersonated"
     );
+    assert_eq!(
+        p.failed_probes(),
+        vec![bogus],
+        "and says which flag-set it could not probe, or the substitution is silent"
+    );
+    p.persona(&[]);
+    assert_eq!(
+        p.failed_probes().len(),
+        1,
+        "a probe that answered is not a failure"
+    );
 }

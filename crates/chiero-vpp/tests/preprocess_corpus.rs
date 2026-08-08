@@ -150,6 +150,13 @@ fn every_vpp_compile_command_preprocesses_without_panicking() {
         probe.persona_probes(),
         probe.compiler()
     );
+    // **A flag-set the compiler refused is a unit analysed under the wrong persona**, and it is
+    // silent everywhere else: the run still preprocesses, still emits no diagnostic, and still
+    // counts a persona. Named here, and asserted below, because the baked fallback is the right
+    // answer and the wrong one to be given without knowing.
+    for f in probe.failed_probes() {
+        eprintln!("  ⚠️ could not probe a persona for {f:?} — the baked one was substituted");
+    }
     if unreadable > 0 {
         eprintln!("  ⚠️ {unreadable} sources the database names do not exist on disk");
     }
@@ -169,6 +176,13 @@ fn every_vpp_compile_command_preprocesses_without_panicking() {
         eprintln!("  {n:>5}  {k}  e.g. {}", ex.0.display());
     }
 
+    assert!(
+        probe.failed_probes().is_empty(),
+        "{} target flag-sets could not be probed, so those units were analysed under a persona \
+         that is not theirs: {:?}",
+        probe.failed_probes().len(),
+        probe.failed_probes()
+    );
     assert!(
         panicked.is_empty(),
         "{} of {} VPP translation units panicked the preprocessor ({} distinct causes)",

@@ -104,8 +104,8 @@ five-minute experiment is worse than no contingency.
   credential is a deploy key in `.deploy/` (gitignored, `700`): `./.deploy/push.sh` adds it to
   an agent scoped to the script and pushes the current branch, `--check` only authenticates.
   Nothing in `.deploy/` is committed — key, script and README are properties of this machine.
-- **Licence: MIT OR Apache-2.0**, both texts at the repository root, every one of the 23
-  packages inheriting the SPDX field. Left for the first publish: the texts are not inside each
+- **Licence: MIT OR Apache-2.0**, both texts at the repository root, every one of the **24**
+  packages inheriting the SPDX field (`chiero-probe` was added 2026-08-08). Left for the first publish: the texts are not inside each
   crate's tarball and no manifest has a `description`.
 
 ## 4. Design digest
@@ -148,7 +148,9 @@ Plus the reverse index `MacroId -> [expansion sites]`, which powers §4.8.
 ### 4.3 Crate graph
 
 `chiero-span` → `chiero-lex` → `chiero-pp` → `chiero-ast` → `chiero-parse` →
-`chiero-sema` → `chiero-cir` (lowering).
+`chiero-sema` → `chiero-cir` (lowering). Beside `chiero-pp`: **`chiero-probe`**, the one crate
+that runs `cc -dM -E` — a `Persona` is read from that text and something has to produce it, and
+one probe rather than one per surface is the whole point (2026-08-08).
 Independently: `chiero-solver`, `chiero-mem`, `chiero-exec`, `chiero-model`.
 Verticals: `chiero-gcov`, `chiero-diff`, `chiero-select`, `chiero-check`, `chiero-opt`.
 Surfaces: `chiero-tool` (MCP/JSON-RPC), `chiero-cli`, `chiero-vpp`.
@@ -1771,12 +1773,23 @@ typing the paths ever would.
    they *select a persona* rather than configure the preprocessor — only the compiler knows what
    `-march=haswell` implies, so they go to a `cc -dM -E` probe uninterpreted.
 
-   **What remains, and it is genuinely small:**
-   - `frontend` probes the compiler once per *invocation*; a sweep over many TUs wants the persona
-     **cached per flag-set** (5 probes, not 1963).
-   - Nothing yet *joins* the two: a sweep still passes one persona for the whole run. The join is
-     `for u in db.c_units() { cfg.persona = persona_for(&u.target_flags) }` — a lookup, and the
-     thing that would finally make 060 contract 2 (multiarch 1:N) real.
+   ✅ **Both halves closed 2026-08-08 — `chiero-probe`, and the join.** The 24th crate exists for
+   one reason: `chiero-cli` and `chiero-vpp` both need "what does *this* compiler predefine under
+   *these* flags", and a second `cc -dM` probe in `chiero-vpp` would have been the **third**
+   mechanism for one fact (1b's whole complaint). `chiero-pp` stays free of subprocesses.
+
+   - **The cache was keyed on nothing.** `system_environment` took the target flags and memoized
+     the answer in a `OnceLock`, so within one process the *first* flag-set was answered to every
+     later one. Latent while one process meant one operation meant one flag-set — and a sweep is
+     exactly the case where it is not. `Probe::persona_probes()` counts the **subprocess**, not the
+     call, so "one run per distinct flag-set" is measured rather than asserted (5 for 1967 units).
+   - **`TranslationUnit::pp_config` now takes the probe** and joins `target_flags` → `persona`. A
+     parameter rather than an option, for the reason the `ConfigId` is handed over ready-made: a
+     caller that skips the join gets every `#if defined(__AVX2__)` in its `#else` and **nothing in
+     the output says so**. 060 contract 2's structural half was already met; this is the half that
+     makes it mean something — one source, N units, N *different programs*.
+   - Mutants confirm both: dropping the memoization, returning the cache's first entry whatever the
+     key, and passing `&[]` in place of the unit's flags each fail a test that named them.
 
 1z. **🗄️ Original entry, kept because its reasoning held up — closed, not parked.** It read:
    PARKED at the owner's request
@@ -1918,7 +1931,15 @@ typing the paths ever would.
    - **`__has_attribute(error)` answered 0; gcc answers 1** — the persona's own documented
      failure mode, found in 20 TUs that all build `_FORTIFY_SOURCE=2`.
 
-1e. 🆕 **012 contract 17's corpus gate measures a configuration nobody ships — and fixing it is
+1e. ✅ **CLOSED 2026-08-08 — the gate now measures the shipped configuration.** Both facts come
+   from `chiero_probe::Probe`, the same one the CLI uses: system include paths *and* the persona
+   the unit's own `-march` selects. The private `gcc -E -v` scrape in the test file is gone, so the
+   count of mechanisms went from three-if-I-had-done-the-obvious-thing to **one**. The run prints
+   `personas: N distinct target flag-sets probed from cc`, because that is the number that moves
+   when the join is wrong and no other number here does.
+
+   *Original entry, kept for the reasoning that made waiting right:* **it measures a configuration
+   nobody ships — and fixing it is
    blocked on the persona design, not on effort.** The gate takes each TU's `-D`/`-I` from
    `builddb`, its system paths from `gcc -E -v`, and its **predefines from `Config::default()`'s
    baked table**. `chiero-cli` does not: `frontend::predefines` runs `cc -dM -E -std=gnu11` and
@@ -1928,10 +1949,15 @@ typing the paths ever would.
    table — but as a *standing* gate it should model the shipped configuration, and the persona
    gaps are now covered by `persona_gap` instead.
 
-   ⛔ **Not started, deliberately.** The obvious fix is to capture `cc -dM` in `chiero-vpp` too,
-   which would make **three** mechanisms for one fact. The right fix is one mechanism — a named
-   persona the preprocessor owns, which is exactly the owner's config-file idea (1b). Building
-   `Config::from_compiler()` now would pre-empt that design. Raise 1b, 1d and this together.
+   🗄️ **Not started, deliberately** *(the marker was ⛔ and is now historical — a blocker emoji on
+   a closed item is exactly the rot §11.3 says to sweep for)*. The obvious fix is to capture
+   `cc -dM` in `chiero-vpp` too, which would make **three** mechanisms for one fact. The right fix
+   is one mechanism — a named persona the preprocessor owns, which is exactly the owner's
+   config-file idea (1b). Building `Config::from_compiler()` now would pre-empt that design.
+
+   **And waiting was right**: 1b landed as `Persona`, and the one mechanism it wanted is now a
+   crate that both callers share. Had this been "fixed" when it was filed, the fix would have been
+   the third mechanism.
 
 1d. 🆕 **`__STDC_VERSION__` is `201112L` in the persona and `201710L` under gcc — and this is a
    decision, not a bug.** VPP's compile commands carry **no `-std=` flag at all**, so gcc's
