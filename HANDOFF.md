@@ -1723,7 +1723,12 @@ typing the paths ever would.
    |---|---|---|
    | first run, 2026-08-08 | **25** | 3 distinct causes |
    | after the platform predefines | **22** | `#error "Unsupported OS"` gone |
-   | after 012 c25 + the attribute table | *pending re-measure* | all three causes addressed |
+   | after 012 c25 + the attribute table | **0** | all three causes addressed |
+   | after the endianness predefines | *re-measure in flight* | the fix opens branches that were dead |
+
+   ⚠️ **"0 diagnosed" means the preprocessor emits nothing, not that it is right about VPP**, and
+   this file has the proof in the very next paragraph: the endianness defect was live during the
+   run that first reported 0. Read the row as *no unaddressed complaint*, never as *correct*.
 
    The three, each a real fix and none guessed at:
    - **`__linux__` and its two other spellings** were not baked, so `vppinfra/pmalloc.c` reached
