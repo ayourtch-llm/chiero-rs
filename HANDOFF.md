@@ -1585,28 +1585,31 @@ typing the paths ever would.
 > for months (*a green gate is evidence about the corpus, not about the tree*). Then §9.1 for
 > the next target.
 >
-> ### 🆕 Suggested first moves after 2026-08-08 (second session), in order
+> ### 🆕 Suggested first moves after the second 2026-08-08 session, in order
 >
-> 1. **Run the three gates below.** The persona thread closed today and the corpus gate now
->    preprocesses each TU under *its own* `-march`, so its two headline numbers have exactly one
->    datapoint behind them. ⏱️ It is no longer ~20 min: **the persona join made it longer**, and the
->    number in this file is the one to beat rather than to trust.
-> 2. ✅ **Done 2026-08-08 — the whole persona thread, including the join** (§9.1 item 1 and 1e).
->    `chiero-probe` is the 24th crate: one place that runs `cc -dM -E`, memoized per flag-set, and
->    `TranslationUnit::pp_config(&probe)` makes the join unskippable. 060 contract 2 is met.
->    §9.1 1d (`__STDC_VERSION__`: the persona says C11, gcc's default is gnu17) is still the
->    **owner's call on the language level** and is the only part of that thread left.
-> 3. ✅ **Done 2026-08-08 — the growth gate passes for the first time** (§9.1's audit entry).
->    `block_counts` scanned every arc for every block and was **90% of the native ingest's clock**;
->    two smaller fixes went with it. What is left there is a *smaller* residual in the `line`
->    shape's line half, described in `growth.rs`'s header — worth doing only if a real coverage
->    ingest turns out to care, and **do not tighten the 8.0x threshold**: the band is ±0.8x and it
->    would flake rather than bite.
+> 1. **Run the two fast gates** (`persona_gap` 0.1 s, `growth` ~5 s). The 23-minute corpus gate is
+>    worth it only when something touched the frontend or the persona — it was run at the end of
+>    this session and its numbers are below.
+> 2. **Pick a widening (§8.3), or take a concrete item from §9.1.** The live ones, roughly by
+>    value: the **witness reporting defect** (a 950 KB envelope for one finding, 10 658 bindings —
+>    it has a reproduction command and four measured dead ends, and the next fixture *must not
+>    fork*); the **stale VPP build directory**, which quietly affects every number this project
+>    publishes; and **032 contract 18's replay corpus**, still with no `observed` entry.
+> 3. ⚠️ **Two closed today, do not re-open:** the whole persona thread (`chiero-probe`, the join,
+>    060 contract 2, and the corpus gate's own configuration gap) and the gcov growth gate, which
+>    passes for the first time. §9.1 1d (`__STDC_VERSION__`) is the **owner's call on the language
+>    level** and is the only part of the persona thread left.
 >
 > ⚠️ **What not to do:** do not "fix" a `Vec::contains` because it looks quadratic — see §9.1,
-> where two that looked it were not and one described in passing was the whole cost. **Nothing is
-> parked right now**; the pause emoji appears nowhere in §9.1, which is what the heartbeat's
-> instruction resolves to.
+> where two that looked it were not and one described in passing was the whole cost. Do not
+> tighten `growth.rs`'s 8.0x threshold. **Nothing is parked right now**; the pause emoji appears
+> nowhere in §9.1, which is what the heartbeat's instruction resolves to.
+>
+> 📌 **The method that paid twice today, both times against a recorded guess:** *instrument the
+> boundary between two things before counting inside either.* The persona defect was a cache
+> keyed on nothing, found by asking what two different flag-sets do in one process; the gcov
+> residual was found by splitting one clock into a line half and an arc half, which put 90% of the
+> cost on the opposite side from the suspect this file had written down.
 >
 > ✅ **The owner's close-the-gap ask is DONE — pp-gate reports 0 findings** (§7.11). Keep it as a
 > two-minute standing check.
