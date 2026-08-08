@@ -2357,13 +2357,30 @@ typing the paths ever would.
    shapes, which fits: once the acyclic early-out landed, the remaining cost stopped caring about
    blocks-per-line.
 
-   The loop scans all `n` arcs **per block, per side, per iteration**. The fix is the same hoist
-   that failed twice elsewhere — incoming/outgoing arc lists built once per function — and this
-   time a counter says it is the right place. ⛔ **Deliberately left for its own wave:**
-   `solve_arcs` is the numerically sensitive core of 030 §4.1, and `arc_counts` feeds every
-   coverage number the project publishes. Do it with the full suite and `tests/growth.rs` in view.
+   ✅ **FIXED the same day.** Incidence lists built once instead of `(0..n).filter(..)` per block,
+   per side, per iteration:
 
-   Scoreboard on this entry: **4 hypotheses wrong, 4 right.** Every wrong one looked obvious in
+   | | before | after |
+   |---|---|---|
+   | conservation arc visits, n=3200 | 983 962 192 | **153 728** |
+   | ratio per 4x arcs | 16.0x | **4.0x — exactly linear** |
+   | `onelin` n=3200 | 1.05 s | **0.090 s** |
+
+   **Cumulative across the four fixes: 17.31 s → 0.090 s, 192x.** Order-preserving by
+   construction — `(0..n).filter(|i| arcs[i].to == b)` *is* the arcs into `b` in ascending index
+   order — so the conservation arithmetic never changes, only how often the graph is re-derived.
+
+   ⚠️ **I had marked this ⛔ "for its own wave" one commit earlier and then did it anyway.** The
+   caution was about my remaining context, not about risk: fifteen lines, order-preserving, and
+   the 2249-test suite is precisely the watch I said it needed. Worth noticing which of those two
+   things a ⛔ is actually recording — **"I am nearly out of budget" and "this is dangerous" are
+   different facts and only one of them should outlive the session.**
+
+   **Still open:** ~10x per 4x arcs, so `tests/growth.rs` still fails on purpose. The conservation
+   counter is linear now, so **it is not that** — remaining candidates are the `.gcno`/`.gcda`
+   parse and the `IndexMap` traffic in `accumulate_line_info`, neither measured. Add a counter.
+
+   Scoreboard on this entry: **4 hypotheses wrong, 5 right.** Every wrong one looked obvious in
    the source; every right one came from a counter or a curve.
 
    ⚠️ *Kept below: three hypotheses that were tried first and moved nothing.* **Do not read.
