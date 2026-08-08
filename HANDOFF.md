@@ -2323,9 +2323,22 @@ typing the paths ever would.
    is the check that both were cost-per-call changes and not accidental semantic ones, and the
    full suite agrees.
 
-   **What is left is not a data-structure problem.** The quadratic **call count** is inherent to
-   running one DFS per block on the attributed line; cutting it needs an algorithmic change to the
-   enumeration. Queued, not claimed — and now judgeable against `tests/growth.rs`'s numbers.
+   ✅ **Third fix, and it is the algorithmic one: skip the enumeration when the induced subgraph
+   is acyclic.** `cycles_count` started a DFS at *every* block in `bs` whether or not a circuit
+   existed; Kahn's algorithm answers that in O(V+E) once. **5.61 s → 1.05 s**, circuit calls
+   **5 128 004 → 0**.
+
+   **Cumulative: 17.31 s → 1.05 s (16.5x)**, and the blocks-per-line pathology is *gone* — the two
+   curve shapes differed by 17x in the morning and now sit within noise of each other at ~1.1 s.
+
+   ⚠️ **Not "the enumeration is fixed".** The curve's input is straight-line, so the early-out
+   fires everywhere and the counter reads 0. **A function with a real loop still pays the full
+   O(V × (V+E))** — what changed is that straight-line code no longer funds a search that cannot
+   succeed. The cycle path stays covered by the `cyc.gcno` fixture.
+
+   **Still open:** 13.8x per 4x arcs against a linear 4x, so `tests/growth.rs` still fails on
+   purpose. The remaining cost is no longer in `cycles_count` — **re-profile before assuming
+   where it is**, since this entry's track record on that question is 3 wrong, 3 right.
 
    ⚠️ *Kept below: three hypotheses that were tried first and moved nothing.* **Do not read.
    Profile.**
