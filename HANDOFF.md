@@ -2192,8 +2192,33 @@ typing the paths ever would.
    Cutting it needs Lengauer-Tarjan's idom-only form or bitsets: **a design change, queued not
    claimed.** Worth doing only if a real VPP function turns out to be large enough to care.
 
-   ⛔ **`chiero-gcov`'s half is blocked on artifacts, and this is why it is recorded rather than
-   fixed.** There are **no
+   🆕 **UNBLOCKED 2026-08-08, and the triage below was wrong about where the cost is.**
+   The artifact block was false: a `.gcno` need not be found or hand-written — **gcc emits one of
+   any size from generated C**. `if (x == i) r += i;` repeated *n* times gives Θ(n) blocks and
+   Θ(n) arcs in one function, and running the binary writes the `.gcda`. The whole instrument is
+   `crates/chiero-gcov/tests/growth.rs`, committed and `#[ignore]`d.
+
+   **Measured — native arc ingest is quadratic** (4x per 4x arcs is linear, 16x is quadratic):
+
+   | | 50→200 | 200→800 | 800→3200 |
+   |---|---|---|---|
+   | before | 6.3x | 12.2x | **14.7x** |
+   | after the three `contains` fixes | 3.3x | 11.1x | **15.4x** |
+
+   ⚠️ **The three sites named below are not the bottleneck.** They are `IndexSet`s now (commit
+   `23ba416`) — strictly better, no scan and no clone-per-probe — and **the ratio did not move**.
+   That is this file's own warning landing on the person who wrote it down: the CIR verifier entry
+   two paragraphs up says *"the ratio had not moved, so only the constant had"*, and here not even
+   the constant moved.
+
+   **Next reader: start from the curve, not from a reading.** The remaining suspect is Johnson's
+   circuit enumeration (`native.rs` ~1250–1290), where `bs.contains(&w)` and
+   `blocked.iter().position(...)` sit in the innermost recursion of a cycle enumeration that is
+   already superlinear. Whether the fix is membership sets or a different solve is an open
+   question — and the curve now answers it in about two seconds per attempt.
+
+   ⛔ *Original entry, kept because its reasoning is the thing that turned out to be wrong:*
+   **`chiero-gcov`'s half is blocked on artifacts.** There are **no
    `.gcno` files under `/home/ubuntu/vpp`** — the 1895-file validation in §7.1 was a one-off
    against a coverage build that no longer exists. Without it there is no growth curve, and this
    entry's own rule says a reading is not a measurement. Two honest ways forward: rebuild VPP with
