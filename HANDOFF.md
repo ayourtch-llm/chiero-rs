@@ -1886,6 +1886,25 @@ typing the paths ever would.
    `ptrace_scope=1` workaround. ⚠️ A `timeout` row is a run that measured **nothing** — it is a
    lead, not a statistic.
 
+5f. 🆕 **The sweep analyses files VPP does not compile — and that is how it found a real VPP
+   defect.** `src/vnet/fib/fib_entry_src_default.c` defines `fib_entry_src_default_deinit`
+   **twice**, at lines 22 and 35, both `static void … {}`. chiero refuses it; **gcc gives the
+   identical error at the identical line** (`redefinition of …`); and the file is **not in the
+   build at all** — zero of `ninja -t commands all`'s 2945 entries mention it, and
+   `src/vnet/CMakeLists.txt` does not list it. It is dead source that has never compiled, which
+   is exactly why nobody noticed.
+
+   Two things follow, and the second is the actionable one:
+
+   - chiero found a genuine VPP defect by reading a file the build ignores. Small, but real, and
+     the kind of thing 050's tool surface exists to report.
+   - **`pick_entries.py` globs `vnet/*/*.c` and `plugins/*/*.c`, so the corpus includes source
+     the build never touches.** That inflates `failed` with rows that are neither chiero's
+     problem nor VPP's compiled code. `ninja -C $VPPBUILD -t commands all` is the authoritative
+     list and takes **63 ms** (§9.2) — filtering the entry list through it would make every
+     `failed` row a statement about code that ships. ⚠️ Do this *before* the next sweep, or the
+     residue keeps mixing two different kinds of rejection.
+
 5d. ⚠️ **The VPP build directory is STALE, and it affects every number this project publishes.**
    `src/plugins/lldp/lldp.api` declares `f64 last_heard_age;` and was modified at 23:32:08 on
    2026-08-05; the generated `lldp.api_types.h` it compiles against was produced at **23:14:37**,
