@@ -2321,10 +2321,24 @@ typing the paths ever would.
    — 050's envelope already carries the machinery to say "true, and here is the premise", which
    is how `globals_at_initial_value` handles the same tension.
 
-   ⚠️ Seven remain unread, and two of those resisted a quick grep rather than being checked and
-   cleared. Eight of fifteen is a characterisation; it is still not a census, and the entry above
-   records what it cost to call 19 findings one cause when it was 4. **A shared *message* is not a
-   shared *cause*, and a shared *shape* in eight samples is not all fifteen.** `pointer-outside-object` says the offset can leave the object; that can
+   ✅ **Census finished — all eleven distinct arrays read — and it found the exception.** Ten are
+   the shape above. **One is not:**
+
+   ```c
+   const char *strings[sizeof (vnet_hw_if_caps_t) * 8] = { … };   /* one entry per bit */
+   int bit = get_lowest_set_bit_index (caps);
+   if (strings[bit]) …                                            /* vnet/interface/caps.c */
+   ```
+
+   The index **is** bounded — by `get_lowest_set_bit_index`'s postcondition, one entry per bit of
+   the type — and chiero cannot see it. That is a **second cause**: not "the function does not
+   check" but "the check is a helper's contract chiero does not model". It wants a different
+   answer from the other ten, and grouping by message would have hidden it.
+
+   ⚠️ **Finishing the census is what found it.** At eight samples the shape looked universal and I
+   had already written it up that way; the eleventh site disproved it. Twice on this entry a class
+   has looked like one cause and been more — 19 findings that were 4, and now ten-of-eleven that
+   is ten-and-one. **Read the last one.** `pointer-outside-object` says the offset can leave the object; that can
    happen for as many reasons as there are ways to lose a constraint. The next one needs the same
    treatment from scratch — pick one, `chiero cir` it, instrument the boundary — and not the
    assumption that it is this bug again.
