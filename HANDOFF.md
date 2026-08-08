@@ -1588,30 +1588,35 @@ typing the paths ever would.
 > panics on the C standard's own worked example, after four consecutive widenings of VPP-shaped
 > corpora had begun returning honest zeros. §11.3 carries the general form.
 >
-> **State: 2026-08-08 — `./check.sh` GREEN at 2229 passed across 264 suites, fmt and clippy
-> clean, gate 3m56s (was 6m51s).** Verified on all three CI legs and pushed; the tree had been
-> **red in CI** (26 fmt diffs, 2 clippy errors) while the old one-leg script called it green.
+> **State: 2026-08-08 — `./check.sh` GREEN at 2231 across 264 suites, fmt and clippy clean,
+> gate 3m56s.** Verified on all three CI legs and pushed.
 >
-> **Closed:** `MemFault::BadRange`; 023 §8's `max_solver_rlimit` and `max_memory_objects` — with
-> which **every budget in that sketch is built**; `--solver-rlimit` on the three commands that run
-> a solver; the CIR verifier's **super-quadratic `dominators`** and seven more scans beside it,
-> which is what VPP's `timeout` rows actually were; `vars_of` paying for the whole arena on every
-> solver query; `globals_at_initial_value`, so a `proven: true` finding names the premise it rests
-> on; `[profile.dev] opt-level = 2`; and `pick_entries.py --built-only`.
+> **Closed:** `MemFault::BadRange`; 023 §8's `max_solver_rlimit` and `max_memory_objects` — every
+> budget in that sketch is now built; `--solver-rlimit` on the three solver commands; the CIR
+> verifier's super-quadratic `dominators` and eight scans beside it; `vars_of` paying for the whole
+> arena on every solver query; `globals_at_initial_value`; `[profile.dev] opt-level = 2`;
+> `pick_entries.py --built-only`; **`chiero cir`**; and **021 contract 7b**, written and then met.
 >
-> ⚠️ **The recurring lesson of this stretch, four times over: chiero was right and the corpus or
-> the environment was wrong.** A duplicate definition, a missing declaration, a stale generated
-> header, and a function behind `#if SESSION_DEBUG > 0` — every one looked like a frontend gap and
-> gcc agreed with chiero on all of them. **Check a `failed` row against gcc before believing it is
-> ours.**
+> **The `vnet/` sweep, characterised end to end** (423 entries, 44 findings → 40 after 7b):
+> 17 `out-of-bounds` are indirect-call candidates and architectural — CIR pointers are untyped
+> (020 §4.13b), so the candidate filter cannot tell `u32 *` from `u64 *`; 10 of the 15
+> `pointer-outside-object` are static tables indexed by an enum-shaped value the function does not
+> check, which is **true** under UCSE and a *policy* question; 1 is bounded by a helper's
+> postcondition chiero cannot model. **None is chiero claiming something false** — fidelity is
+> never `Exact` and the assumptions name the causes.
 >
-> ⚠️ **And three tests that could not fail**, each caught only by mutating *after* green: a ratio
-> of durations (load-sensitive), a counter that was identical on the defective code, and a
-> wall-clock bound that stopped discriminating when the build got faster. §11.1 carries them.
+> ⚠️ **The rules this session paid for, in order of what they cost:**
+> - **Instrument the boundary; do not reason about the code.** Three mechanisms were asserted from
+>   reading source and two were wrong.
+> - **A shared *message* is not a shared *cause*.** 19 findings attributed to one defect were 4.
+> - **Read the last one.** At eight of eleven samples the shape looked universal; the eleventh was
+>   a different cause.
+> - **Check the file, not the exit status, when an edit is scripted.** Twice a commit message
+>   described a change the tree did not contain.
+> - **Ask whether a green test can fail.** Three tests could not, each caught only by mutating.
 >
-> **Open leads, none blocking:** the 10 658-binding witness on `nsh_md2_encap` (§9.1, four
-> measured dead ends and the structural reason for them); the VPP build directory is **stale**;
-> `pick_entries.py` names functions the preprocessor removes.
+> **Open leads, none blocking:** the remaining `pointer-outside-object` policy question; the VPP
+> build directory is **stale**; `pick_entries.py` names functions the preprocessor removes.
 >
 > *Earlier in the session, at 2215/263, measured after the `BadRange` closure:* Up from 2154 at the previous session's start and 2193/258 before the
 > last two preprocessor closures. Earlier in the session: §7.11's seven waves over the
