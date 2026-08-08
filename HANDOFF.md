@@ -1685,6 +1685,26 @@ typing the paths ever would.
    project has published over VPP is silent about that half of the tree. Worth putting to the
    owner when the item is unparked; it does not change the recommendation to design first.
 
+1b. 🆕 **Owner's idea, 2026-08-08: personas defined in a config file rather than baked.**
+   Raised while watching me hardcode five more predefines into `chiero-pp`'s engine, and it is
+   the right shape for three separate things that are currently three separate problems:
+
+   - **The baked persona is an impersonation with no name.** `__GNUC__ 13` / `__GNUC_MINOR__ 3`
+     / `__x86_64__` / `__linux__` … is "gcc 13.3 on x86-64 Linux" written as a Rust array, and
+     nothing in the code says so or lets a caller say otherwise. Every gap in it has been found
+     the same way — by a corpus falling into a `#else` — and each fix has been another literal.
+   - **`chiero-cli`'s `frontend` already captures a whole `cc -dM`**, so two mechanisms exist for
+     one fact, and only one of them is available with `--no-default-features`.
+   - **⏸️ It is the natural seam for the PARKED `-march` item**, which is exactly "the persona
+     must vary per translation unit": VPP compiles one source repeatedly under different
+     `-march`, and `__AVX2__`/`__SSE4_2__` are just more predefines. A config-file persona turns
+     that from a new subsystem into a per-TU choice of an existing one.
+
+   ⚠️ **Do not start it as a way around the parked item.** The overlap is the reason to raise the
+   design with the owner together, not the reason to begin. What is safe to do first, and is
+   independent of any design: keep using 012 contract 17's corpus run to find *which* predefines
+   are missing, since that is evidence either design will need.
+
 2. **Unwidened surfaces, in rough order of expected yield** (§8.3 is the loop):
    - ~~The sema corpus gate's contract 11 and contract 19~~ — **both wrong, and both closed.**
      They are **010**'s contracts, not sema's. 19 was already covered by
