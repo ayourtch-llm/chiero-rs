@@ -173,8 +173,18 @@ of `vnet/*/*.c` at one entry per file — §11.3's "change the kind, not the siz
 
 | | |
 |---|---|
-| 423 entries | `ok` 406, `cut` 7, `nofn` 3, `failed` 7, **`timeout` 0**, `noinc` 0 |
-| findings | **44**, of which **0** are `Exact` |
+| 423 entries, globbed | `ok` 406, `cut` 7, `nofn` 3, `failed` 7, **`timeout` 0**, `noinc` 0 |
+| **417 entries, `--built-only`** | `ok` 404, `cut` 7, `nofn` 3, **`failed` 3**, `timeout` 0, `noinc` 0 |
+| findings | **44** either way, of which **0** are `Exact` |
+
+**`--built-only` is the number to quote.** `failed` drops 7 → 3 and the four that vanish are
+exactly the rows from files the build never compiles — the duplicate definition, `pcap_read`
+twice, and `api_sr_localsid_add_del_v2` in `sr_test.c`. **Findings are identical at 44**, so
+those files contributed noise and nothing else.
+
+What is left is interpretable, which is the whole point: two `-march`-family intrinsics
+(`u32x4_gather`, `clib_crc32c_u32` — the parked item) and one generated API type
+(`vl_api_sfdp_timeout_dump_t`). No row in that list is a mystery.
 
 A far cleaner subsystem than the plugins: no exotic external headers, so nothing is `noinc`, and
 nothing timed out. Findings per entry run about three times the plugin rate. The four kinds are
@@ -212,8 +222,8 @@ failure the option exists to end. And it reads `-c <source>` rather than a const
 because object paths cannot be derived from source paths under CMake object libraries — the trap
 `probe.sh` documents.
 
-⚠️ **The numbers in this section were taken *without* it**, so their 7 `failed` rows include the
-two uncompilable files. Re-run with `--built-only` before comparing against anything later.
+✅ **Re-run with it; both rows are in the table above.** The comparison is itself the argument
+for the flag: same findings, a third of the failures, and every survivor explainable.
 
 The other five: two `-march`-family intrinsics (`u32x4_gather`, `clib_crc32c_u32`, the parked
 item), a generated API type, and an unresolved `api_sr_localsid_add_del_v2`.
