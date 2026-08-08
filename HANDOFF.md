@@ -2406,9 +2406,18 @@ typing the paths ever would.
    as authoritative. This curve had stopped growing past the point where its subject dominated the
    clock — the same failure as the input-shape blindness in its own header, twice in one file.
 
-   **Unmeasured candidates:** the `.gcno`/`.gcda` parse, and the `IndexMap` traffic in
-   `accumulate_line_info` (`acc.entry((bl.file.clone(), line))` clones the filename per line).
-   **Counter first** — that instruction has been right five times on this entry.
+   ⚠️ **Tested and ruled out: `acc.shift_remove(key)`** at `native.rs:1023`. It sits inside
+   `for (key, bs) in &on_line` and `shift_remove` is O(n) on an `IndexMap`, so it reads as a
+   textbook quadratic — Θ(lines) × O(|acc|). Swapping it for `swap_remove` moved the **ratio**
+   not at all (`line` 12.8x → 12.6x, `onelin` 10.7x → 13.3x, i.e. noise) though it did cut ~30%
+   of the constant. **Reverted un-shipped**, because a constant-factor win is not worth changing
+   `accumulated`'s iteration order, which feeds downstream merges. *Measured as an experiment and
+   thrown away — that is the cheap way to hold an opinion.*
+
+   **Unmeasured candidates that remain:** the `.gcno`/`.gcda` parse, and the rest of the
+   `IndexMap` traffic in `accumulate_line_info` (`acc.entry((bl.file.clone(), line))` clones the
+   filename per line). **Counter first** — right five times on this entry, and the two hypotheses
+   since have both been refuted by measurement in under a minute each.
 
    Scoreboard on this entry: **4 hypotheses wrong, 5 right.** Every wrong one looked obvious in
    the source; every right one came from a counter or a curve.
