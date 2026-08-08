@@ -755,6 +755,16 @@ pub fn read_data(path: &Path) -> Result<Data, IngestError> {
     Ok(Data { header, functions })
 }
 
+thread_local! {
+    /// Arc examinations inside the conservation fixpoint — `iterations x blocks x 2 x arcs`.
+    static CONSERVATION_ARC_VISITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Arc examinations in the conservation solve since [`reset_circuit_starts`].
+pub fn conservation_arc_visits() -> u64 {
+    CONSERVATION_ARC_VISITS.with(std::cell::Cell::get)
+}
+
 /// Recover every arc's count from the non-tree counters (030 §4.1).
 ///
 /// `.gcda` stores counters only for arcs **off** gcc's spanning tree — that omission is the space
@@ -827,6 +837,8 @@ fn solve_arcs(
         let mut changed = false;
         for b in 0..f.blocks {
             for incoming in [true, false] {
+                // Counted, not assumed — this entry's record on reading is 4 wrong to 3 right.
+                CONSERVATION_ARC_VISITS.with(|c| c.set(c.get() + 2 * n as u64));
                 let side: Vec<usize> = (0..n)
                     .filter(|&i| {
                         if incoming {
@@ -1218,6 +1230,7 @@ pub fn circuit_starts() -> u64 {
 /// Zero the counter, so a caller can attribute a single ingest.
 pub fn reset_circuit_starts() {
     CIRCUIT_STARTS.with(|c| c.set(0));
+    CONSERVATION_ARC_VISITS.with(|c| c.set(0));
 }
 
 /// The counts of the elementary cycles lying entirely within `bs`, by Hawick and James'
