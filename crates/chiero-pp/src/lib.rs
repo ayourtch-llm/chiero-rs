@@ -480,6 +480,20 @@ impl Engine {
             ("__GNUC_MINOR__", "3"),
             ("__GNUC_PATCHLEVEL__", "0"),
             ("__x86_64__", "1"),
+            // **The platform half of the same persona.** A `__GNUC__ 13` / `__x86_64__` compiler
+            // that denies running on an operating system is not a compiler anyone has; gcc 13.3
+            // here predefines all five. 012 contract 17's corpus run found the cost: VPP's
+            // `vppinfra/pmalloc.c` has `#if defined(__linux__) / #elif defined(__FreeBSD__) /
+            // #else #error "Unsupported OS"`, and it fell straight through to the `#error`.
+            //
+            // Every Linux-only branch in VPP *and* in glibc was dead without these, which means
+            // the analysed program was not the shipped one — a silent difference, since a branch
+            // that is never taken reports nothing.
+            ("__linux__", "1"),
+            ("__unix__", "1"),
+            ("__gnu_linux__", "1"),
+            ("__ELF__", "1"),
+            ("__LP64__", "1"),
         ] {
             engine.add_predefined_object(name, value);
         }
