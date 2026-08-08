@@ -108,6 +108,58 @@ block count (11.5 s for 3001 blocks, release); fixed, and both entries now finis
 nothing now measure something, and that something is *no defects*. A row that was `timeout` was
 never evidence about the code.
 
+## The widened plugin sweep, 2026-08-08 — **three** entries per file, 1320 entry points
+
+`pick_entries.py --per-file 3` instead of `--per-file 1`. §8.3's pattern: widen one dimension,
+read the residue before fixing anything.
+
+| | |
+|---|---|
+| 1320 entries | `ok` 1133, `cut` 57, `timeout` 3, `noinc` 96, `failed` 31 |
+| findings | **91**, of which **3** are `Exact` |
+
+2.8x the entries, **5x the findings** (91 against 18). The three `Exact` are two halves of one
+VPP case (`test_builtins.c`'s `handle_get_64bytes`/`4kbytes`) and
+`vmxnet3_tx_comp_ring_advance_next`, which is the known-true `1 << 31` signed overflow above.
+
+**The yield was a reporting defect, not a checker one.** The `test_builtins` pair came back
+`proven: true`, `Exact`, resting entirely on `tb_main` being at its zero-initialised value — a
+premise the envelope never stated. `find_bugs` now records `globals_at_initial_value` naming the
+global. See the commit; the finding is true C and the *silence* was the bug.
+
+### What the 31 `failed` rows are, all six causes
+
+| count | cause | |
+|---|---|---|
+| 16 | `clib_crc32c_with_init` not declared | the **parked** `-march` item |
+| 3 | `u32x4_sum_elts` not declared | same family — a vector intrinsic behind a target macro |
+| 6 | unknown type `vl_api_http_static_*_t` | generated API headers |
+| 3 | `vl_msg_api_set_handlers` not declared | generated API |
+| 3 | **no member named `last_heard_age`** | ⚠️ **not a chiero defect — see below** |
+
+The 96 `noinc` rows are headers this machine does not have (cbor, libxdp, picotls, netmap's
+generated enum, libnl, DPDK, quicly) and are correctly not counted as chiero failures.
+
+### ⚠️ The VPP build directory is **stale**, and that is worth knowing before trusting any number
+
+`src/plugins/lldp/lldp.api` declares `f64 last_heard_age;` and was modified at **23:32:08** on
+2026-08-05. The generated `lldp.api_types.h` it is compiled against was produced at
+**23:14:37** — seventeen minutes *earlier*. The field does not appear in **any** header under
+`build-root`.
+
+So chiero is right, and gcc says so in the same words at the same line:
+
+```text
+src/plugins/lldp/lldp_api.c:135:12: error: 'vl_api_lldp_details_t' has no member named
+  'last_heard_age'; did you mean 'last_heard'?
+```
+
+📌 **The consequence is bigger than three rows.** Every measurement in this file analyses the
+source tree against *those* generated headers, so wherever `src/` has moved on, chiero is
+reading a slightly different program from the one VPP would build today. Regenerating the build
+directory is the fix; until then, a `failed` row naming a missing struct member is an
+environment fact and should not be chased as a frontend gap.
+
 **It found two source-triggerable panics**, which is what a sweep is for — both recorded as
 `failed`, the same row a file that will not preprocess gets, so two crashes on real code looked
 like two files chiero could not read:
