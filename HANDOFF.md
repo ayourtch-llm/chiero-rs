@@ -2131,9 +2131,27 @@ typing the paths ever would.
    branch the solver cannot decide *anyway*, leaving the state `path_unchecked`. An undecided
    `c->unit < ARRAY_LEN (units)` therefore never constrains the offset.
 
-   📌 **So the lead is not the checker but what weakened the path**: which branch went undecided
-   in `format_vnet_dev_counter_name`, and why. That is a different investigation from the one
-   this entry started with, and a much better-aimed one.
+   📌 **And the envelope names what weakened the path — it is not an undecided branch.** Repeated
+   through the assumptions: `ModelApproximate :: 'format': havoc: symbolic contents, reachable
+   pointers to depth 1 — N object(s) invalidated`. `format` is VPP's unmodeled printf-alike, and
+   the code reads:
+
+   ```c
+   s = format (s, "%s", c->name);                       /* havoc invalidates c's object */
+   if (c->unit < ARRAY_LEN (units) && units[c->unit])   /* c->unit read from havoc'd memory */
+   ```
+
+   ❓ **Leading hypothesis, and it is a sharp one: repeated reads of one address in havoc'd memory
+   may yield *different* symbols.** The guard constrains the value read at `c->unit < …`; the
+   index re-reads `c->unit`. If those are separate fresh symbols, the guard constrains one and
+   the subscript uses another, and offset 48 becomes satisfiable exactly as observed.
+
+   **The decisive test is small and does not need VPP:** load the same address twice with an
+   unmodeled call before them, and ask whether the two loads are provably equal. If they are not,
+   that is a real defect — memory is memory, and 021 §6's rule that "chiero not knowing a value
+   is not the program failing to write one" has a twin here: *not knowing a value is not
+   permission to give it two.* ⚠️ Stated as a hypothesis because four fixtures on the neighbouring
+   item were wrong; run the test before believing it.
 
    Between this and 5h, **36 of the 44 `vnet/` findings are characterised**: one class traced to
    an architectural cause, one to a precise open question. Neither is chiero claiming something
