@@ -2215,6 +2215,12 @@ typing the paths ever would.
    two that look genuinely quadratic are both in `chiero-gcov/src/native.rs`, and both scale with
    **arcs or block-lines per function**, not with test count:
 
+   ✅ **All three below were converted 2026-08-08 — and the reading was two-thirds wrong.** The
+   first two moved the growth ratio by *nothing* (14.7x → 15.4x); the third, dismissed here as
+   merely "adds a factor", was the whole cost, and fixing its `bs` and `blocked`/`block_lists`
+   membership gave **17.31 s → 5.61 s (3.08x)**. Kept unedited below because the misranking is
+   the lesson: **the two that looked quadratic were not, and the one described in passing was.**
+
    - **`native.rs:1642`** — `slot.contains(&(key.clone(), bl.block))` inside `for bl in &f.lines
      { for line in &bl.lines { … } }`. `FuncKey` holds two `String`s, so **every probe allocates
      twice** purely to compare, and the enclosing `entry((bl.file.clone(), *line))` clones a third.
