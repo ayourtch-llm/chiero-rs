@@ -2376,9 +2376,21 @@ typing the paths ever would.
    things a ⛔ is actually recording — **"I am nearly out of budget" and "this is dangerous" are
    different facts and only one of them should outlive the session.**
 
-   **Still open:** ~10x per 4x arcs, so `tests/growth.rs` still fails on purpose. The conservation
-   counter is linear now, so **it is not that** — remaining candidates are the `.gcno`/`.gcda`
-   parse and the `IndexMap` traffic in `accumulate_line_info`, neither measured. Add a counter.
+   ✅ **Fifth fix — and it is the change reverted twice earlier the same day.** With
+   `cycles_count` and the conservation fixpoint both gone, `accumulate_line_info`'s predecessor
+   hoist finally shows an effect: `line` 10.5x → **8.6x**, `onelin` 10.0x → **7.6x**.
+
+   ⚠️ **A null result is scoped to the conditions it was taken under.** "This change does nothing"
+   was measured honestly, twice, and was true both times — it stopped being true when the costs
+   hiding it were removed. **Re-test reverted optimisations after the dominant cost moves.** The
+   curve makes that a 25-second question rather than an argument.
+
+   **Session total on this item: 17.31 s → 0.083 s, ~208x across five fixes** — four of which
+   would have been got wrong by reading.
+
+   **Still open:** `line` at 8.6x against a linear 4x, so `tests/growth.rs` still fails on
+   purpose, and what remains is **unmeasured again**. Candidates: the `.gcno`/`.gcda` parse, the
+   `IndexMap` traffic. Counter first.
 
    Scoreboard on this entry: **4 hypotheses wrong, 5 right.** Every wrong one looked obvious in
    the source; every right one came from a counter or a curve.
@@ -3096,6 +3108,13 @@ doubles the wake-ups.
 
 ### 11.3 About the design, and the distinction this project keeps re-deriving
 
+- 🆕 **A null result is scoped to the conditions it was taken under.** One change was reverted
+  *twice* on 2026-08-08 for moving no number, both measurements honest and both correct at the
+  time — and it landed on the third try, once the two costs hiding it were fixed. So "we tried
+  that and it did nothing" is evidence about a state of the code, not a property of the change.
+  **After the dominant cost moves, re-test what you reverted.** The general trap is treating a
+  measurement as timeless; the cheap defence is an instrument fast enough that re-asking costs
+  seconds.
 - 🆕 **Recorded blockers rot, and the rate is higher than anyone plans for: three of them were
   false on 2026-08-08 alone.** (a) *"no `compile_commands.json` exists"* — true when written,
   and `ninja -t compdb` had been emitting one on stdout in 90 ms for months; the requirement was
