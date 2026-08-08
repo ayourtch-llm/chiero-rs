@@ -2117,12 +2117,23 @@ typing the paths ever would.
    chiero: *"a pointer into units (40 bytes) can be computed at offset 48, which is outside it"*.
    Offset 48 is index 6, and `c->unit < 5` excludes it.
 
-   ❓ **So the question is whether the guard's constraint reaches the check.** Two readings and
-   they want opposite fixes: either the offset is being tested without the path condition that
-   bounds it (a defect), or `PointerOutsideObject` deliberately reports the *unconstrained* range
-   of a symbolic offset — "can be computed" is the wording — in which case it is behaving as
-   designed and the design is noisy on guarded array indexing, which is everywhere in C.
-   **Settle which before touching anything**; the same sentence fits both.
+   ✅ **Settled by reading, and it is the opposite of the tempting answer.** The check is
+   `self.probe(a, s, &[out])` where `out` is `offset < 0 || offset > size-1`, and `probe` builds
+   `PathCondition::from_parts(s.path.clone(), …)` — so the query is *"given this path, can the
+   offset be outside?"* **It is fully path-sensitive**, and the witness comes from the model
+   rather than from `obj_size`, which a comment there records as a fix for exactly the
+   naming-an-impossible-input failure.
+
+   So `PointerOutsideObject` is **not** reporting an unconstrained range, and the design is not
+   the noisy one. What follows is sharper: offset 48 is satisfiable *under chiero's path
+   condition*, which means that condition is **weaker than the program's guard**. The envelope's
+   own assumptions point at why — `NoInformation` twice and `UnmodeledCall` — and 023 §3 takes a
+   branch the solver cannot decide *anyway*, leaving the state `path_unchecked`. An undecided
+   `c->unit < ARRAY_LEN (units)` therefore never constrains the offset.
+
+   📌 **So the lead is not the checker but what weakened the path**: which branch went undecided
+   in `format_vnet_dev_counter_name`, and why. That is a different investigation from the one
+   this entry started with, and a much better-aimed one.
 
    Between this and 5h, **36 of the 44 `vnet/` findings are characterised**: one class traced to
    an architectural cause, one to a precise open question. Neither is chiero claiming something
