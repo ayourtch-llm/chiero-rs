@@ -200,11 +200,18 @@ fn native_arc_ingest_does_not_grow_quadratically_in_arcs_per_function() {
     assert!(
         bad.is_empty(),
         "native arc ingest is superlinear: {bad:?} — ratio per 4x arcs, where 4x is linear and \
-         16x is quadratic.\n⚠️ Three hypotheses have been tried and all three reverted (§9.1); \
-         do not guess a fourth from reading. The `onelin` shape — every block on one source \
-         line, which is what a multi-statement macro expansion produces and VPP is macro-heavy \
-         — runs ~17x slower than `line` at n=3200 and grows ~54x per 4x arcs. That is the curve \
-         to chase, and `cycles_count`'s `for &start in bs` is the only thing that scales with \
-         blocks-per-line."
+         16x is quadratic.\n⚠️ This is queued algorithmic work, not a regression: five fixes have \
+         landed against this curve for a cumulative ~250x, and the scoreboard is 6 hypotheses \
+         refuted to 5 held (§9.1). **Do not guess a sixth from reading** — every wrong one looked \
+         obvious in the source and every right one came from a counter or this curve.\n\
+         What the printed columns already rule out: `circuit` is 0 (the acyclic early-out fires \
+         on this input), `conservation` is exactly linear, and `parse+data`/`build` are linear \
+         and under 3% of the clock at n=12800. The two shapes now sit within noise of each \
+         other, so blocks-per-line is no longer the discriminator it was.\n\
+         The largest block still measured only as part of a whole is the `ArcCoverage` index \
+         building — `line_blocks`, `counts`, `tests`, `order`, each keyed by a `FuncKey` holding \
+         two `String`s and cloned per insert. Counter first, in units that track *time* \
+         (allocations, hash probes); a quadratic counter is not automatically the bottleneck \
+         either, which is how the last one cost a wave."
     );
 }
