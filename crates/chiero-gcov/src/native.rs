@@ -1405,7 +1405,7 @@ pub fn ingest_into(
 }
 
 use crate::CoverageDetail;
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 
 /// What identifies a function for coverage purposes (030 §5).
 ///
@@ -1469,16 +1469,16 @@ pub struct ArcCoverage {
     /// `(function, from, to) -> count`, real arcs only.
     counts: IndexMap<(FuncKey, u32, u32), u64>,
     /// The same keys, and who took them.
-    tests: IndexMap<(FuncKey, u32, u32), Vec<crate::TestId>>,
+    tests: IndexMap<(FuncKey, u32, u32), IndexSet<crate::TestId>>,
     /// Arc order per function, so a query can list them as the CFG does.
-    order: IndexMap<FuncKey, Vec<(u32, u32)>>,
+    order: IndexMap<FuncKey, IndexSet<(u32, u32)>>,
     /// `(file, line) -> the function and blocks carrying it`, from the notes' `LINES` records.
     ///
     /// **Every block that carries the line, not the one it is attributed to.** The attribution
     /// rule — sorted, last entry — decides which line a block's *count* lands on, and that is a
     /// different question from which blocks a caller must ask about to know whether a line was
     /// reached. A line inside a multi-statement macro expansion is carried by several.
-    line_blocks: IndexMap<(String, u32), Vec<(FuncKey, u32)>>,
+    line_blocks: IndexMap<(String, u32), IndexSet<(FuncKey, u32)>>,
 }
 
 impl ArcCoverage {
@@ -1492,7 +1492,9 @@ impl ArcCoverage {
     /// `FAKE` arcs are not here: they run to the exit block from a call that may not return, so
     /// they are not control flow a test can be selected by (contract 7).
     pub fn arcs_of(&self, func: &FuncKey) -> Option<Vec<(u32, u32)>> {
-        self.order.get(func).cloned()
+        // The storage is an `IndexSet` for O(1) dedupe; the public shape stays a `Vec`,
+        // in insertion order, which is what it always was.
+        self.order.get(func).map(|s| s.iter().copied().collect())
     }
 
     /// How often an arc was taken, or `None` when the graph has no such real arc.
@@ -1502,7 +1504,9 @@ impl ArcCoverage {
 
     /// The tests that took an arc, or `None` when the graph has no such real arc.
     pub fn tests_for_arc(&self, func: &FuncKey, arc: (u32, u32)) -> Option<Vec<crate::TestId>> {
-        self.tests.get(&(func.clone(), arc.0, arc.1)).cloned()
+        self.tests
+            .get(&(func.clone(), arc.0, arc.1))
+            .map(|s| s.iter().cloned().collect())
     }
 
     /// Whether flow reached the code on a line — 032 §3.2's question, in a caller's terms.
@@ -1638,10 +1642,13 @@ fn arc_coverage_read(
         // must ask about to know whether a line was reached.
         for bl in &f.lines {
             for line in &bl.lines {
-                let slot = cov.line_blocks.entry((bl.file.clone(), *line)).or_default();
-                if !slot.contains(&(key.clone(), bl.block)) {
-                    slot.push((key.clone(), bl.block));
-                }
+                // **`IndexSet`, not `Vec` + `contains`.** Insertion order is still the query
+                // order; the probe is no longer a scan. Measured before the change at 14.7x per
+                // 4x arcs — see `tests/growth.rs`.
+                cov.line_blocks
+                    .entry((bl.file.clone(), *line))
+                    .or_default()
+                    .insert((key.clone(), bl.block));
             }
         }
         let order = cov.order.entry(key.clone()).or_default();
@@ -1653,19 +1660,14 @@ fn arc_coverage_read(
                 continue;
             }
             let akey = (key.clone(), a.from, a.to);
-            if !order.contains(&(a.from, a.to)) {
-                order.push((a.from, a.to));
-            }
+            order.insert((a.from, a.to));
             let slot = cov.counts.entry(akey.clone()).or_insert(0);
             *slot = slot.saturating_add(arcs[i]);
             // **Recorded for the test even when the arc was not taken.** The graph knows the arc
             // exists; only the traversal is absent, and that is the crate's absence-versus-zero
             // rule one level down from the line index.
             if let Some(t) = test {
-                let set = cov.tests.entry(akey).or_default();
-                if !set.contains(&t) {
-                    set.push(t);
-                }
+                cov.tests.entry(akey).or_default().insert(t);
             } else {
                 cov.tests.entry(akey).or_default();
             }
