@@ -1492,7 +1492,7 @@ This has now paid out three times in a row, each time on the first run after a w
 | *not a widening* — **re-measuring the pinned 40 and asking why nothing moved** | one retake + one `grep` | the corpus **cannot reach** a 32-byte access: `__AVX2__` is undefined in every configuration chiero compiles, so every AVX2/AVX512 path in vppinfra is invisible to every measurement this project has published. New evidence for the parked `-march` item, and it came from an *unchanged* number |
 | **a new *kind* of gate: the preprocessor under VPP's own flags** (012 c17, 1967 TUs, 18 min) | one ingest + one gate | **three defects the pp-gate could never see**, because none is about preprocessing *syntax*: `__linux__` unbaked (VPP's `pmalloc.c` reached `#error "Unsupported OS"`), `__has_attribute(error)` answered 0 where gcc says 1, and a diagnostic class chiero was *right* about and that was still noise. Diagnosed 25 → 0, and the token count 731M → **792M: 8% more of the program became visible** |
 | *not a widening* — **asking what chiero believes rather than what it says** (`persona_gap`, 0.1 s) | one differential instrument | the **endianness** defect: `__BYTE_ORDER__` undefined, so `#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__` read `0 == 0`, took the big-endian branch on x86-64, and reversed bit-field member order across `srv6-mobile`. **The 18-minute corpus gate is structurally incapable of finding this** — a wrongly-taken branch emits nothing. Output-watching and state-comparison are two different searches |
-| **the AVX2/AVX-512 half of vppinfra — 384 units, never parsed by anything** | one wave, minutes | **an honest zero: 24 sampled units, 0 diagnosed** — and the widening is real, **+292 to +528 definitions per TU** that no chiero measurement had lowered. ⚠️ The *first* reading of it was a false zero from a broken instrument: `grep -c '^func'` counts declarations too, of which a VPP TU has thousands, and it reported the v3 and no-march runs **byte-identical**. The definition marker is `{ ; span` |
+| **the AVX2/AVX-512 half of vppinfra — 384 units, never parsed by anything** | one wave, minutes | **an honest zero on parsing: 24 sampled units, 0 diagnosed** — and the widening is real, **+292 to +528 definitions per TU** that no chiero measurement had lowered. `find-bugs` on 8 vector-using entries: 1 finding, a known class. **The yield was a corrected belief**: `unsupported-access-width` is zero not because the corpus cannot make a 32-byte access but because a vector access lowers to `copymem` — 7779 of them ≥32 bytes in one TU. ⚠️ **Two false zeros from ad-hoc greps in one wave**, both reading "nothing changed": `^func` counts declarations, and copymem sizes are `32i64` not "32 bytes". **When a probe reports zero, check that it can report non-zero** |
 | *not a widening* — **measuring a "stale environment" before acting on it** | 10 min | the tree had moved by **165 files in one checkout**, but only **4 `.api`** could matter: chiero reads `src/` directly, so only *generated* artifacts can be stale. Fixed with the generator command rather than `ninja`, whose target would have re-run cmake and rewritten the `build.ninja` every VPP measurement reads. **A blocker described in prose was a one-second check** |
 | **reproducing a defect at the layer it lives in** — the witness reporting item, after four waves of engine fixtures | one wave | **950 KB → 11.9 KB on the real VPP entry**, and two defects inside the fix: "show the first *k*" would have dropped every pinned binding, and a bounded rendering would have become a bounded *proof condition* in `check_reachable`. The four earlier dead ends all tried to *produce* a huge witness by execution; it was a reporting defect, and three of the six tests build a `Witness` directly |
 | **splitting a clock instead of counting inside it** — timing `ingest_into` apart from the arc-index walk | one column in an existing gate, 4 min | **the gcov growth gate passes for the first time.** 90% of the cost was on the *other side* of the suspect §9.1 had recorded, and two throwaway experiments bisected it to `block_counts` — every block scanning every arc. ⚠️ One of the three fixes was a change **measured and honestly ruled out earlier the same day**; the null result was true while `block_counts` dominated |
@@ -1916,7 +1916,23 @@ typing the paths ever would.
    this file's own rule caught it: an unchanged number is a claim that needs checking, not a
    result.
 
-   🆕 **Measured 2026-08-07, and it makes the item bigger than those seven entries.** Retaking the
+   ⚠️ **CORRECTED 2026-08-08: the mechanism below is wrong, and the correction is the useful
+   part.** `unsupported-access-width` is indeed zero everywhere — but *not* because the corpus
+   cannot produce a 32-byte access. It produces them in bulk: the AVX-512 lowering of one TU,
+   `vlib/handoff.c`, contains **7779 `copymem` of 32 bytes or wider** (4038 of exactly 32, 3740 of
+   64). The finding class is unreachable because of the **access shape**, not the corpus: a vector
+   access lowers to `copymem`, never to a wide `load`/`store`, which is 020 §4.13b's "no aggregate
+   values in CIR" applied to `vector_size` types. Measured with a five-line probe:
+
+       u8x32 load32 (u8x32 *p) { return p[0]; }
+       ->  copymem %6 -> %13, 32i64 align 16
+
+   So the whole class was ruled out by a decision this project made deliberately, and the "corpus
+   cannot reach it" story survived because nobody had asked what the IR actually contained. What
+   *is* still true: **none of the pinned 40 entries is compiled at v3/v4 at all**, so that corpus
+   sees no vector code whatever the shape.
+
+   🗄️ **Measured 2026-08-07, and it makes the item bigger than those seven entries.** Retaking the
    pinned 40 after `BadRange` left the defect list gave byte-identical numbers, and the kept
    envelopes say why: `unsupported-access-width` occurs **zero** times in all forty — the corpus
    cannot produce a 32-byte access at all.
