@@ -3066,6 +3066,39 @@ typing the paths ever would.
    diff onto HEAD and run the suite** rather than hunting for a commit whose parent happens to
    fail. Two builds and ~40 minutes bought one rejected candidate the other way.
 
+   🆕 **STAGED 2026-08-08 — `tests/corpus/replay/replay_probe.sh` is rebuilt and committed.**
+   The predecessor was written once, lived only in a scratch directory, and was gone by the next
+   session (§9.2), so this one is in the repo and its whole first duty is not to lose the tree:
+   it refuses a dirty `src/`, refuses an unknown commit, and restores on **every** exit path
+   including SIGINT. `--check` exercises the revert and restore mechanics with no build at all —
+   verified: 4 files reverted, tree clean afterwards, both refusals fire.
+
+   ⛔ **The expensive half was NOT fired, and the reason is a measurement rather than caution.**
+   A real run must build, and `ninja` regenerates `build.ninja` whenever a `CMakeLists.txt` is
+   newer than it — **four of VPP's are** (`vnet`, `plugins/nsim`, `plugins/unittest`,
+   `drivers/armada`). `build.ninja` is what `chiero_vpp::builddb` reads for all 1967 compile
+   commands, what `probe.sh` replays, and what 012 contract 17's corpus gate is built from. So a
+   run of the probe **invalidates the baseline every published VPP number was taken against, even
+   when it succeeds**. That is a trade worth making — but knowingly, and with the numbers re-taken
+   afterwards, not as a side effect of a wave that was about something else.
+
+8b. 🆕 **The build graph is four `CMakeLists.txt` behind `src/`, and that qualifies every VPP
+   number in this file.** Measured 2026-08-08: `build.ninja` was generated at 23:31:38 on
+   2026-08-05 and the tree moved 22 seconds later. Checked rather than feared — `vnet/sfdp`, the
+   subsystem those changes add, **is** in the database with 21 entries, so no subsystem is hidden.
+
+   And the "1967 C compilations over 1562 sources" figure decomposes cleanly, which it had never
+   been made to do:
+
+   | | |
+   |---|---|
+   | 1967 compilations, 1562 distinct sources | 208 sources built more than once (multiarch) |
+   | **147 of the 1562 are generated** | `*.api_test2.c` under the build dir, not under `src/` |
+   | 1415 are `src/`'s own | and **137 of `src/`'s 1552 `.c` are never compiled here** — `drivers/armada` 18, `drivers/octeon` 11, `plugins/perfmon` 10, `tools/g2` 10 |
+
+   The last row is what `pick_entries.py --built-only` exists for: a sweep that globs the tree
+   reports "chiero cannot read this" for files **nothing** builds.
+
 9. **`:0` bit-fields in `layout`, deliberately left open** (§7.9). A record declaring a
    zero-width bit-field still gets no padding number, because a `:0`-terminated run's cost depends
    on where the run is placed and this arithmetic sums constants. Closing it needs the run's
@@ -3090,11 +3123,13 @@ they lived only in scratch") and it happened again anyway.
 | `xtask/src/pp_gate.rs` | ✅ committed — `cargo run -p xtask -- pp-gate`, ~2 min. Reads `$SIMPLECPP` (default `/home/ubuntu/simplecpp`, pinned `74a5a63`); gcc and clang are the oracle. §7.11 |
 | `tests/corpus/vpp-findings/api_staleness.py` | ✅ committed 2026-08-08 — which of VPP's 1049 generated API headers are older than the `.api` they come from. Exits 1 on drift; `--fix` regenerates with `vppapigen` rather than `ninja`, whose target re-runs cmake and rewrites the `build.ninja` every VPP measurement reads |
 | `tests/corpus/vpp-findings/probe.sh` | ✅ **REBUILT and committed 2026-08-07.** The 7-second five-TU probe that replaces 2-hour sweeps — measured 7.3 s, all five `clean`. `REALCC=true` by default, so it asks what *chiero* makes of the build's flags without compiling. ⚠️ Its rebuild note: the object path **cannot** be constructed from the source path (CMake names an object after its position in the object library, so `src/vlib/main.c` is `…/vlib_objs.dir/main.c.o`) — match `-c <source>` in one `ninja -t commands all` dump, 63 ms for all 2945 |
-| `replay-probe.sh` | ❌ **LOST.** Two-checkout historical-replay probe that restored the tree on every exit path |
+| `tests/corpus/replay/replay_probe.sh` | ✅ **REBUILT and committed 2026-08-08**, and to the *newer* method: reverts a fix's `src/` diff onto HEAD rather than checking out two revisions. Refuses a dirty tree, refuses an unknown commit, restores on every exit path including SIGINT; `--check` proves the mechanics with no build. ⚠️ A real run re-runs cmake — see §9.1 item 8 |
 | `rev5` (20 fixtures), `replayprobe` (13) | ❌ **LOST.** |
 
 **When the next instrument is built, commit it under `tests/corpus/` in the same wave.** The
-committed ones are all still here; not one uncommitted one is. `probe.sh` was rebuilt on
+committed ones are all still here; not one uncommitted one is. *(Two more went in on 2026-08-08 —
+`api_staleness.py` and the rebuilt `replay_probe.sh` — so the only losses left are the `rev5` and
+`replayprobe` fixture sets.)* `probe.sh` was rebuilt on
 2026-08-07 and took under half an hour including the bug above — but the version it replaces had
 paid for itself four sweeps over, so the rebuild was pure repeated cost. `replay-probe.sh` and
 the two fixture sets are still gone.
