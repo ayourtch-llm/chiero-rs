@@ -2247,10 +2247,17 @@ typing the paths ever would.
    count unchanged as it should be. *(clippy then caught that `bs` was being passed through
    `circuit` only to reach its own recursive call. Dropped.)*
 
-   **What is left, named rather than guessed:** `blocked.iter().position(|&b| b == w)` and
-   `block_lists[index].contains(&v)` in the no-loop-found branch, which is the common case. Beyond
-   those, the quadratic **call count** is inherent to one DFS per block on the line and needs an
-   algorithmic change, not a data-structure one.
+   ✅ **Second fix, same day:** `blocked`/`block_lists` were index-correspondent parallel `Vec`s,
+   so lookup was `iter().position(..)` and release was two O(n) `remove`s. One
+   `IndexMap<u32, Vec<u32>>` with `swap_remove` replaces both. **8.36 s → 5.61 s.**
+
+   **Cumulative: 17.31 s → 5.61 s (3.08x)**, call count untouched at 5 128 004 throughout — which
+   is the check that both were cost-per-call changes and not accidental semantic ones, and the
+   full suite agrees.
+
+   **What is left is not a data-structure problem.** The quadratic **call count** is inherent to
+   running one DFS per block on the attributed line; cutting it needs an algorithmic change to the
+   enumeration. Queued, not claimed — and now judgeable against `tests/growth.rs`'s numbers.
 
    ⚠️ *Kept below: three hypotheses that were tried first and moved nothing.* **Do not read.
    Profile.**
