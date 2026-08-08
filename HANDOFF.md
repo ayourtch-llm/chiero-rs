@@ -1584,6 +1584,29 @@ typing the paths ever would.
 > ✅ **The owner's close-the-gap ask is DONE — pp-gate reports 0 findings** (§7.11). Keep it as a
 > two-minute standing check.
 >
+> ### 🆕 The standing gates, with their exact invocations
+>
+> All three are `#[ignore]`d — they need VPP, gcc, or both — so `./check.sh` never runs them and
+> a fresh session will not discover them by accident.
+>
+> ```sh
+> # what chiero SAYS: 1967 VPP TUs under VPP's own flags. ~18 min. Metric: diagnosed count (0).
+> cargo test -p chiero-vpp --test preprocess_corpus -- --ignored --nocapture
+>
+> # what chiero BELIEVES vs gcc: predefine definedness AND value. ~0.1 s. Expect 0 gaps.
+> cargo test -p chiero-vpp --test persona_gap -- --ignored --nocapture
+>
+> # whether cost SCALES: gcov native ingest, two input shapes. ~25 s.
+> # ⚠️ FAILS ON PURPOSE — the remaining superlinearity is queued algorithmic work, not a
+> # regression. Read §9.1 before touching it; three hypotheses were tried and reverted.
+> cargo test -p chiero-gcov --test growth -- --ignored --nocapture
+> ```
+>
+> **They ask three different questions and each found something the others structurally could
+> not** — the corpus gate cannot see a wrongly-taken `#if` branch (it emits no diagnostic), and
+> neither of the first two can see a cost curve. Do not treat any one of them as coverage for
+> the others.
+>
 > ✅ **`MemFault::BadRange` is CLOSED (2026-08-07)** — it degrades now instead of reporting.
 > Next: §9.1's remaining live items. The `-march` item stays parked for the owner.
 >
