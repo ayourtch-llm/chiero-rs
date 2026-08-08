@@ -3787,21 +3787,33 @@ impl Memory {
                 why: "a lazily-materialized byte",
                 array: false,
             });
-            match self.entry(id).and_then(|e| e.arr) {
-                Some(mut arr) => {
-                    let i = a.bv(arr.idx_bits, k as u128);
-                    arr.data = a.store(arr.data, i, t);
-                    if let Some(e) = self.entry_mut(id) {
-                        e.arr = Some(arr);
-                    }
+            // **The symbol is recorded on the bytes side whichever representation stores it**
+            // — 021 contract 7b.
+            //
+            // `fresh_needed` above asks `o.sym_at(k)`, which lives in `Contents::Bytes`. A
+            // promoted object used to store the mint into `arr.data` and leave `o.sym` empty, so
+            // the question was asked of one representation and answered into the other: every
+            // read of a materialized byte minted a **new** symbol. Two reads of one address then
+            // returned different terms, a guard on the first constrained nothing the second used,
+            // and 19 of the 44 findings in a `vnet/` sweep were guarded array subscripts reported
+            // as escaping their object.
+            //
+            // This is `memoize_via`'s bug one field over: that function exists because "the
+            // initialization lives in an array, so writing the mask was a no-op there". The
+            // `init` mask was fixed and `sym` was left, which is why the same defect came back.
+            // Recording on both sides keeps the *question* and the *answer* in one place rather
+            // than adding a second reader that can drift again.
+            if let Some(mut arr) = self.entry(id).and_then(|e| e.arr) {
+                let i = a.bv(arr.idx_bits, k as u128);
+                arr.data = a.store(arr.data, i, t);
+                if let Some(e) = self.entry_mut(id) {
+                    e.arr = Some(arr);
                 }
-                None => {
-                    if let Some(e) = self.entry_mut(id)
-                        && let Some(o) = e.obj.as_mut().map(std::sync::Arc::make_mut)
-                    {
-                        o.sym.insert(k, t);
-                    }
-                }
+            }
+            if let Some(e) = self.entry_mut(id)
+                && let Some(o) = e.obj.as_mut().map(std::sync::Arc::make_mut)
+            {
+                o.sym.insert(k, t);
             }
         }
     }

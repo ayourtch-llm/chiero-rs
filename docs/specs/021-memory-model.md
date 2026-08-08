@@ -192,7 +192,7 @@ guarded array subscript reported as escaping its object, which is the commonest 
 
 It is written down because **nothing in this section forbade it**: "unknown values" and contract
 7's "no finding" are both satisfied by handing out a fresh symbol each time. The rule that makes
-memory memory has to be stated to be testable — see contract 7b.
+memory memory has to be stated to be testable — see contract 7b, which is now met.
 
 ## 4. Lifetime
 
@@ -516,10 +516,11 @@ API. The API is specified so that swap does not touch callers.
    fresh symbol; reading a lazily-initialized parameter's bytes yields **no** finding.
 7b. **A materialized byte reads the same twice.** Two reads of one address on one path, with
     no intervening write, yield the same term — for a lazily-initialized parameter, for a
-    havoc'd object, and across a promotion to `Array`. ⚠️ **Not met as of 2026-08-08**: with a
-    lazy object and an unmodeled call the two reads return different terms. The reproduction is
-    `probe_lazy_two_loads` in `chiero-tool/tests/find_bugs.rs`, committed `#[ignore]`d, and it is
-    this contract's test — it passes when the contract does.
+    havoc'd object, and across a promotion to `Array`. ✅ **Met since 2026-08-08.**
+    `materialize_fresh` asked `o.sym_at(k)` — the `Bytes` side — and stored a promoted object's
+    mint into `arr.data` only, so the question was put to one representation and answered into
+    the other and every read minted afresh. The symbol is now recorded on both. Tested by
+    `probe_lazy_two_loads` in `chiero-tool/tests/find_bugs.rs`.
 8. `free(p)` then `*p` is exactly one use-after-free finding naming both spans;
    `free(p); free(p)` is exactly one double-free.
 9. `realloc` shrinking an object preserves the retained prefix bytes exactly, and a
