@@ -765,10 +765,32 @@ entry:
 /// | the same with the guard's `udiv 40/8` unfolded | constrained |
 /// | **lazy object + havoc + guard** | **offset 48** — this test |
 ///
-/// So the ingredient is the havoc *plus* the fork: two loads in one block after a havoc agree,
-/// and two loads either side of a branch do not. Reads that disagree at one address inside one
-/// path are the thing 021 §6's family is about — "not knowing a value is not permission to give
-/// it two" — and a guard that binds one of them constrains nothing.
+/// ✅ **Root cause, confirmed by instrumenting the loads:**
+///
+/// ```text
+/// LOAD #0 INVENTED       <- the guard's read: memory produced nothing
+/// LOAD OK term=Term(4)   <- the subscript's read: the real term
+/// ```
+///
+/// **Havocking a lazy object that has not yet been materialised does nothing.**
+/// `havoc_range_reporting`'s `Symbolic` fill mints a `clobberN` per byte and `write_sym_byte`s
+/// it — but against an object that does not exist yet the write fails and the loop `break`s
+/// silently. The first read afterwards therefore gets no value and chiero **invents** one; the
+/// object is materialised by that read, so every later read returns the real term. A guard on
+/// the first read constrains a symbol nothing else uses.
+///
+/// Confirmed the only way that settles it: adding one load **before** the call — which
+/// materialises the object, so the havoc has something to write to — makes this test pass.
+///
+/// That is exactly the VPP shape: `format (s, "%s", c->name)` is the first thing that touches
+/// `c`, so its havoc is a no-op and the guard's read is invented.
+///
+/// 📌 The fix is a design question about *where* materialisation happens: `chiero-mem` cannot
+/// materialise a lazy object because laziness is `chiero-exec`'s, so either the engine
+/// materialises reachable objects before havocking them, or the silent `break` becomes a
+/// refusal that says so. **The silence is the part that is certainly wrong** — 021 §6's family
+/// again, and a havoc that writes nothing while reporting success is the same shape as every
+/// other entry in it.
 #[test]
 #[ignore = "reproduces an open defect; see the table above"]
 fn probe_lazy_two_loads() {

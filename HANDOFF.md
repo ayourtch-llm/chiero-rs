@@ -2225,12 +2225,33 @@ typing the paths ever would.
    §11.3's rule applies: **do not fix the site; ask which read path does not end in a stable
    symbol across a fork.**
 
-   ⚠️ **And one obvious suspect is already excluded.** `havoc_range_reporting`'s `Symbolic` fill
-   does **not** mark-and-materialise-later: it mints a named `clobberN` per byte and
-   `write_sym_byte`s it into memory (`chiero-mem/src/lib.rs` ~2680). So the bytes hold a stable
-   term before either load runs, and "the havoc left the byte unset and each read invented one" is
-   **not** the mechanism. Whatever diverges is downstream of that write — which is a much smaller
-   place to look than it was an hour ago.
+   ✅✅✅ **ROOT CAUSE FOUND AND CONFIRMED 2026-08-08.** Instrumenting the loads:
+
+   ```text
+   LOAD #0 INVENTED       <- the guard's read: memory produced nothing
+   LOAD OK term=Term(4)   <- the subscript's read: the real term
+   ```
+
+   **Havocking a lazy object that has not yet been materialised does nothing.**
+   `havoc_range_reporting`'s `Symbolic` fill mints a `clobberN` per byte and `write_sym_byte`s it
+   — but against an object that does not exist yet the write fails and the loop **`break`s
+   silently**. The first read afterwards gets no value and chiero *invents* one; that read
+   materialises the object, so every later read returns the real term. **A guard on the first
+   read therefore constrains a symbol nothing else uses.**
+
+   Confirmed the only way that settles it: adding one load **before** the call — materialising
+   the object so the havoc has something to write to — makes the reproduction pass.
+
+   That is exactly the VPP shape: `format (s, "%s", c->name)` is the first thing that touches
+   `c`, so its havoc is a no-op and the guard's read is invented. It explains **19 of the 44**
+   `vnet/` findings.
+
+   📌 **The fix is a design question about where materialisation happens.** `chiero-mem` cannot
+   materialise a lazy object — laziness is `chiero-exec`'s — so either the engine materialises
+   reachable objects before havocking them, or the silent `break` becomes a refusal that says so.
+   ⚠️ **The silence is the part that is certainly wrong**: a havoc that writes nothing while
+   reporting success is 021 §6's family exactly, and 024 contract 21e's whole point is that an
+   unmodeled extern handed a pointer *wrote* something there.
 
    *(Historical: the blocker before this was a missing instrument, not a missing idea.)* Settling it needs the
    *actual lowered CIR* for `format_vnet_dev_counter_name` — which term the guard constrains and
