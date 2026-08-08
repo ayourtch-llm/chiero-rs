@@ -734,3 +734,87 @@ entry:
         cv["assumptions"]
     );
 }
+
+/// **A guard on a havoc'd byte does not constrain a later read of the same byte.**
+///
+/// ⚠️ **`#[ignore]`d: this is a reproduction of an open defect, not a contract.** It fails, and
+/// it is committed failing-but-ignored so the next person has an executable minimal case instead
+/// of a paragraph. Run it with `cargo test -p chiero-tool -- --ignored probe_lazy`.
+///
+/// Reduced from `vnet/dev/counters.c`, which produces 19 of the 44 findings in the `vnet/` sweep
+/// (§9.1). The C is the commonest guarded-subscript idiom there is:
+///
+/// ```c
+/// s = format (s, "%s", c->name);                       /* unmodeled: havocs *c */
+/// if (c->unit < ARRAY_LEN (units) && units[c->unit])   /* guard, then index */
+/// ```
+///
+/// `chiero cir` showed the shape: the guard and the subscript each `load i8` from `c + 34`
+/// separately, so the guard constrains load **A** and the subscript uses load **B**. The finding
+/// exists only if the solver found `A < 5` *and* `B * 8 == 48` — that is, `A != B`.
+///
+/// **What was excluded on the way**, each measured, because the ingredient list is the useful
+/// part:
+///
+/// | fixture | result |
+/// |---|---|
+/// | two loads, same block, `Bytes` + havoc | stable |
+/// | two loads, same block, `Array`-promoted + havoc | stable |
+/// | two loads, same block, `Array`-promoted, never written | unstable — and defensible |
+/// | lazy object, guarded, **no** havoc | **constrained**: indices 0..4 only |
+/// | the same with the guard's `udiv 40/8` unfolded | constrained |
+/// | **lazy object + havoc + guard** | **offset 48** — this test |
+///
+/// So the ingredient is the havoc *plus* the fork: two loads in one block after a havoc agree,
+/// and two loads either side of a branch do not. Reads that disagree at one address inside one
+/// path are the thing 021 §6's family is about — "not knowing a value is not permission to give
+/// it two" — and a guard that binds one of them constrains nothing.
+#[test]
+#[ignore = "reproduces an open defect; see the table above"]
+fn probe_lazy_two_loads() {
+    // An entry pointer (lazy object). Load a byte, guard it < 5, then in the guarded block load
+    // the *same* byte again and use it to index a 40-byte local. If the two loads are the same
+    // term the index is bounded and nothing is reported.
+    const M: &str = "\
+func @f(%0: ptr) -> i32 {
+  alloca %1 : i8 x 40 align 8 scope 0 lifetime scope \"units\"
+entry:
+  .line 1
+  call @opaque(%0)
+  %2 = load i8, %0 align 1
+  %3 = zext i8 %2 to i64
+  %11 = udiv i64 40i64, 8i64
+  %4 = cmp ult i64 %3, %11
+  br %4, bb1, bb2
+bb1:
+  .line 2
+  %5 = addrlocal %1
+  %6 = load i8, %0 align 1
+  %7 = zext i8 %6 to i64
+  %8 = mul i64 %7, 8i64
+  %9 = ptradd %5, %8
+  %10 = load ptr, %9 align 8
+  ret 1i32
+bb2:
+  .line 3
+  ret 0i32
+}
+
+func @opaque(%0: ptr) -> void";
+    let env = find_bugs(&m(M), &cfg("f"));
+    let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
+    let msgs: Vec<String> = v["result"]["findings"]
+        .as_array()
+        .map(|fs| {
+            fs.iter()
+                .map(|f| f["message"].as_str().unwrap_or("").to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        !msgs.iter().any(|x| x.starts_with("pointer-outside-object")),
+        "the guard is `c->unit < 5`, so no pointer into a 40-byte object can be computed past \
+         it; a `pointer-outside-object` here means the guarded load and the indexing load are \
+         different values: {msgs:?}"
+    );
+}

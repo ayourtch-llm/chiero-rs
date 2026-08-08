@@ -2200,7 +2200,33 @@ typing the paths ever would.
    path holds *and* the offset is 48. With `c->unit < 5` on the path, index 6 should be
    unsatisfiable. One of those four is false and none is obviously so.
 
-   ⛔ **The blocker is now a missing instrument, not a missing idea.** Settling it needs the
+   ✅✅ **REPRODUCED 2026-08-08, minimally.** `chiero cir` (built for this) showed the guard and
+   the subscript each `load i8` from `c + 34` *separately* — so the guard constrains load **A**
+   and the subscript uses load **B**, and the finding exists only if `A < 5` and `B * 8 == 48`,
+   i.e. `A != B`. Reducing from there:
+
+   | fixture | result |
+   |---|---|
+   | two loads, same block, `Bytes` + havoc | stable |
+   | two loads, same block, `Array`-promoted + havoc | stable |
+   | two loads, same block, `Array`-promoted, never written | unstable — and defensible |
+   | lazy object, guarded, **no** havoc | **constrained**: indices 0..4 only |
+   | the same with the guard's `udiv 40/8` unfolded | constrained |
+   | **lazy object + havoc + guard** | **offset 48** — the VPP message exactly |
+
+   **The ingredient is the havoc *plus* the fork.** Two loads in one block after a havoc agree;
+   two loads either side of a branch do not. A guard that binds one of them constrains nothing.
+
+   The reproduction is committed as `probe_lazy_two_loads` in `chiero-tool/tests/find_bugs.rs`,
+   **`#[ignore]`d** — it fails, and the suite stays green, so the next person gets an executable
+   minimal case rather than a paragraph: `cargo test -p chiero-tool -- --ignored probe_lazy`.
+
+   📌 This is 021 §6's family — *not knowing a value is not permission to give it two* — and
+   §11.3's rule applies: **do not fix the site; ask which read path does not end in a stable
+   symbol across a fork.** That is the fix, and it is a design question about how havoc'd contents
+   survive state cloning.
+
+   *(Historical: the blocker before this was a missing instrument, not a missing idea.)* Settling it needs the
    *actual lowered CIR* for `format_vnet_dev_counter_name` — which term the guard constrains and
    which term the `PtrAdd` uses — and **there is no way to dump it**: no CLI operation prints a
    module, and 020's textual format is reachable only from Rust. §4.11 lists `get_cfg` among the
