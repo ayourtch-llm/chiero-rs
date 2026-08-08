@@ -1481,6 +1481,7 @@ This has now paid out three times in a row, each time on the first run after a w
 | following the **diagnostics the tool itself emitted** — three names it said it did not know | one wave | §7.11: scoped operands + `__has_cpp_attribute`; findings 16 → **14**, and `pr63831-1/2` leave the list. The honesty mechanism turned the next fix into a mechanical one |
 | find-bugs to a **new subsystem**: `vnet/ip/`, 152 entries (never swept) | one sweep, ~20 min | **zero chiero defects — 0 failed, 0 `Exact`.** 143 ok, 7 cut, 9 `Unknown` findings, all one known class. See §7.17 |
 | **010 contract 11**, the one contract with no test anywhere — verified by reading, not by trusting §9's note | one wave | **zero defects.** The round trip holds over twelve fixtures incl. splices, macro-body/argument spans and the session's new UCN identifiers |
+| **the plugin sweep, one entry per file → three** (477 → 1320) | one sweep, ~65 min | **91 findings against 18**, 3 `Exact` against 1 — and the yield was a *reporting* defect: a `proven: true` null dereference resting entirely on a global's initial value, with the premise unstated. Also 31 `failed` rows resolved to **six** causes, 19 of them the parked `-march` item, and one that is not a chiero defect at all (below) |
 | the **second** sampling round: two more `cut` entries | one wave | **an honest zero.** `active_open_alloc_session_fifos` is dominated by `BvConst` arithmetic under `TermArena::eval`, reached from the counterexample cache — which is 022 §6.2's *self-certifying* rule doing exactly what it must, and `BvConst` is a `Copy` `u128` with no allocation behind it. Recorded because a table of only wins cannot say when to stop |
 | *not a widening* — **sampling a real run's stack instead of reading its code** | one 90-second run under `gdb` | `TermArena::vars_of` allocated a bool per node in the *whole arena* on every call, and 022 §6.2's slicing calls it once per constraint on **every** backend query. 8.3 µs → 699 µs as the arena grew; now flat. **Nothing in the code reads as wrong** — the defect is a call pattern, and only a profile shows it |
 | *not a widening* — **taking a `timeout` row seriously instead of counting it** | one sweep + one stack sample | the CIR verifier was **super-quadratic**: 11.5 s for 3001 blocks, and it is what killed VPP's last two `timeout` entries. 023 §8 had attributed them to a long *solver* query and specified a bound for that; the bound did not move them. **42x faster, 0 `timeout` rows left, one spec claim retracted** |
@@ -1785,6 +1786,26 @@ typing the paths ever would.
 
    The duration survives as a loose 30 s smoke check, explicitly *not* the assertion, so a
    catastrophic regression fails fast instead of hanging the suite.
+
+5c. 🆕 **Three `timeout` rows in `plugins/nsh/`** — `format_nsh_header`, `nsh_md2_decap`,
+   `nsh_md2_encap`, from the widened sweep (2026-08-08). The verifier fix removed the cause the
+   *old* `timeout` rows had, so this is a different one and nobody has looked. Sampling the stack
+   under `gdb` found the last one in about two minutes; §11.2 carries the invocation and the
+   `ptrace_scope=1` workaround. ⚠️ A `timeout` row is a run that measured **nothing** — it is a
+   lead, not a statistic.
+
+5d. ⚠️ **The VPP build directory is STALE, and it affects every number this project publishes.**
+   `src/plugins/lldp/lldp.api` declares `f64 last_heard_age;` and was modified at 23:32:08 on
+   2026-08-05; the generated `lldp.api_types.h` it compiles against was produced at **23:14:37**,
+   seventeen minutes earlier, and the field appears in **no** header under `build-root`. Three
+   sweep rows fail on it, chiero is right, and **gcc reports the identical error at the identical
+   line** — so it is an environment fact, not a frontend gap.
+
+   The consequence is larger than three rows: every measurement against VPP analyses `src/` with
+   *those* headers, so wherever the source has moved on, chiero reads a slightly different
+   program from the one VPP would build today. Regenerating the build directory is the fix.
+   ⚠️ Until then, a `failed` row naming a missing struct member is staleness and must not be
+   chased as a defect — it looks exactly like one.
 
 5b. 🆕 **Audit `Vec` + `.contains()` on paths that scale — the shape, not the site.** The
    verifier fix above is the **second** time this exact defect class has been found in

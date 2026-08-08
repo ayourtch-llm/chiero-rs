@@ -70,6 +70,12 @@ word and keep the outer limit — its value is that it makes "chiero did not fin
 answer from "chiero found nothing", and this is the second time that distinction has led
 straight to a real defect.
 
+⚠️ **"Zero" is true of *that* corpus only.** The widened sweep below, three entries per file,
+has **three** — all in `plugins/nsh/` (`format_nsh_header`, `nsh_md2_decap`, `nsh_md2_encap`).
+The verifier fix removed the cause the old rows had, so these are a *different* one and nobody
+has looked yet. Sampling the stack under `gdb` is what found the last one; §11.2 has the
+invocation.
+
 `nofn` exists because one of the pinned 40 was `VLIB_CLI_COMMAND`. `pick_entries.py` read
 VPP's registration macros as function definitions, `find-bugs` answered "no function named
 `VLIB_CLI_COMMAND`", and the harness counted that as a clean run. One entry in forty measured
