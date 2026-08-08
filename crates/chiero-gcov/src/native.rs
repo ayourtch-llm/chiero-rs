@@ -1244,8 +1244,11 @@ fn cycles_count(f: &NoteFunction, succ: &[Vec<usize>], bs: &[u32], arc_counts: &
     let mut count: i64 = 0;
     for &start in bs {
         let mut path: Vec<usize> = Vec::new();
-        let mut blocked: Vec<u32> = Vec::new();
-        let mut block_lists: Vec<Vec<u32>> = Vec::new();
+        // **One map replaces two parallel arrays.** `blocked` and `block_lists` were index-
+        // correspondent `Vec`s, so every lookup was `blocked.iter().position(..)` and every
+        // release was two O(n) `remove`s that shifted the correspondence. The order of blocked
+        // nodes carries no meaning — only the pairing does — so a map is the honest shape.
+        let mut blocked: IndexMap<u32, Vec<u32>> = IndexMap::new();
         circuit(
             f,
             succ,
@@ -1253,7 +1256,6 @@ fn cycles_count(f: &NoteFunction, succ: &[Vec<usize>], bs: &[u32], arc_counts: &
             &mut path,
             start,
             &mut blocked,
-            &mut block_lists,
             &in_bs,
             &mut cs,
             &mut count,
@@ -1269,8 +1271,7 @@ fn circuit(
     v: u32,
     path: &mut Vec<usize>,
     start: u32,
-    blocked: &mut Vec<u32>,
-    block_lists: &mut Vec<Vec<u32>>,
+    blocked: &mut IndexMap<u32, Vec<u32>>,
     // Membership by block index: `bs.contains(&w)` was O(|bs|) in this recursion.
     in_bs: &[bool],
     cs: &mut [i64],
@@ -1281,8 +1282,7 @@ fn circuit(
     // slower, so the cost is how far each traversal walks, not how many begin.
     CIRCUIT_STARTS.with(|c| c.set(c.get() + 1));
     let mut loop_found = false;
-    blocked.push(v);
-    block_lists.push(Vec::new());
+    blocked.insert(v, Vec::new());
 
     for &i in succ.get(v as usize).into_iter().flatten() {
         let w = f.arcs[i].to;
@@ -1299,36 +1299,25 @@ fn circuit(
                 cs[e] -= cycle;
             }
             loop_found = true;
-        } else if !path.iter().any(|&e| cs[e] <= 0) && !blocked.contains(&w) {
-            loop_found |= circuit(
-                f,
-                succ,
-                w,
-                path,
-                start,
-                blocked,
-                block_lists,
-                in_bs,
-                cs,
-                count,
-            );
+        } else if !path.iter().any(|&e| cs[e] <= 0) && !blocked.contains_key(&w) {
+            loop_found |= circuit(f, succ, w, path, start, blocked, in_bs, cs, count);
         }
         path.pop();
     }
 
     if loop_found {
-        unblock(v, blocked, block_lists);
+        unblock(v, blocked);
     } else {
         for &i in succ.get(v as usize).into_iter().flatten() {
             let w = f.arcs[i].to;
             if w < start || cs[i] <= 0 || !in_bs.get(w as usize).copied().unwrap_or(false) {
                 continue;
             }
-            let Some(index) = blocked.iter().position(|&b| b == w) else {
+            let Some(list) = blocked.get_mut(&w) else {
                 continue;
             };
-            if !block_lists[index].contains(&v) {
-                block_lists[index].push(v);
+            if !list.contains(&v) {
+                list.push(v);
             }
         }
     }
@@ -1336,14 +1325,13 @@ fn circuit(
 }
 
 /// Release `u`, and transitively everything whose search was blocked waiting on it.
-fn unblock(u: u32, blocked: &mut Vec<u32>, block_lists: &mut Vec<Vec<u32>>) {
-    let Some(index) = blocked.iter().position(|&b| b == u) else {
+fn unblock(u: u32, blocked: &mut IndexMap<u32, Vec<u32>>) {
+    // `swap_remove` is O(1); the map's order is not meaningful — only the pairing was.
+    let Some(to_unblock) = blocked.swap_remove(&u) else {
         return;
     };
-    blocked.remove(index);
-    let to_unblock = block_lists.remove(index);
     for w in to_unblock {
-        unblock(w, blocked, block_lists);
+        unblock(w, blocked);
     }
 }
 
