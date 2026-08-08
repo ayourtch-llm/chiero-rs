@@ -2223,8 +2223,14 @@ typing the paths ever would.
 
    📌 This is 021 §6's family — *not knowing a value is not permission to give it two* — and
    §11.3's rule applies: **do not fix the site; ask which read path does not end in a stable
-   symbol across a fork.** That is the fix, and it is a design question about how havoc'd contents
-   survive state cloning.
+   symbol across a fork.**
+
+   ⚠️ **And one obvious suspect is already excluded.** `havoc_range_reporting`'s `Symbolic` fill
+   does **not** mark-and-materialise-later: it mints a named `clobberN` per byte and
+   `write_sym_byte`s it into memory (`chiero-mem/src/lib.rs` ~2680). So the bytes hold a stable
+   term before either load runs, and "the havoc left the byte unset and each read invented one" is
+   **not** the mechanism. Whatever diverges is downstream of that write — which is a much smaller
+   place to look than it was an hour ago.
 
    *(Historical: the blocker before this was a missing instrument, not a missing idea.)* Settling it needs the
    *actual lowered CIR* for `format_vnet_dev_counter_name` — which term the guard constrains and
