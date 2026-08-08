@@ -2189,13 +2189,27 @@ typing the paths ever would.
    is finished. What remains true and unexplained: the offset check is path-sensitive (it probes
    `s.path`), the guard is `c->unit < 5`, and offset 48 is nonetheless satisfiable.
 
-   📌 **The next suspect has to come from somewhere other than the read path.** Two candidates
-   neither tested nor guessed at yet: whether the *guard's own comparison* is decidable over an
-   array-select value (if the branch is undecided, 023 §3 takes it anyway and the constraint never
-   lands), and whether the finding's `PtrAdd` is even downstream of the guard in the lowered CFG.
-   ⚠️ The second is checkable by reading the lowering; the first needs a probe. **Check the CFG
-   first** — it is free, and this entry has already spent four probes on hypotheses about the
-   wrong input.
+   ✅ **The free check is done and it sharpens the contradiction rather than resolving it.**
+   `chiero-lower` short-circuits `&&` properly (`lib.rs` ~3756: a block for the right operand, a
+   short-circuit block, a join), so `units[c->unit]` is lowered into a block reached **only when
+   `c->unit < ARRAY_LEN (units)` is true**. The `PtrAdd` is downstream of the guard.
+
+   ❗ **So the pieces contradict, and that is the state to hand over.** The offset check probes
+   `s.path`; the `PtrAdd` sits under the guard; reads are stable in every representation tested;
+   and the report only fires on `CheckResult::Sat`, meaning the solver **found a model** where the
+   path holds *and* the offset is 48. With `c->unit < 5` on the path, index 6 should be
+   unsatisfiable. One of those four is false and none is obviously so.
+
+   ⛔ **The blocker is now a missing instrument, not a missing idea.** Settling it needs the
+   *actual lowered CIR* for `format_vnet_dev_counter_name` — which term the guard constrains and
+   which term the `PtrAdd` uses — and **there is no way to dump it**: no CLI operation prints a
+   module, and 020's textual format is reachable only from Rust. §4.11 lists `get_cfg` among the
+   tool operations and it does not exist.
+
+   📌 **So the next move is to build that**, not to guess a fifth time: a `chiero cir <file.c>
+   [--entry <fn>]` that prints the lowered module in 020's normative textual format. It is small,
+   it is specified, the printer already exists and is round-trip tested — and every remaining
+   question on this entry is one `grep` away once the CIR can be read.
 
    📌 And read `chiero-lower/tests/symbolic_offset_store.rs` first: it carries six waves of
    analysis of this exact sentence, ending at a real cause — `report_faults` discharges faults for
