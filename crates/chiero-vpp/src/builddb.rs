@@ -77,15 +77,28 @@ const UNHANDLED: [&str; 6] = [
 ];
 
 impl TranslationUnit {
-    /// The preprocessor configuration this unit compiles under, carrying its own [`ConfigId`].
+    /// The preprocessor configuration this unit compiles under, carrying its own [`ConfigId`]
+    /// **and the persona its own `-march` selects**.
     ///
     /// The ingest hands this over ready-made because otherwise every caller re-derives it, and
     /// two callers deriving it differently is exactly the bug the `ConfigId` exists to catch.
-    pub fn pp_config(&self) -> chiero_pp::Config {
+    ///
+    /// **The probe is a parameter rather than an option** for the same reason. This used to return
+    /// a config with the baked persona, so every one of VPP's 1963 target-carrying units was
+    /// preprocessed as a compiler with no `-march` — and `__AVX2__`, which guards every 32-byte
+    /// vector type in vppinfra, was undefined in all of them. A caller could not have noticed:
+    /// the wrong branch of an `#if` emits no diagnostic. Making the join unskippable is what
+    /// stops that being one caller's mistake to repeat.
+    ///
+    /// It costs one `cc -dM -E` per *distinct* flag-set — five for VPP's 1967 units — because
+    /// [`chiero_probe::Probe`] memoizes on the flags. A machine with no compiler gets the baked
+    /// persona, which is what chiero has always impersonated.
+    pub fn pp_config(&self, probe: &chiero_probe::Probe) -> chiero_pp::Config {
         chiero_pp::Config {
             id: self.config,
             include_paths: self.include_paths.clone(),
             defines: self.defines.clone(),
+            persona: probe.persona(&self.target_flags),
             ..chiero_pp::Config::default()
         }
     }

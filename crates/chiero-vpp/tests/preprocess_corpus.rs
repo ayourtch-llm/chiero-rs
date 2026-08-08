@@ -27,29 +27,20 @@ impl FileLoader for Disk {
     }
 }
 
-/// gcc's own include directories, asked of gcc rather than guessed.
+/// The compiler's own include directories and predefines, asked of the compiler rather than
+/// guessed — [`chiero_probe`], which is the one place in the workspace that runs `cc`.
 ///
-/// `None` when gcc is unavailable, and the caller then **skips with a printed reason** rather
-/// than passing — a corpus test that silently succeeds because it analysed nothing is the
-/// failure mode this whole file exists to undo.
-fn system_include_paths() -> Option<Vec<PathBuf>> {
-    let out = std::process::Command::new("gcc")
-        .args(["-E", "-v", "-std=gnu11", "-x", "c", "/dev/null"])
-        .output()
-        .ok()?;
-    let text = String::from_utf8_lossy(&out.stderr);
-    let mut paths = Vec::new();
-    let mut inside = false;
-    for line in text.lines() {
-        if line.starts_with("#include <...>") {
-            inside = true;
-        } else if line.starts_with("End of search list") {
-            break;
-        } else if inside && line.starts_with(' ') {
-            paths.push(PathBuf::from(line.trim()));
-        }
-    }
-    (!paths.is_empty()).then_some(paths)
+/// **This gate used to have its own copy of the include-path scrape and no persona at all.** It
+/// took each TU's `-D`/`-I` from `builddb` and inherited its predefines from `Config::default()`'s
+/// baked table, so it preprocessed VPP under a configuration nobody ships — and, worse, under a
+/// compiler with no `-march`, which is the half of the tree multiarch exists to build. Both facts
+/// now come from the same probe the CLI uses (HANDOFF §9.1).
+fn probe() -> Option<&'static chiero_probe::Probe> {
+    let p = chiero_probe::Probe::shared();
+    // `None` when there is no compiler, and the caller then **skips with a printed reason** rather
+    // than passing — a corpus test that silently succeeds because it analysed nothing is the
+    // failure mode this whole file exists to undo.
+    (!p.include_paths().is_empty()).then_some(p)
 }
 
 /// 012 contract 17. Ignored because it needs a built VPP; run with
@@ -66,10 +57,11 @@ fn every_vpp_compile_command_preprocesses_without_panicking() {
         eprintln!("SKIPPED: no VPP build at {}", build.display());
         return;
     }
-    let Some(system) = system_include_paths() else {
-        eprintln!("SKIPPED: gcc unavailable, so the system include path is unknown");
+    let Some(probe) = probe() else {
+        eprintln!("SKIPPED: no compiler, so the system include path and the persona are unknown");
         return;
     };
+    let system = probe.include_paths();
     let out = std::process::Command::new("ninja")
         .args(["-C", build.to_str().unwrap(), "-t", "compdb"])
         .output()
@@ -102,9 +94,11 @@ fn every_vpp_compile_command_preprocesses_without_panicking() {
             unreadable += 1;
             continue;
         };
+        // **The unit's own `-march` selects the persona** — 060 §1.1's multiarch is not a label
+        // on a struct, it is a different program per variant. Five probes for 1967 units.
         let cfg = Config {
             system_paths: system.clone(),
-            ..u.pp_config()
+            ..u.pp_config(probe)
         };
         let r = std::panic::catch_unwind(AssertUnwindSafe(|| {
             let s = PreprocessorSession::new();
@@ -147,6 +141,14 @@ fn every_vpp_compile_command_preprocesses_without_panicking() {
         panicked.len(),
         diagnosed,
         unreadable
+    );
+    // **Printed because the token count moves when this number is wrong.** One persona for the
+    // whole run is what the gate did before the join, and it is indistinguishable from a correct
+    // run by every other number here: taking the wrong `#if` branch emits no diagnostic.
+    eprintln!(
+        "  personas: {} distinct target flag-sets probed from {}",
+        probe.persona_probes(),
+        probe.compiler()
     );
     if unreadable > 0 {
         eprintln!("  ⚠️ {unreadable} sources the database names do not exist on disk");

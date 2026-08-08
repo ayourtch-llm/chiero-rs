@@ -56,8 +56,8 @@ fn avx2_discriminates() -> bool {
 /// (`vector.h:197` guards `vector_avx2.h` exactly this way).
 const SRC: &str = "#if defined(__AVX2__)\nint wide (void);\n#else\nint narrow (void);\n#endif\n";
 
-fn preprocessed(u: &TranslationUnit) -> String {
-    let tu = chiero_pp::preprocess_with_loader(&u.src, SRC, u.pp_config(), &mut Disk);
+fn preprocessed(u: &TranslationUnit, probe: &chiero_probe::Probe) -> String {
+    let tu = chiero_pp::preprocess_with_loader(&u.src, SRC, u.pp_config(probe), &mut Disk);
     assert!(
         tu.diagnostics.is_empty(),
         "the fixture preprocesses cleanly: {:?}",
@@ -86,15 +86,46 @@ fn each_variant_preprocesses_under_the_persona_its_own_march_selects() {
         .join(",\n")
     ))
     .expect("fixture parses");
+    let probe = chiero_probe::Probe::new();
     let units: Vec<_> = d.units_for(Path::new("/src/aes.c")).collect();
     assert_eq!(units.len(), 2, "060 §1.1: one source, several units");
 
     assert!(
-        preprocessed(units[0]).contains("wide"),
+        preprocessed(units[0], &probe).contains("wide"),
         "the -march=x86-64-v3 unit compiles the AVX2 branch, which is the only reason the variant exists"
     );
     assert!(
-        preprocessed(units[1]).contains("narrow"),
+        preprocessed(units[1], &probe).contains("narrow"),
         "and the baseline unit does not — two units of one source that agree here are one program twice"
+    );
+}
+
+/// **The join costs one compiler run per distinct `-march`, not one per unit.**
+///
+/// VPP has 1967 C units and five distinct `-march` values between them. A probe per unit would put
+/// 1967 subprocess spawns inside the corpus gate; this is the assertion that says it does not, and
+/// it is a count rather than a duration because a duration would pass on a fast machine with no
+/// cache at all.
+#[test]
+fn the_persona_is_probed_once_per_distinct_march_not_once_per_unit() {
+    let d = BuildDb::parse(&format!(
+        "[{}]",
+        (0..10)
+            .map(|i| {
+                let march = ["-march=x86-64-v2", "-march=x86-64-v3"][i % 2];
+                entry(&format!("/src/f{i}.c"), march, &format!("f{i}.o"))
+            })
+            .collect::<Vec<_>>()
+            .join(",\n")
+    ))
+    .expect("fixture parses");
+    let probe = chiero_probe::Probe::new();
+    for u in d.c_units() {
+        let _ = u.pp_config(&probe);
+    }
+    assert_eq!(
+        probe.persona_probes(),
+        2,
+        "ten units over two distinct -march: the compiler runs twice"
     );
 }

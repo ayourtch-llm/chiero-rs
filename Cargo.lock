@@ -301,6 +301,7 @@ dependencies = [
  "chiero-gcov",
  "chiero-model",
  "chiero-pp",
+ "chiero-probe",
  "chiero-recipe",
  "chiero-span",
  "indexmap",

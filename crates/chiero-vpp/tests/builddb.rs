@@ -189,7 +189,7 @@ fn two_units_sharing_a_configuration_share_a_config_id() {
 fn a_unit_yields_a_preprocessor_config_carrying_its_own_id() {
     let d = db(&[entry("/src/a.c", "/b", "-DFOO -I/src", "a.o")]);
     let u = &d.units()[0];
-    let cfg = u.pp_config();
+    let cfg = u.pp_config(&chiero_probe::Probe::new());
     assert_eq!(cfg.id, u.config);
     assert_eq!(cfg.defines, vec![("FOO".to_string(), "1".to_string())]);
     assert_eq!(cfg.include_paths, vec![PathBuf::from("/src")]);
