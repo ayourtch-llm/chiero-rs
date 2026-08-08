@@ -166,6 +166,47 @@ reading a slightly different program from the one VPP would build today. Regener
 directory is the fix; until then, a `failed` row naming a missing struct member is an
 environment fact and should not be chased as a frontend gap.
 
+## `vnet/` — a different subsystem, 2026-08-08, 423 entry points
+
+The find-bugs corpus had only ever seen `vnet/ip/` (§7.17, an honest zero). This is the whole
+of `vnet/*/*.c` at one entry per file — §11.3's "change the kind, not the size".
+
+| | |
+|---|---|
+| 423 entries | `ok` 406, `cut` 7, `nofn` 3, `failed` 7, **`timeout` 0**, `noinc` 0 |
+| findings | **44**, of which **0** are `Exact` |
+
+A far cleaner subsystem than the plugins: no exotic external headers, so nothing is `noinc`, and
+nothing timed out. Findings per entry run about three times the plugin rate. The four kinds are
+`pointer-outside-object` 19, `out-of-bounds` 17, `null-dereference` 4, `uninitialized-read` 4.
+
+### ⚠️ The sweep analyses files VPP does not compile, and two of them are broken
+
+Six causes across the 7 `failed` rows, and **two are files the build never touches**:
+
+| | |
+|---|---|
+| `fib_entry_src_default.c` | defines `fib_entry_src_default_deinit` **twice** (lines 22 and 35). gcc: `error: redefinition of …` at the same line |
+| `pcap2pg.c` | calls `pcap_read` with no declaration in scope. gcc: `implicit declaration` — a *warning* in its default mode, and invalid C99+, which VPP's `-Werror` would reject |
+
+Neither appears in `ninja -t commands all`'s 2945 entries, nor in `src/vnet/CMakeLists.txt`. They
+are dead source that has never compiled, which is exactly why the defects survived — and chiero
+is right about both.
+
+📌 **The actionable half is about this harness.** `pick_entries.py` globs the tree, so `failed`
+mixes two unrelated things: what chiero cannot read, and what *nothing* can read. `ninja -C
+$VPPBUILD -t commands all` is the authoritative list of what ships and costs **63 ms**; filtering
+the entry list through it would make every `failed` row a statement about compiled code. Worth
+doing before the next sweep rather than after.
+
+The other five: two `-march`-family intrinsics (`u32x4_gather`, `clib_crc32c_u32`, the parked
+item), a generated API type, and an unresolved `api_sr_localsid_add_del_v2`.
+
+⚠️ `nofn` 3 — `pick_entries.py` is still picking macro-registered names as functions
+(`clear_session_dbg_clock_cycles_fn`, `create_simulated_srp_interfaces`). Same cause as the
+`VLIB_CLI_COMMAND` row that created the `nofn` status; it was fixed for that shape and not this
+one.
+
 **It found two source-triggerable panics**, which is what a sweep is for — both recorded as
 `failed`, the same row a file that will not preprocess gets, so two crashes on real code looked
 like two files chiero could not read:
