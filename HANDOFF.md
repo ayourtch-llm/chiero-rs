@@ -2230,8 +2230,30 @@ typing the paths ever would.
    — one DFS per block *on the line*, which runs whether or not a cycle exists. It is the only
    thing in the file that scales with blocks-per-line. **Chase the `onelin` curve.**
 
-   **Next reader: do not read. Profile.** Three hypotheses were tried in one session and the
-   ratio moved on none of them:
+   ✅ **Diagnosed with a counter, and the first real win landed 2026-08-08.**
+   `native::circuit_starts()` counts every `circuit` entry, recursion included:
+
+   | shape | n=200 | n=800 | n=3200 | growth |
+   |---|---|---|---|---|
+   | `line` | 405 | 1 605 | 6 405 | 4x — linear |
+   | `onelin` | 20 504 | 322 004 | **5 128 004** | 16x — **quadratic** |
+
+   ⚠️ The counter **refuted its own first placement**: counting only the outer `for &start in bs`
+   loop gave 6405 for *both* shapes while one ran 17x slower. The cost is not how many traversals
+   begin, it is how far each walks.
+
+   **Fixed so far:** `bs.contains(&w)` — a linear scan in the innermost recursion — is now a
+   `Vec<bool>` indexed by block. **17.31 s → 8.36 s at n=3200 (2.07x)**, ratio 50.3x → ~38x, call
+   count unchanged as it should be. *(clippy then caught that `bs` was being passed through
+   `circuit` only to reach its own recursive call. Dropped.)*
+
+   **What is left, named rather than guessed:** `blocked.iter().position(|&b| b == w)` and
+   `block_lists[index].contains(&v)` in the no-loop-found branch, which is the common case. Beyond
+   those, the quadratic **call count** is inherent to one DFS per block on the line and needs an
+   algorithmic change, not a data-structure one.
+
+   ⚠️ *Kept below: three hypotheses that were tried first and moved nothing.* **Do not read.
+   Profile.**
 
    | hypothesis | how it looked | ratio after |
    |---|---|---|
