@@ -2225,33 +2225,32 @@ typing the paths ever would.
    §11.3's rule applies: **do not fix the site; ask which read path does not end in a stable
    symbol across a fork.**
 
-   ✅✅✅ **ROOT CAUSE FOUND AND CONFIRMED 2026-08-08.** Instrumenting the loads:
+   ✅ **Measured, 2026-08-08 — with one claim retracted below.** Instrumenting the loads:
 
    ```text
    LOAD #0 INVENTED       <- the guard's read: memory produced nothing
    LOAD OK term=Term(4)   <- the subscript's read: the real term
    ```
 
-   **Havocking a lazy object that has not yet been materialised does nothing.**
-   `havoc_range_reporting`'s `Symbolic` fill mints a `clobberN` per byte and `write_sym_byte`s it
-   — but against an object that does not exist yet the write fails and the loop **`break`s
-   silently**. The first read afterwards gets no value and chiero *invents* one; that read
-   materialises the object, so every later read returns the real term. **A guard on the first
-   read therefore constrains a symbol nothing else uses.**
+   The first read after the unmodeled call produces no value and chiero **invents** one; the
+   second returns a real term, so **the guard constrains a symbol nothing else uses**. Confirmed
+   the only way that settles it: adding one load **before** the call makes the reproduction pass.
+   The call does havoc (`ModelApproximate`, as VPP's does) and the object ends up
+   **`Array`-promoted**, matching VPP's `unwitnessed` text ("whose value is a whole array rather
+   than a number"). This explains **19 of the 44** `vnet/` findings.
 
-   Confirmed the only way that settles it: adding one load **before** the call — materialising
-   the object so the havoc has something to write to — makes the reproduction pass.
+   ⚠️⚠️ **RETRACTED: "the havoc's write fails and the loop breaks silently".** I committed that as
+   the mechanism and it is wrong — inferred from reading `havoc_range_reporting`, not measured.
+   Instrumenting that loop shows it **never runs** on this path: zero writes. The havoc takes
+   `havoc_object`'s promoting path instead, which is also why the object is `Array`-promoted.
 
-   That is exactly the VPP shape: `format (s, "%s", c->name)` is the first thing that touches
-   `c`, so its havoc is a no-op and the guard's read is invented. It explains **19 of the 44**
-   `vnet/` findings.
+   ❓ **So *why* the first read of an `Array`-promoted lazy object yields nothing is open.** After
+   two wrong mechanisms on this entry — both plausible, both from reading rather than measuring —
+   the next step is an instrumented run. ⚠️ **Do not assert a mechanism here without measuring
+   it.** That is twice.
 
-   📌 **The fix is a design question about where materialisation happens.** `chiero-mem` cannot
-   materialise a lazy object — laziness is `chiero-exec`'s — so either the engine materialises
-   reachable objects before havocking them, or the silent `break` becomes a refusal that says so.
-   ⚠️ **The silence is the part that is certainly wrong**: a havoc that writes nothing while
-   reporting success is 021 §6's family exactly, and 024 contract 21e's whole point is that an
-   unmodeled extern handed a pointer *wrote* something there.
+   📌 021 §6's family regardless: a read path that does not end in a symbol. The fix is a design
+   question and belongs against 021 §6 rather than patched where it shows.
 
    *(Historical: the blocker before this was a missing instrument, not a missing idea.)* Settling it needs the
    *actual lowered CIR* for `format_vnet_dev_counter_name` — which term the guard constrains and
