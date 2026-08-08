@@ -2141,17 +2141,18 @@ typing the paths ever would.
    if (c->unit < ARRAY_LEN (units) && units[c->unit])   /* c->unit read from havoc'd memory */
    ```
 
-   ❓ **Leading hypothesis, and it is a sharp one: repeated reads of one address in havoc'd memory
-   may yield *different* symbols.** The guard constrains the value read at `c->unit < …`; the
-   index re-reads `c->unit`. If those are separate fresh symbols, the guard constrains one and
-   the subscript uses another, and offset 48 becomes satisfiable exactly as observed.
+   ❌ **Hypothesis raised and refuted the same hour — do not chase it again.** The story was that
+   repeated reads of one address in havoc'd memory yield *different* symbols, so the guard binds
+   one and the subscript another. Tested directly: an unmodeled call, then two `load i32` of the
+   same address, then `br (a != b)`. **One state, returning 0** — the inequality is decided false,
+   so havoc'd reads are stable. 021 §6's twin holds already: not knowing a value is not
+   permission to give it two.
 
-   **The decisive test is small and does not need VPP:** load the same address twice with an
-   unmodeled call before them, and ask whether the two loads are provably equal. If they are not,
-   that is a real defect — memory is memory, and 021 §6's rule that "chiero not knowing a value
-   is not the program failing to write one" has a twin here: *not knowing a value is not
-   permission to give it two.* ⚠️ Stated as a hypothesis because four fixtures on the neighbouring
-   item were wrong; run the test before believing it.
+   ⚠️ **So the cause of the `units` finding is still open**, and the obvious explanation is now
+   excluded rather than merely unconfirmed, which is worth more than it sounds: `format` havocking
+   `c` before the guard cannot by itself explain offset 48. The next thing to check is whether the
+   finding is even at that subscript — the function has other array accesses, and the message
+   names `units` without naming the line.
 
    Between this and 5h, **36 of the 44 `vnet/` findings are characterised**: one class traced to
    an architectural cause, one to a precise open question. Neither is chiero claiming something
