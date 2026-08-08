@@ -529,6 +529,27 @@ impl Engine {
             ("__gnu_linux__", "1"),
             ("__ELF__", "1"),
             ("__LP64__", "1"),
+            ("_LP64", "1"),
+            ("__amd64__", "1"),
+            ("__amd64", "1"),
+            ("__SIZEOF_POINTER__", "8"),
+            // **The persona had no endianness, and "no endianness" is not neutral — it is
+            // big-endian.** With all three undefined, `#if` reads each as `0`, so *both* of VPP's
+            // real call sites evaluated `0 == 0` and both branches were taken:
+            //
+            // - `vppinfra/byte_order.h:11` tests `== __ORDER_LITTLE_ENDIAN__` — right by accident.
+            // - `srv6-mobile/mobile.h:41` tests `== __ORDER_BIG_ENDIAN__` — **wrong**, and its
+            //   branch defines `BITALIGN2(A,B)` as `A; B` rather than `B; A`, so every bit-field
+            //   struct in that plugin was declared in reverse member order. 020 contract 30's
+            //   class exactly: a layout difference that produces no diagnostic.
+            //
+            // The values are gcc's own (`1234`/`4321`/`3412`), not invented ordinals, because
+            // real code compares against them numerically as well as by name.
+            ("__ORDER_LITTLE_ENDIAN__", "1234"),
+            ("__ORDER_BIG_ENDIAN__", "4321"),
+            ("__ORDER_PDP_ENDIAN__", "3412"),
+            ("__BYTE_ORDER__", "1234"),
+            ("__FLOAT_WORD_ORDER__", "1234"),
         ] {
             engine.add_predefined_object(name, value);
         }

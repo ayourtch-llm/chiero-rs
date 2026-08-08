@@ -542,3 +542,68 @@ fn the_table_covers_the_diagnostic_attributes_glibc_queries() {
     // The load-bearing row, stated on its own so a future edit cannot quietly flip it to 0.
     assert_eq!(gcc_value("__has_attribute", "error"), 1);
 }
+
+/// **The persona had no endianness, and "no endianness" is not neutral — it is big-endian.**
+///
+/// `__BYTE_ORDER__`, `__ORDER_LITTLE_ENDIAN__` and `__ORDER_BIG_ENDIAN__` were all undefined, so
+/// `#if` read every one of them as `0` and **both** of VPP's two real call sites evaluated
+/// `0 == 0` → true:
+///
+/// | site | test | chiero took | correct on x86-64 |
+/// |---|---|---|---|
+/// | `vppinfra/byte_order.h:11` | `== __ORDER_LITTLE_ENDIAN__` | little | little — **right by accident** |
+/// | `srv6-mobile/mobile.h:41` | `== __ORDER_BIG_ENDIAN__` | big | little — **wrong** |
+///
+/// `mobile.h`'s branch is not cosmetic: it defines `BITALIGN2(A,B)` as `A; B` big-endian and
+/// `B; A` little-endian, so every bit-field struct in that plugin was **declared in reverse
+/// member order**. That is 020 contract 30's class of defect — a layout difference that produces
+/// no diagnostic and changes every offset downstream.
+///
+/// ⚠️ Found by comparing gcc's 401 predefines against the persona's baked set and intersecting
+/// with the identifiers VPP actually tests in `#if`/`#elif` — **not** by the corpus run, which
+/// cannot see it: taking the wrong branch is silent by construction. Six of the eight gaps that
+/// search found are fixed here; the other two are `-march`-gated and stay parked.
+#[test]
+fn the_baked_persona_has_an_endianness_and_it_is_little() {
+    let taken = |cond: &str| {
+        let src = format!("#if {cond}\nTAKEN\n#else\nNOT\n#endif\n");
+        preprocess_str("e.c", &src, Config::default())
+            .token_texts()
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    // The two real VPP call sites, spelled as they are spelled there.
+    assert_eq!(
+        taken("(__BYTE_ORDER__)==( __ORDER_LITTLE_ENDIAN__)"),
+        ["TAKEN".to_string()],
+        "vppinfra/byte_order.h:11 — little-endian, and it must be right on purpose now"
+    );
+    assert_eq!(
+        taken("__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__"),
+        ["NOT".to_string()],
+        "srv6-mobile/mobile.h:41 — this is the one that was silently taking the big-endian \
+         branch, reversing bit-field member order in every struct built with BITALIGN"
+    );
+    // **The discriminating assertion.** Defining all three to the same value would satisfy the
+    // first check and fail this one — and is exactly the state the persona was in (all zero).
+    assert_eq!(
+        taken("__ORDER_LITTLE_ENDIAN__ == __ORDER_BIG_ENDIAN__"),
+        ["NOT".to_string()],
+        "the two orders must be distinct values, or every endianness test is a coin flip"
+    );
+    assert_eq!(
+        taken("__ORDER_LITTLE_ENDIAN__ == 1234"),
+        ["TAKEN".to_string()]
+    );
+    assert_eq!(taken("__ORDER_BIG_ENDIAN__ == 4321"), ["TAKEN".to_string()]);
+
+    // The other four gaps from the same search, all trivially true on the impersonated target.
+    for cond in [
+        "defined(_LP64)",
+        "defined(__amd64__)",
+        "defined(__amd64)",
+        "__SIZEOF_POINTER__ == 8",
+    ] {
+        assert_eq!(taken(cond), ["TAKEN".to_string()], "{cond}");
+    }
+}
