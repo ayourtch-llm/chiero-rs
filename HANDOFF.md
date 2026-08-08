@@ -1817,6 +1817,19 @@ typing the paths ever would.
    which is exactly why reading a byte at a time through a symbolic pointer did not reproduce it.
    **The fixture to write is a wide `copymem` out of a large uninitialised alloca**, not a loop.
 
+   ❌ **That was tried too, and it also does not reproduce** — `copymem` of 8192 bytes out of an
+   uninitialised alloca gives an **empty** witness. So minting is necessary and not sufficient:
+   the witness is assembled at `chiero-exec/src/lib.rs:2824` from `s.mem.minted_symbols()`, and
+   whatever `copymem` does with an uninitialised source does not go through `materialize_fresh`
+   at all.
+
+   **Three fixtures, three misses, and the entry says so rather than shipping the fourth.**
+   Ruled out: a byte-at-a-time loop through a symbolic entry pointer (1 binding); a wide
+   `copymem` out of an uninitialised alloca (0 bindings). **The next step is not another guess** —
+   it is to find what in `nsh_md2_encap` calls `materialize_fresh` ten thousand times, and the
+   cheap way is the debug binary with a breakpoint or a print at that site on the real input,
+   since the real case is a single reproducible command.
+
 5c. 🆕 **Three `timeout` rows in `plugins/nsh/`** — `format_nsh_header`, `nsh_md2_decap`,
    `nsh_md2_encap`, from the widened sweep (2026-08-08). The verifier fix removed the cause the
    *old* `timeout` rows had, so this is a different one and nobody has looked. Sampling the stack
