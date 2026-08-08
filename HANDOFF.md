@@ -1492,6 +1492,7 @@ This has now paid out three times in a row, each time on the first run after a w
 | *not a widening* — **re-measuring the pinned 40 and asking why nothing moved** | one retake + one `grep` | the corpus **cannot reach** a 32-byte access: `__AVX2__` is undefined in every configuration chiero compiles, so every AVX2/AVX512 path in vppinfra is invisible to every measurement this project has published. New evidence for the parked `-march` item, and it came from an *unchanged* number |
 | **a new *kind* of gate: the preprocessor under VPP's own flags** (012 c17, 1967 TUs, 18 min) | one ingest + one gate | **three defects the pp-gate could never see**, because none is about preprocessing *syntax*: `__linux__` unbaked (VPP's `pmalloc.c` reached `#error "Unsupported OS"`), `__has_attribute(error)` answered 0 where gcc says 1, and a diagnostic class chiero was *right* about and that was still noise. Diagnosed 25 → 0, and the token count 731M → **792M: 8% more of the program became visible** |
 | *not a widening* — **asking what chiero believes rather than what it says** (`persona_gap`, 0.1 s) | one differential instrument | the **endianness** defect: `__BYTE_ORDER__` undefined, so `#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__` read `0 == 0`, took the big-endian branch on x86-64, and reversed bit-field member order across `srv6-mobile`. **The 18-minute corpus gate is structurally incapable of finding this** — a wrongly-taken branch emits nothing. Output-watching and state-comparison are two different searches |
+| **reproducing a defect at the layer it lives in** — the witness reporting item, after four waves of engine fixtures | one wave | **950 KB → 11.9 KB on the real VPP entry**, and two defects inside the fix: "show the first *k*" would have dropped every pinned binding, and a bounded rendering would have become a bounded *proof condition* in `check_reachable`. The four earlier dead ends all tried to *produce* a huge witness by execution; it was a reporting defect, and three of the six tests build a `Witness` directly |
 | **splitting a clock instead of counting inside it** — timing `ingest_into` apart from the arc-index walk | one column in an existing gate, 4 min | **the gcov growth gate passes for the first time.** 90% of the cost was on the *other side* of the suspect §9.1 had recorded, and two throwaway experiments bisected it to `block_counts` — every block scanning every arc. ⚠️ One of the three fixes was a change **measured and honestly ruled out earlier the same day**; the null result was true while `block_counts` dominated |
 | **the per-TU persona join** — the corpus gate stopped preprocessing 1967 units as one compiler | one crate + one wave, 23 min to re-measure | **+26M tokens, 3.3% more of VPP visible**, 0 diagnosed throughout — and the yield was a *number*: 8 distinct target flag-sets where I had written 5 in four places. A `-march` value is not a flag-set (`-mtune`, `-mprefer-vector-width=512`, `-maes`, four units with none, one naming `-march` twice). One `ninja -t compdb` pipe would have said so at any point |
 | *not a widening* — **disbelieving a "blocked" label** (the gcov `Vec::contains` audit) | one generated `.gcno` | the block was false: gcc emits a `.gcno` of any size from generated C, so no VPP coverage build and no format writer were ever needed. Native ingest measured **quadratic**, then **~250x faster** (17.31 s → ~0.068 s at n=3200, two runs; ±20% at these times) across five fixes. ⚠️ **Six confident hypotheses were refuted by measurement**, four of them before anything worked; counters found every real site. The curve itself was blind twice — once holding blocks-per-line at 1, once measuring below its own noise floor — and a genuinely quadratic counter (327 808 014 cells) turned out to be 7% of the clock. **Counting stops you being confidently wrong; it does not by itself make you right** |
@@ -1591,11 +1592,11 @@ typing the paths ever would.
 >    worth it only when something touched the frontend or the persona — it was run at the end of
 >    this session and its numbers are below.
 > 2. **Pick a widening (§8.3), or take a concrete item from §9.1.** The live ones, roughly by
->    value: the **witness reporting defect** (a 950 KB envelope for one finding, 10 658 bindings —
->    it has a reproduction command and four measured dead ends, and the next fixture *must not
->    fork*); the **stale VPP build directory**, which quietly affects every number this project
->    publishes; and **032 contract 18's replay corpus**, still with no `observed` entry.
-> 3. ⚠️ **Two closed today, do not re-open:** the whole persona thread (`chiero-probe`, the join,
+>    value: the **stale VPP build directory**, which quietly affects every number this project
+>    publishes; **032 contract 18's replay corpus**, still with no `observed` entry; and the two
+>    `vnet/` finding classes, which are policy questions rather than defects.
+> 3. ⚠️ **Three closed today, do not re-open:** the witness reporting defect (§9.1 5e — and read
+>    its three corrected claims before trusting a truncated witness), the whole persona thread (`chiero-probe`, the join,
 >    060 contract 2, and the corpus gate's own configuration gap) and the gcov growth gate, which
 >    passes for the first time. §9.1 1d (`__STDC_VERSION__`) is the **owner's call on the language
 >    level** and is the only part of the persona thread left.
@@ -2205,97 +2206,41 @@ typing the paths ever would.
    The duration survives as a loose 30 s smoke check, explicitly *not* the assertion, so a
    catastrophic regression fails fast instead of hanging the suite.
 
-5e. 🆕 **A witness of 10 658 bindings — `nsh_md2_encap`, and it is a *reporting* defect.**
-   Chasing 5c's `timeout` rows found this. The entry does finish, in **2 m 22 s against a 120 s
-   budget**, and emits **950 KB of JSON for one finding**. Its witness is **10 658 bindings,
-   10 657 of them the same anonymous label "a lazily-materialized byte"**.
+5e. ✅ **CLOSED 2026-08-08 (second session) — 950 KB → 11.9 KB, and the fix found a second
+   defect in the fix.** `nsh_md2_encap`'s envelope is now 64 bindings plus an account of the rest;
+   `Witness::digest` (chiero-exec, since 023 §9 owns what a witness is) bounds it, pinned bindings
+   first, and nothing is reordered when nothing is dropped.
 
-   023 §9 calls a witness *a concrete input someone can re-run*. Ten thousand unnamed bytes is
-   not one: it cannot be read, cannot be typed into a harness, and it is most of both the runtime
-   and the output. Under UCSE an entry that walks a packet buffer materialises a byte at a time,
-   so the *execution* is probably fine and the reporting is not.
+   **The fixture four earlier attempts missed, recorded because it cost four waves.** They all
+   reached for `copymem`, which forks on the aliasing check against a lazy object — and the
+   finding then lands on the *mint-free* fork, so the witness came out empty. **Straight-line
+   loads at distinct offsets through the entry pointer** mint one byte each, do not fork, and put
+   the fault after the mints: n loads, n + 3 bindings, ~96 JSON bytes each, linear to any size.
+   The general form: *when four attempts to reproduce a symptom fail, check whether the layer you
+   are reproducing it at is the layer the defect is in.* This was a reporting defect the whole
+   time, and reporting is testable without an engine run at all — three of the six tests here
+   construct a `Witness` directly.
 
-   The fix has to bound the rendered list **and say what it left out** — a quietly shortened
-   witness reads as the whole input and is worse than a long one.
+   **Three things the wave got wrong and measurement corrected:**
 
-   ```sh
-   ./target/release/chiero find-bugs $VPP/src/plugins/nsh/nsh_node.c --entry nsh_md2_encap \
-     --time-budget 120 $INC -I$VPPBUILD/vpp/CMakeFiles/plugins/nsh $DEF --entry-ptr-nonnull --json
-   ```
-
-   ⚠️ **A RED was attempted and thrown away, which is the useful part of this entry.** A `.cir`
-   fixture looping over a symbolic entry pointer produced **one** binding and a 1 170-byte
-   envelope — nothing like the VPP case. Committing it would have been a test passing for the
-   wrong reason, which is the failure this file has recorded three times today.
-
-   ✅ **And then the mechanism was found, which is what the fixture needed.**
-   `Memory::materialize_fresh` (`chiero-mem/src/lib.rs`) mints **one 8-bit symbol per byte** —
-   `uninit_<objid>_<k>` — pushing a `MintedSymbol` each, and it does so for the whole `size` of a
-   single call. So *one wide read or copy of an uninitialised region mints thousands at once*,
-   which is exactly why reading a byte at a time through a symbolic pointer did not reproduce it.
-   **The fixture to write is a wide `copymem` out of a large uninitialised alloca**, not a loop.
-
-   ❌ **That was tried too, and it also does not reproduce** — `copymem` of 8192 bytes out of an
-   uninitialised alloca gives an **empty** witness. So minting is necessary and not sufficient:
-   the witness is assembled at `chiero-exec/src/lib.rs:2824` from `s.mem.minted_symbols()`, and
-   whatever `copymem` does with an uninitialised source does not go through `materialize_fresh`
-   at all.
-
-   ✅ **Observed rather than guessed, 2026-08-08.** A temporary `eprintln!` in
-   `materialize_fresh`, run on the real command: **nine calls, and one of them is
-   `obj=2 off=0 size=10640`.** So it is *one wide access to a large lazy object* minting 10 640
-   symbols in a single call — not ten thousand small ones. Four distinct objects touched in all.
-
-   A synthetic `copymem` of 10 640 bytes **out of an entry-pointer parameter** reproduces that
-   call exactly (`FRESH obj=2 off=0 size=10640`) — the lazy object is the ingredient the earlier
-   attempts lacked, since two stack allocas never reach `materialize_fresh` at all.
-
-   ⚠️ **Its witness is still empty, and a second probe says why — the fixture forks.** Printing
-   at the witness-assembly site (`chiero-exec/src/lib.rs`, just before `extra` is built) gives
-   **two** terminated states: `minted=0` and `minted=10640`. The division-by-zero finding is
-   reported from the **mint-free** one, so the envelope is small while a 10 640-mint state sits
-   beside it unreported.
-
-   So the remaining question is not "why are mints not bindings" — they are, on the state that
-   has them. It is **why the fixture's finding lands on the fork without the mints**, and what
-   `nsh_md2_encap` does differently to put its finding on the state that has them. `copymem` out
-   of a lazy object evidently forks (a symbolic base resolving over candidate objects is the
-   obvious suspect, 021 §5.1); the fixture needs the fault on the *materialising* path.
-
-   📌 **A witness is per state, which is worth knowing on its own** — the megabyte in the real
-   case is one state's, not the run's.
-
-   Ruled out so far, each with what it proved:
-
-   | fixture | result |
+   | claim | what the measurement said |
    |---|---|
-   | byte-at-a-time loop through a symbolic entry pointer | 1 binding — wrong access shape |
-   | wide `copymem` between two stack allocas | 0 bindings, **no `materialize_fresh` at all** — a stack object is not a lazy one |
-   | wide `copymem` out of an entry pointer | 0 bindings, **but the right mint** (`obj=2 size=10640`) |
-   | the same, with the fault *depending on* a copied byte | still 0 bindings |
+   | "show the first 64" | the pinned bindings are the **last four** in the fixture — that bound would drop every value the finding depends on |
+   | "pinned-first keeps what matters" | on the real case **10 580 of 10 594 omitted bindings are pinned**; `pinned` means the *model* gave it a value, and a total model pins nearly everything |
+   | truncating the report is harmless | `check_reachable` licenses `proven` on *"a solver pinned every input"* — computed from a bounded view, a truncated witness would turn an unproven arrival into a **proof** |
 
-   ✅ **The real case, instrumented at the same site, gives the difference in one line:**
+   The last is the one to remember: **a bounded rendering must not become a bounded check.**
+   `PathWitness::all_pinned` runs over the whole witness, and a chiero-exec test pins the property
+   it rests on (a bounded view *can* be all-pinned while the witness is not).
 
-   ```text
-   WITNESS minted=10657 inputs=1 requires=0 findings=1 path=1     # nsh_md2_encap: ONE state
-   WITNESS minted=0     inputs=0 requires=0                       # the fixture: TWO states,
-   WITNESS minted=10640 inputs=0 requires=0                       #   and the fault is on the first
-   ```
+   ⚠️ **One mutant survives and is recorded rather than hidden:** computing `all_pinned` from the
+   digest instead of the witness passes every test, because killing it needs a witness with ≥65
+   pinned bindings *and* one unpinned, which no fixture here produces. The guard is written at its
+   source and commented; a future editor moving it has no test to stop them.
 
-   **`nsh_md2_encap` terminates a single state; every fixture forks.** So the mints and the
-   finding are on the same state there and on different states here — which is why the fault
-   depending on a copied byte still changed nothing, and why the fork theory was incomplete
-   rather than wrong.
-
-   ⚠️ **The next fixture must not fork.** The likely source is `copymem`'s aliasing check between
-   an alloca and a lazy entry pointer (one branch where they overlap, one where they do not) —
-   worth confirming before writing anything, since that guess is the fifth of its kind and the
-   first four were wrong. Also worth noting from the same line: the real path condition has
-   **one** constraint and still yields 10 657 bindings, so binding count is not driven by the
-   path.
-
-   **Nothing else in the queue is blocked on this**; it is a reporting defect on one VPP entry,
-   with a reproduction command, and four measured dead ends.
+   Applied at **both** render sites — `find_bugs` and `check_reachable`, which solves for its own
+   bindings and had its own unbounded rendering. §7.2's rule, and the reason `check_reachable`'s
+   trap was found at all.
 
 5c. 🆕 **Three `timeout` rows in `plugins/nsh/`** — `format_nsh_header`, `nsh_md2_decap`,
    `nsh_md2_encap`, from the widened sweep (2026-08-08). The verifier fix removed the cause the
