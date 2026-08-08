@@ -1914,7 +1914,7 @@ typing the paths ever would.
    function that exists by construction. Until then `nofn` is a corpus artefact, not a chiero
    limitation, which is exactly what the status was invented to make visible.
 
-5f. 🆕 **The sweep analyses files VPP does not compile — and that is how it found a real VPP
+5f. ✅ **CLOSED — `--built-only` shipped 2026-08-08.** The sweep analyses files VPP does not compile — and that is how it found a real VPP
    defect.** `src/vnet/fib/fib_entry_src_default.c` defines `fib_entry_src_default_deinit`
    **twice**, at lines 22 and 35, both `static void … {}`. chiero refuses it; **gcc gives the
    identical error at the identical line** (`redefinition of …`); and the file is **not in the

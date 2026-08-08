@@ -140,11 +140,31 @@ global. See the commit; the finding is true C and the *silence* was the bug.
 | 16 | `clib_crc32c_with_init` not declared | the **parked** `-march` item |
 | 3 | `u32x4_sum_elts` not declared | same family — a vector intrinsic behind a target macro |
 | 6 | unknown type `vl_api_http_static_*_t` | generated API headers |
-| 3 | `vl_msg_api_set_handlers` not declared | generated API |
+| 3 | `vl_msg_api_set_handlers` not declared | ⚠️ **entirely an artefact** — all three are in files the build never compiles |
 | 3 | **no member named `last_heard_age`** | ⚠️ **not a chiero defect — see below** |
 
 The 96 `noinc` rows are headers this machine does not have (cbor, libxdp, picotls, netmap's
 generated enum, libnl, DPDK, quicly) and are correctly not counted as chiero failures.
+
+### What `--built-only` would do to these numbers — **computed, not re-run**
+
+12 of the 509 plugin files are not compiled, and they supplied **33** of the 1320 entries.
+Filtering the recorded rows by those files gives the delta exactly, without an hour of sweeping:
+
+| | globbed | with `--built-only` |
+|---|---|---|
+| entries | 1320 | 1287 |
+| `ok` / `noinc` / `failed` | 1133 / 96 / 31 | 1115 / 84 / **28** |
+| findings (`Exact`) | 91 (3) | **88** (3) |
+
+⚠️ **This is arithmetic over the rows already recorded, not a measurement**, and it is marked so
+because the two are not the same thing — a re-run could differ if anything else moved. What it
+is good enough for is the conclusion: **`vl_msg_api_set_handlers` disappears entirely**, so one
+of the six causes above was never about compiled code, and **3 of the 91 findings are about
+source VPP does not build**.
+
+Unlike `vnet/`, where the uncompiled files contributed no findings at all, here they contributed
+three — so the flag is not merely tidying the failure column.
 
 ### ⚠️ The VPP build directory is **stale**, and that is worth knowing before trusting any number
 
