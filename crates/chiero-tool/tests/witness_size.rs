@@ -126,3 +126,68 @@ fn a_short_witness_is_rendered_whole_and_says_nothing_about_omission() {
         f["witness_omitted"]
     );
 }
+
+/// **The same rule at the other site that renders a witness.**
+///
+/// `check_reachable` solves the path condition itself — the engine attaches a witness to a state
+/// carrying a *finding*, and a state that merely arrived somewhere has none — so it builds its
+/// bindings by a different route and had its own unbounded rendering. Under UCSE it reaches that
+/// line through the same lazily-materialized bytes.
+///
+/// §7.2's lesson, which this project has paid for twice: when a review finds a defect, the
+/// question is what rule it violates, not what line to change. Fixing only the site that was
+/// measured is how two earlier defects came back through a different door.
+#[test]
+fn check_reachable_bounds_its_witness_the_same_way() {
+    // ⚠️ **Not the load fixture.** Measured: `check_reachable` builds its bindings from
+    // `State::inputs()`, and the lazily-materialized bytes of the loads above are not among
+    // them — that witness comes out *empty*. Parameters are, so this is what exercises the
+    // bound at this site. Writing the test against the other fixture would have asserted a
+    // bound over an empty list and passed while proving nothing.
+    let params: Vec<String> = (0..100).map(|i| format!("%{i}: i32")).collect();
+    let body = format!(
+        "func @f({}) -> i32 {{\nentry:\n  .line 1\n  %100 = add i32 %0, %1\n  .line 2\n  ret %100\n}}",
+        params.join(", ")
+    );
+    let env = chiero_tool::check_reachable(&m(&body), &chiero_tool::BugCfg::new("f"), 2);
+    let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
+    let shown = v["result"]["witness"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no witness to inspect: {v}"))
+        .len();
+    assert_eq!(
+        shown, 64,
+        "100 inputs, and the bound is not a property of one operation: {}",
+        v["result"]
+    );
+    assert_eq!(
+        v["result"]["witness_omitted"]["count"].as_u64(),
+        Some(36),
+        "and it says what it left out: {}",
+        v["result"]
+    );
+}
+
+/// **A bounded rendering must not become a bounded *check*.**
+///
+/// `check_reachable` licenses `proven` partly on "a solver pinned every input". That test now
+/// runs over the whole witness while the report shows 64 of it — because computing it from the
+/// rendering would let an unpinned binding past the bound turn an unproven arrival into a proof.
+/// 100 pinned parameters is the case where the two readings agree; the assertion is that the
+/// verdict is still the strong one after truncation, which is what says the check did not shrink
+/// with the report.
+#[test]
+fn truncating_the_report_does_not_truncate_the_proof_condition() {
+    let params: Vec<String> = (0..100).map(|i| format!("%{i}: i32")).collect();
+    let body = format!(
+        "func @f({}) -> i32 {{\nentry:\n  .line 1\n  %100 = add i32 %0, %1\n  .line 2\n  ret %100\n}}",
+        params.join(", ")
+    );
+    let env = chiero_tool::check_reachable(&m(&body), &chiero_tool::BugCfg::new("f"), 2);
+    let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
+    assert_eq!(v["result"]["verdict"].as_str(), Some("reachable"));
+    assert!(
+        env.proven,
+        "every one of the 100 inputs is pinned, and only 64 are printed: {v}"
+    );
+}

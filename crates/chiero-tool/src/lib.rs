@@ -747,6 +747,45 @@ fn exec_fidelity(f: chiero_exec::Fidelity) -> Fidelity {
     }
 }
 
+/// How many bindings a rendered witness carries before it stops being one a reader can use.
+///
+/// 023 §9 wants "a concrete input someone can re-run"; VPP's `nsh_md2_encap` produced 10 658
+/// bindings and 950 KB of JSON for a single finding. 64 is chosen to be larger than any argument
+/// list and small enough that the finding stays legible beside it — a witness that needs more than
+/// 64 distinct inputs is one a reader will re-derive from the path rather than read.
+const WITNESS_RENDER_LIMIT: usize = 64;
+
+/// What the rendering left out, or `None` when it left out nothing.
+///
+/// **`None` rather than a zero**, so that a witness that fits looks exactly as it always did: a
+/// field reading `"omitted": 0` on every finding trains a reader to skip it on the one where it
+/// is 10 593.
+/// Attach the omission note to a result object, or leave the object exactly as it was.
+///
+/// **Absent, not null** — `Envelope::render` prints a null as `(none)`, and a line reading
+/// `witness_omitted: (none)` under every result is how a reader learns to skip the one that says
+/// 10 593.
+fn witness_result(
+    mut result: serde_json::Value,
+    omitted: Option<serde_json::Value>,
+) -> serde_json::Value {
+    if let (Some(o), Some(obj)) = (omitted, result.as_object_mut()) {
+        obj.insert("witness_omitted".to_string(), o);
+    }
+    result
+}
+
+fn witness_omitted_json(w: &chiero_exec::Witness) -> Option<serde_json::Value> {
+    let d = w.digest(WITNESS_RENDER_LIMIT);
+    (d.omitted > 0).then(|| {
+        serde_json::json!({
+            "count": d.omitted,
+            "kinds": d.omitted_by_label,
+            "shown_first": "bindings the path pinned",
+        })
+    })
+}
+
 fn binding_json(b: &chiero_exec::Binding) -> serde_json::Value {
     // Both readings, because neither alone is the number a reader wants: 4294967295 and -1
     // are the same input, and which one makes the divergence obvious depends on the code.
@@ -1120,19 +1159,36 @@ pub fn find_bugs(module: &chiero_cir::Module, cfg: &BugCfg) -> Envelope {
                     }),
                 }
             });
-                serde_json::json!({
+                let mut v = serde_json::json!({
                     "message": f.message,
                     "paths": paths,
                     "replay": replay,
                     "fidelity": format!("{:?}", f.fidelity),
                     "solver": f.solver,
                     // 023 contract 15: a witness, or the reason there is none. The absence is
-                    // allowed; the silence is not.
+                    // allowed; the silence is not — and neither is a *partial* witness that does
+                    // not say it is one, which is what `witness_omitted` beside it is for.
                     "witness": f.witness.as_ref().map(|w| {
-                        w.bindings.iter().map(binding_json).collect::<Vec<_>>()
+                        w.digest(WITNESS_RENDER_LIMIT)
+                            .shown
+                            .into_iter()
+                            .map(binding_json)
+                            .collect::<Vec<_>>()
                     }),
+                    "witness_omitted": f.witness.as_ref().and_then(witness_omitted_json),
                     "unwitnessed": f.unwitnessed,
-                })
+                });
+                // **Absent, not null, when nothing was left out.** `Envelope::render` prints a
+                // null as `(none)`, so keeping the key would put `witness_omitted: (none)` under
+                // every finding in every report — which is exactly the training this field must
+                // not give a reader, who has to notice it on the one finding where it says
+                // 10 593. `shift_remove` because the envelope preserves key order (050 §1).
+                if v["witness_omitted"].is_null()
+                    && let Some(o) = v.as_object_mut()
+                {
+                    o.shift_remove("witness_omitted");
+                }
+                v
             })
             .collect();
 
@@ -1227,6 +1283,29 @@ pub fn find_bugs(module: &chiero_cir::Module, cfg: &BugCfg) -> Envelope {
              defect that needs one — a data race, a check-then-act across threads — is not \
              reported",
         );
+    // **A partial witness is something the result is silent about**, so it is a blind spot and
+    // not merely a field. The rendering already carries `witness_omitted`; a reader who scans
+    // the envelope's blind spots — which is what 050 §1 asks them to do before believing a
+    // result — must find it there too, or the shortening is visible only to whoever went
+    // looking. Counted over findings, because one truncated witness in twenty is the
+    // interesting case and a per-finding sentence would bury it.
+    // Counted over the findings a reader is actually shown, not over the run's: a suppressed
+    // invented-bound finding is already accounted for by its own sentence below.
+    let truncated = grouped
+        .iter()
+        .filter(|(f, _)| {
+            f.witness
+                .as_ref()
+                .is_some_and(|w| w.bindings.len() > WITNESS_RENDER_LIMIT)
+        })
+        .count();
+    if truncated > 0 {
+        env = env.with_blind_spot(&format!(
+            "{truncated} finding{} carr{} a witness too long to print; the rendering shows the              bindings the path pinned and `witness_omitted` counts the rest by kind, so the              printed input alone will not replay it",
+            if truncated == 1 { "" } else { "s" },
+            if truncated == 1 { "ies" } else { "y" },
+        ));
+    }
     // **Never a silent suppression.** The sentence names the number and the way back, so a
     // reader who does know the caller's objects can see what was held back in one step.
     if suppressed > 0 {
@@ -1371,18 +1450,18 @@ pub fn check_reachable(module: &chiero_cir::Module, cfg: &BugCfg, line: u32) -> 
         //
         // Neither implies the other: a path can be decided and leave an input free, and a model
         // can pin every input on a path that rests on a havoc.
-        let decided = s.fidelity() == chiero_exec::Fidelity::Exact
-            && witness
-                .iter()
-                .all(|b| b["pinned"].as_bool().unwrap_or(false));
+        let decided = s.fidelity() == chiero_exec::Fidelity::Exact && witness.all_pinned;
         if decided {
             return clock(Envelope::new(
-                serde_json::json!({
-                    "verdict": "reachable",
-                    "line": line,
-                    "witness": witness,
-                    "why": serde_json::Value::Null,
-                }),
+                witness_result(
+                    serde_json::json!({
+                        "verdict": "reachable",
+                        "line": line,
+                        "witness": witness.shown,
+                        "why": serde_json::Value::Null,
+                    }),
+                    witness.omitted,
+                ),
                 Fidelity::Exact,
             ));
         }
@@ -1398,18 +1477,21 @@ pub fn check_reachable(module: &chiero_cir::Module, cfg: &BugCfg, line: u32) -> 
             .collect::<Vec<_>>();
         return clock(
             Envelope::new(
-                serde_json::json!({
-                    "verdict": "not_shown_reachable",
-                    "line": line,
-                    "witness": witness,
-                    "why": if why.is_empty() {
-                        "a path reached this line but its inputs were not pinned, so no input \
-                         is known to get there"
-                            .to_string()
-                    } else {
-                        why.join("; ")
-                    },
-                }),
+                witness_result(
+                    serde_json::json!({
+                        "verdict": "not_shown_reachable",
+                        "line": line,
+                        "witness": witness.shown,
+                        "why": if why.is_empty() {
+                            "a path reached this line but its inputs were not pinned, so no input \
+                             is known to get there"
+                                .to_string()
+                        } else {
+                            why.join("; ")
+                        },
+                    }),
+                    witness.omitted,
+                ),
                 exec_fidelity(s.fidelity()),
             )
             .with_blind_spot(
@@ -1510,7 +1592,7 @@ fn witness_for_path(
     arena: &mut chiero_solver::TermArena,
     backend: Option<chiero_solver::SmtLib>,
     rlimit: u64,
-) -> Vec<serde_json::Value> {
+) -> PathWitness {
     use chiero_solver::CheckResult;
     // **The run's budget travels with the backend, not with the engine.** This solver is built
     // outside `Engine`, so `Engine::new_solver` does not reach it — and on the `find-bugs` path
@@ -1529,22 +1611,53 @@ fn witness_for_path(
         // fact about the solver. Report the inputs unpinned rather than inventing values.
         _ => chiero_solver::Model::new(),
     };
-    s.inputs()
-        .iter()
-        .map(|(t, o)| {
-            let width = arena.width(*t);
-            let (value, pinned) = match arena.eval(&model, *t) {
-                Ok(c) => (c.bits(), true),
-                Err(_) => (0, false),
-            };
-            binding_json(&chiero_exec::Binding {
-                origin: o.clone(),
-                width,
-                value,
-                pinned,
+    // **Built as a `Witness` and then digested, rather than rendered one binding at a time.**
+    // This site solves for its own bindings — the engine attaches a witness to a state carrying a
+    // *finding*, and a state that merely arrived has none — so it had its own unbounded
+    // rendering, reachable through the same lazily-materialized bytes as `find_bugs`'s. §7.2's
+    // rule: a defect is fixed at the level it lives at, or it comes back through the next door.
+    let w = chiero_exec::Witness {
+        bindings: s
+            .inputs()
+            .iter()
+            .map(|(t, o)| {
+                let width = arena.width(*t);
+                let (value, pinned) = match arena.eval(&model, *t) {
+                    Ok(c) => (c.bits(), true),
+                    Err(_) => (0, false),
+                };
+                chiero_exec::Binding {
+                    origin: o.clone(),
+                    width,
+                    value,
+                    pinned,
+                }
             })
-        })
-        .collect()
+            .collect(),
+    };
+    PathWitness {
+        shown: w
+            .digest(WITNESS_RENDER_LIMIT)
+            .shown
+            .into_iter()
+            .map(binding_json)
+            .collect(),
+        omitted: witness_omitted_json(&w),
+        // ⚠️ **Over every binding, not over the rendered ones.** `check_reachable` licenses
+        // `proven` partly on "a solver pinned every input", and computing that from a bounded
+        // rendering would let an unpinned binding past the bound turn an unproven arrival into a
+        // proof. The truncation is a property of the *report*; it must not become a property of
+        // the check.
+        all_pinned: w.bindings.iter().all(|b| b.pinned),
+    }
+}
+
+/// A solved path's witness: what a report prints, what it left out, and the one fact about the
+/// **whole** witness that a verdict is allowed to rest on.
+struct PathWitness {
+    shown: Vec<serde_json::Value>,
+    omitted: Option<serde_json::Value>,
+    all_pinned: bool,
 }
 
 /// Where the two versions live on disk, so a harness can include them — 040 §3.1.

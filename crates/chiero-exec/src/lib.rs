@@ -15,7 +15,7 @@
 mod report;
 mod witness;
 pub use report::render;
-pub use witness::{Binding, InputOrigin, Witness};
+pub use witness::{Binding, InputOrigin, Witness, WitnessDigest};
 
 use chiero_cir::*;
 use chiero_mem::{Endian, HavocFill, Memory, ObjKind, ObjectId, Pointer};

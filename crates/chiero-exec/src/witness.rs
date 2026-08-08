@@ -121,6 +121,64 @@ impl Witness {
         }
     }
 
+    /// **What a report may print, and what it must say about the rest** — 023 §9.
+    ///
+    /// A witness is *a concrete input someone can re-run*, and past some length it stops being
+    /// one: `find-bugs` on VPP's `nsh_md2_encap` produced 10 658 bindings, 10 657 of them the
+    /// same anonymous "a lazily-materialized byte", for 950 KB of JSON describing one finding.
+    /// Under UCSE an entry that walks a packet buffer materialises a byte at a time, so that is
+    /// the execution working; it is the rendering that has stopped answering the question.
+    ///
+    /// **Pinned bindings first, and that is not a preference.** Measured on a fixture of *n*
+    /// loads followed by a division: at n = 8, 40 and 200 the pinned bindings are always the
+    /// final four — the divisor's bytes, constrained to zero. Everything before them is what the
+    /// walk happened to touch, and the model left it free. A bound that took the first *k* would
+    /// therefore drop every value the finding depends on and keep *k* that it does not.
+    ///
+    /// Order is preserved within each group, so a reader sees the pinned inputs in the order the
+    /// path met them.
+    ///
+    /// ⚠️ **This is for rendering only.** `chiero-replay` consumes the `Witness` itself, and a
+    /// caller that treats bindings positionally — an argument list — must not be handed a digest;
+    /// see `harness_signature_objection`, which refuses a witness that is not an argument list
+    /// rather than reordering one.
+    pub fn digest(&self, limit: usize) -> WitnessDigest<'_> {
+        // **Nothing is reordered when nothing is dropped.** The order bindings arrive in is the
+        // order the path met them, which is what a reader follows; rearranging it to put pinned
+        // inputs first is a cost worth paying only when the alternative is dropping them.
+        if self.bindings.len() <= limit {
+            return WitnessDigest {
+                shown: self.bindings.iter().collect(),
+                omitted: 0,
+                omitted_by_label: Vec::new(),
+            };
+        }
+        let (pinned, free): (Vec<&Binding>, Vec<&Binding>) =
+            self.bindings.iter().partition(|b| b.pinned);
+        let shown: Vec<&Binding> = pinned.into_iter().chain(free).take(limit).collect();
+        // **Counted by identity, not by value**: two bindings may be equal and still be two
+        // inputs, and a reader asking "how many were left out" is asking about inputs.
+        let mut omitted_by_label: Vec<(String, usize)> = Vec::new();
+        let mut omitted = 0usize;
+        for b in &self.bindings {
+            if shown.iter().any(|s| std::ptr::eq(*s, b)) {
+                continue;
+            }
+            omitted += 1;
+            let label = b.origin.label();
+            match omitted_by_label.iter_mut().find(|(l, _)| *l == label) {
+                Some((_, n)) => *n += 1,
+                None => omitted_by_label.push((label, 1)),
+            }
+        }
+        omitted_by_label.sort_by_key(|(l, n)| (std::cmp::Reverse(*n), l.clone()));
+        WitnessDigest {
+            shown,
+            omitted,
+            omitted_by_label,
+        }
+    }
+
     /// A witness that pins the entry function's parameters to concrete values, in order.
     ///
     /// 023 contract 21 replays "with all inputs concretized", and this is what that means
@@ -145,4 +203,22 @@ impl Witness {
                 .collect(),
         }
     }
+}
+
+/// As much of a witness as a report prints, plus an account of the rest — see [`Witness::digest`].
+///
+/// **The omission is part of the report, not a detail of it.** A quietly shortened witness reads
+/// as the whole input, which is worse than a long one: a reader who cannot see that 10 000 inputs
+/// were dropped has no way to know the thing they are looking at will not reproduce.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WitnessDigest<'a> {
+    /// Pinned bindings first, then free ones, each in the order the path met them.
+    pub shown: Vec<&'a Binding>,
+    pub omitted: usize,
+    /// What was left out, by [`InputOrigin::label`], most numerous first.
+    ///
+    /// The label is what makes the omission actionable: "10 593 lazily-materialized bytes" tells
+    /// a reader the finding does not turn on them, and "10 593 parameters" would tell them the
+    /// opposite.
+    pub omitted_by_label: Vec<(String, usize)>,
 }
