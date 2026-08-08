@@ -1492,6 +1492,7 @@ This has now paid out three times in a row, each time on the first run after a w
 | *not a widening* — **re-measuring the pinned 40 and asking why nothing moved** | one retake + one `grep` | the corpus **cannot reach** a 32-byte access: `__AVX2__` is undefined in every configuration chiero compiles, so every AVX2/AVX512 path in vppinfra is invisible to every measurement this project has published. New evidence for the parked `-march` item, and it came from an *unchanged* number |
 | **a new *kind* of gate: the preprocessor under VPP's own flags** (012 c17, 1967 TUs, 18 min) | one ingest + one gate | **three defects the pp-gate could never see**, because none is about preprocessing *syntax*: `__linux__` unbaked (VPP's `pmalloc.c` reached `#error "Unsupported OS"`), `__has_attribute(error)` answered 0 where gcc says 1, and a diagnostic class chiero was *right* about and that was still noise. Diagnosed 25 → 0, and the token count 731M → **792M: 8% more of the program became visible** |
 | *not a widening* — **asking what chiero believes rather than what it says** (`persona_gap`, 0.1 s) | one differential instrument | the **endianness** defect: `__BYTE_ORDER__` undefined, so `#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__` read `0 == 0`, took the big-endian branch on x86-64, and reversed bit-field member order across `srv6-mobile`. **The 18-minute corpus gate is structurally incapable of finding this** — a wrongly-taken branch emits nothing. Output-watching and state-comparison are two different searches |
+| *not a widening* — **measuring a "stale environment" before acting on it** | 10 min | the tree had moved by **165 files in one checkout**, but only **4 `.api`** could matter: chiero reads `src/` directly, so only *generated* artifacts can be stale. Fixed with the generator command rather than `ninja`, whose target would have re-run cmake and rewritten the `build.ninja` every VPP measurement reads. **A blocker described in prose was a one-second check** |
 | **reproducing a defect at the layer it lives in** — the witness reporting item, after four waves of engine fixtures | one wave | **950 KB → 11.9 KB on the real VPP entry**, and two defects inside the fix: "show the first *k*" would have dropped every pinned binding, and a bounded rendering would have become a bounded *proof condition* in `check_reachable`. The four earlier dead ends all tried to *produce* a huge witness by execution; it was a reporting defect, and three of the six tests build a `Witness` directly |
 | **splitting a clock instead of counting inside it** — timing `ingest_into` apart from the arc-index walk | one column in an existing gate, 4 min | **the gcov growth gate passes for the first time.** 90% of the cost was on the *other side* of the suspect §9.1 had recorded, and two throwaway experiments bisected it to `block_counts` — every block scanning every arc. ⚠️ One of the three fixes was a change **measured and honestly ruled out earlier the same day**; the null result was true while `block_counts` dominated |
 | **the per-TU persona join** — the corpus gate stopped preprocessing 1967 units as one compiler | one crate + one wave, 23 min to re-measure | **+26M tokens, 3.3% more of VPP visible**, 0 diagnosed throughout — and the yield was a *number*: 8 distinct target flag-sets where I had written 5 in four places. A `-march` value is not a flag-set (`-mtune`, `-mprefer-vector-width=512`, `-maes`, four units with none, one naming `-march` twice). One `ninja -t compdb` pipe would have said so at any point |
@@ -1592,9 +1593,10 @@ typing the paths ever would.
 >    worth it only when something touched the frontend or the persona — it was run at the end of
 >    this session and its numbers are below.
 > 2. **Pick a widening (§8.3), or take a concrete item from §9.1.** The live ones, roughly by
->    value: the **stale VPP build directory**, which quietly affects every number this project
->    publishes; **032 contract 18's replay corpus**, still with no `observed` entry; and the two
->    `vnet/` finding classes, which are policy questions rather than defects.
+>    value: **032 contract 18's replay corpus**, still with no `observed` entry (§7.1 carries the
+>    method — revert a historical fix onto HEAD and run the suite); the two `vnet/` finding
+>    classes, which are policy questions rather than defects; and `InstKind::Call` carrying no
+>    result type, which is a CIR change across 135 sites.
 > 3. ⚠️ **Three closed today, do not re-open:** the witness reporting defect (§9.1 5e — and read
 >    its three corrected claims before trusting a truncated witness), the whole persona thread (`chiero-probe`, the join,
 >    060 contract 2, and the corpus gate's own configuration gap) and the gcov growth gate, which
@@ -2300,18 +2302,35 @@ typing the paths ever would.
      `failed` row a statement about code that ships. ⚠️ Do this *before* the next sweep, or the
      residue keeps mixing two different kinds of rejection.
 
-5d. ⚠️ **The VPP build directory is STALE, and it affects every number this project publishes.**
-   `src/plugins/lldp/lldp.api` declares `f64 last_heard_age;` and was modified at 23:32:08 on
-   2026-08-05; the generated `lldp.api_types.h` it compiles against was produced at **23:14:37**,
-   seventeen minutes earlier, and the field appears in **no** header under `build-root`. Three
-   sweep rows fail on it, chiero is right, and **gcc reports the identical error at the identical
-   line** — so it is an environment fact, not a frontend gap.
+5d. ✅ **CLOSED 2026-08-08 (second session) — and the staleness was narrower than this entry
+   claimed.** Measured before touching anything: **165 of 2629 sources under `src/` are newer than
+   the whole build**, every one of them at the same timestamp — a single checkout **22 seconds
+   after the build finished**. Of those 165, **4 were `.api` files**, and only those 4 could
+   matter.
 
-   The consequence is larger than three rows: every measurement against VPP analyses `src/` with
-   *those* headers, so wherever the source has moved on, chiero reads a slightly different
-   program from the one VPP would build today. Regenerating the build directory is the fix.
-   ⚠️ Until then, a `failed` row naming a missing struct member is staleness and must not be
-   chased as a defect — it looks exactly like one.
+   ⚠️ **The correction, and it bounds the problem:** chiero reads `src/` **directly**, so a `.c` or
+   `.h` that has moved on is read as it is today — nothing is stale about it. The only derived
+   artifacts chiero includes are the **1049 `*.api*.h`** headers and four `config.h`/`version.h`
+   that come from cmake options rather than from source. So "chiero reads a slightly different
+   program from the one VPP would build" was true only of the generated headers, which is a
+   surface a script can check in a second rather than a reason to rebuild anything.
+
+   **Fixed by running the exact `vppapigen` command ninja would run for each output** — *not* by
+   `ninja`, whose target for a generated header depends on a **cmake re-run**, which rewrites
+   `build.ninja`: the file `chiero_vpp::builddb` reads for all 1967 compile commands, that
+   `probe.sh` replays, and that 012 contract 17's corpus gate is built from. Verified after:
+   compdb still 6235 entries / **1967 C compilations**, byte-for-byte the same count.
+
+   **The before and after, both ways round:** with the stale header, `chiero cir lldp_api.c` says
+   *"no member named `last_heard_age`"* at 135:7 and **gcc reports the identical error at 135:12**
+   — which is what made it an environment fact rather than a frontend defect. Regenerated, the
+   same file lowers **6796 functions**, and `lldp_cli.c` and `lldp_test.c` with it.
+
+   📌 **`tests/corpus/vpp-findings/api_staleness.py` is committed** (§9.2's rule: the instrument
+   goes in the repo in the same wave). It reports drift and exits 1, `--fix` regenerates. Checked
+   that it *can* fail by ageing one header: reports 1 stale, `--fix` clears it. A minute to run,
+   and the class of failure it catches — a sweep row that looks exactly like a frontend bug — cost
+   a wave to diagnose the first time.
 
 5b. 🆕 **Audit `Vec` + `.contains()` on paths that scale — the shape, not the site.** The
    verifier fix above is the **second** time this exact defect class has been found in
@@ -3069,6 +3088,7 @@ they lived only in scratch") and it happened again anyway.
 | `tests/corpus/layout/vpp_sizes.py` | ✅ committed — contract-12's method pointed at arbitrary headers |
 | `xtask/src/replay_gate.rs` | ✅ committed — `cargo run -p xtask -- replay-gate`, corpus `tests/corpus/replay/corpus.tsv` |
 | `xtask/src/pp_gate.rs` | ✅ committed — `cargo run -p xtask -- pp-gate`, ~2 min. Reads `$SIMPLECPP` (default `/home/ubuntu/simplecpp`, pinned `74a5a63`); gcc and clang are the oracle. §7.11 |
+| `tests/corpus/vpp-findings/api_staleness.py` | ✅ committed 2026-08-08 — which of VPP's 1049 generated API headers are older than the `.api` they come from. Exits 1 on drift; `--fix` regenerates with `vppapigen` rather than `ninja`, whose target re-runs cmake and rewrites the `build.ninja` every VPP measurement reads |
 | `tests/corpus/vpp-findings/probe.sh` | ✅ **REBUILT and committed 2026-08-07.** The 7-second five-TU probe that replaces 2-hour sweeps — measured 7.3 s, all five `clean`. `REALCC=true` by default, so it asks what *chiero* makes of the build's flags without compiling. ⚠️ Its rebuild note: the object path **cannot** be constructed from the source path (CMake names an object after its position in the object library, so `src/vlib/main.c` is `…/vlib_objs.dir/main.c.o`) — match `-c <source>` in one `ninja -t commands all` dump, 63 ms for all 2945 |
 | `replay-probe.sh` | ❌ **LOST.** Two-checkout historical-replay probe that restored the tree on every exit path |
 | `rev5` (20 fixtures), `replayprobe` (13) | ❌ **LOST.** |
