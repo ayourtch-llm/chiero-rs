@@ -331,8 +331,19 @@ mitigations: per-TU expansion tables dropped after lowering, retaining only the
 15. `__COUNTER__` yields distinct increasing values; `__DATE__`/`__TIME__` are constant
     across two runs of the same input.
 16. `#define HDR "x.h"` / `#include HDR` resolves `x.h`.
-17. Preprocessing every TU in VPP's `compile_commands.json` produces zero panics, and
-    the count of TUs producing at least one diagnostic is tracked as a regression metric.
+17. ✅ **Met 2026-08-08** — `chiero-vpp/tests/preprocess_corpus.rs`. Preprocessing every TU
+    in VPP's compile database produces zero panics, and the count of TUs producing at least
+    one diagnostic is tracked as a regression metric.
+
+    ⚠️ **The test that claimed this measured nothing, twice over**, from M2 until now: it was
+    `#[ignore]`d *and* returned early on a `compile_commands.json` that has never existed,
+    leaving one live assertion — that the file it had just established was absent contained
+    the substring `"file"`. It also hardcoded a VPP path into the frontend crate, which
+    [060 §1](060-vpp-integration.md) forbids.
+
+    It is real now because [060 contract 1](060-vpp-integration.md)'s ingest can say what
+    `-D`/`-I` each TU actually compiles under. Preprocessing VPP under the wrong flags
+    preprocesses a different program, so this contract was not writeable before it.
 18. Every result record carries a non-default `ConfigId`.
 19. Two runs over the same TU produce byte-identical token streams and identical
     `ExpnCtx` numbering.

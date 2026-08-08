@@ -524,20 +524,16 @@ fn elifdef_and_elifndef_select_exactly_one_branch() {
     );
 }
 
-#[test]
-#[ignore = "external corpus regression metric"]
-/// External configured-corpus evidence. Ignored tests do not carry contract coverage
-/// credit under 070 §4, so this comment intentionally cites no contract number.
-fn every_vpp_compile_command_preprocesses_without_panicking() {
-    let compile_commands = Path::new("/home/ubuntu/vpp/build-root/compile_commands.json");
-    if !compile_commands.exists() {
-        return;
-    }
-    // The full driver consumes this JSON; this smoke assertion keeps the external gate
-    // explicit without adding serde to the frontend crate.
-    let text = std::fs::read_to_string(compile_commands).unwrap();
-    assert!(text.contains("\"file\""));
-}
+// **012 contract 17 moved to `chiero-vpp/tests/preprocess_corpus.rs` on 2026-08-08.**
+//
+// What stood here measured nothing, twice over: it was `#[ignore]`d *and* returned early on a
+// `/home/ubuntu/vpp/build-root/compile_commands.json` that has never existed, leaving one
+// assertion — that the file it had just established was absent contained the substring `"file"`.
+//
+// It also put a hardcoded VPP path in the frontend crate, which 060 §1 forbids: `chiero-vpp` is
+// "the **only** crate that knows VPP exists". The real test lives there now, preprocesses all
+// 1967 of VPP's C translation units under the `-D`/`-I` each one actually compiles with, and
+// reports the diagnosed count the contract asks to be tracked.
 
 /// **`"..."` searches the including file's own directory; `<...>` does not.**
 ///

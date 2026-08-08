@@ -1700,8 +1700,38 @@ typing the paths ever would.
    - `vnet/ip*` and `plugins/*/` beyond one function per file are untouched by the find-bugs
      sweep; `pick_entries.py --per-file N <files>` takes a list.
 
-3. 🆕 **`compile_commands.json` is one command away, and two contracts have been blocked on its
-   absence since M2.** `docs/reviews/m2-frontend-notes.md` records *"`…/compile_commands.json`
+3. ✅ **CLOSED 2026-08-08 — the ingest is built and both blocked contracts are met.**
+   `chiero_vpp::builddb` (060 contract 1) and `chiero-vpp/tests/preprocess_corpus.rs`
+   (012 contract 17). Three things worth carrying forward:
+
+   **a. The blocker was in the interface, not the world.** 060 §1 wanted a
+   `compile_commands.json` *file*; VPP's build writes none, and still doesn't. `ninja -t compdb`
+   emits the identical format on stdout in 90 ms. Taking `&str` instead of a path closed a
+   months-old blocker with no re-configure and no VPP edit.
+
+   **b. `ninja -t compdb` dumps every edge, not every compilation — and I published the wrong
+   number before catching it.** 2902 of VPP's 6235 entries are phony order-only rows: empty
+   `command`, `output` like `cmake_object_order_depends_target_…`, `file` naming a *generated*
+   source. My first measurement said "2226 C entries" and I wrote it into the spec, the module
+   docs and a test table. **Real figure: 1967 C compilations** over 1562 sources, 208 built more
+   than once (max 5, not the 9 the phony rows implied).
+
+   It was caught only because the ignored corpus test asserts a *property* — every unit has an
+   include path — and 259 rows had none. **A test that had merely counted would have agreed with
+   the wrong number forever.** That is the general rule and it is cheap: when a corpus test can
+   assert a property instead of a total, assert the property; the total cannot contradict itself.
+
+   **c. What a `ConfigId` is worth, quantified.** Hashing exactly `-D` and `-I` — the flags that
+   decide which `#if` branches exist — collapses 1967 units to **423 configurations**, 4.6×.
+   Hashing the command line would make every unit unique and buy nothing. Both directions are
+   asserted; mutation-checked.
+
+   *(Original entry: the M2 note recording that no `compile_commands.json` existed. It was true
+   when written. See §11.3's rule — **re-measure a blocker before routing around it**; this one
+   cost nothing to check and had stood for months.)*
+
+3z. **⚠️ Original entry, kept for the general form.** `compile_commands.json` is one command away,
+   and two contracts have been blocked on its absence since M2.** `docs/reviews/m2-frontend-notes.md` records *"`…/compile_commands.json`
    does not exist, and `find /home/ubuntu/vpp -name compile_commands.json` returns no
    alternatives. Contract 17's full configured-TU regression metric therefore cannot run in this
    environment."* That was **true when written** — VPP was not built yet — and it is a stale
