@@ -2421,14 +2421,27 @@ typing the paths ever would.
    10.9x against 12.8x / 10.7x). Reverted; the experiment was deliberately semantically wrong for
    cyclic input and existed only to answer the question.
 
-   **Remaining suspect, by elimination: the `.gcno`/`.gcda` parse itself.** Conservation is
-   linear, `circuit` is never entered, `accumulate_line_info`'s scan and its `shift_remove` are
-   ruled out, and so are the allocations. ⚠️ **Elimination is not measurement** — this file's
-   record on inference is 4 wrong to 5 right. **Put a counter in the parse before believing it.**
+   ⚠️ **The elimination above was wrong, and measuring it took two minutes.** `records()` and
+   `read_notes()` are both public, so the curve now times them separately — no change to the
+   solver to get the numbers:
 
-   *Method note, and it is the cheap thing to copy:* the last three hypotheses each cost about a
-   minute — change it, run the 25-second curve, revert regardless of the result. Nothing was
-   shipped and three plausible readings were disposed of.
+   | phase | growth per 4x arcs | share of the 1.37 s at n=12800 |
+   |---|---|---|
+   | `records()` byte decode | 4.4x — **linear** | 0.4% |
+   | `read_notes()` structure build | 3.9x–5.1x — **linear** | 1.5% |
+
+   Conflating those two is what sent the elimination astray: "the parse" was one name for two
+   different amounts of work, and both turned out innocent.
+
+   **So every component measured is linear and the whole is still 14x.** What has *never* been
+   timed is the **`.gcda` read** and the `ArcCoverage` index building after it — `line_blocks`,
+   `counts`, `tests`, `order`, each keyed by a `FuncKey` holding two `String`s and cloned per
+   insert. That is the next place to instrument, and `arc_coverage_read` is where to split it.
+
+   *Method note, and it is the cheap thing to copy:* every hypothesis here cost about a minute —
+   change it or time it, run the 25-second curve, revert regardless of the result. **Scoreboard:
+   6 refuted, 5 held.** Nothing was shipped on a reading, and the six refutations include three
+   that predicted the observed shape correctly and were still wrong about the cause.
 
    Scoreboard on this entry: **4 hypotheses wrong, 5 right.** Every wrong one looked obvious in
    the source; every right one came from a counter or a curve.
