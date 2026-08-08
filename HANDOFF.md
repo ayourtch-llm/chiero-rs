@@ -3046,6 +3046,19 @@ have said nothing about the actually-parked one. The prompt now **names** the pa
 Any future edit to this cron must keep that property: *a number in a standing instruction is a
 reference that rots silently.*
 
+⚠️ **STALE AS OF 2026-08-08, and the same lesson one level up.** The owner unparked `-march` that
+day ("go ahead and design + execute the persona work", then "feel free to tackle march"), and it
+is **built and closed** — but the cron prompt still says *"The one PARKED item is the `-march` /
+per-TU target configuration work: do not start it without checking in with the owner."* A fresh
+context reading only the prompt would decline work that is already done.
+
+Fixing the numbers made the prompt survive renumbering; it did not make it survive a *decision*.
+**A standing instruction encodes a state of the world and there is no mechanism that updates it.**
+Two options, the owner's call: re-arm the cron without that clause, or replace the clause with
+"the parked items are whatever §9.1 marks ⏸️" — which moves the mutable fact into the file that
+is edited when it changes, and leaves the prompt saying only where to look. The second is
+probably right for the same reason the numbers were wrong.
+
 **Ten minutes, not thirty**, and the earlier reasoning here was wrong rather than merely
 superseded. It argued that a short tick "interrupts mid-task more often than it produces work"
 — but `if_busy=wait` *defers* rather than interrupting, so a short interval costs nothing
