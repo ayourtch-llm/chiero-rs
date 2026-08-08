@@ -1741,9 +1741,22 @@ typing the paths ever would.
    🆕 **The number that actually matters is not the 0, it is the token count: 731,159,228 →
    792,404,723.** Same 1967 translation units, same flags, **+61 million tokens — 8.4% more C**.
    That is code in `#if` branches the persona had left dead: Linux-only paths in VPP *and* glibc,
-   the little-endian layouts, the `__SSE2__` tables. **chiero had been analysing a program 8%
-   smaller than the one VPP ships**, and every "0 findings" this project published over VPP was
-   silent about that 8%.
+   the little-endian layouts, the `__SSE2__` tables. **The library's default persona had been
+   describing a program 8% smaller than the one VPP ships.**
+
+   ⚠️ **Correction, made minutes after first writing this entry: it does *not* invalidate the
+   published VPP findings sweeps.** I wrote "every 0 findings this project published over VPP was
+   silent about that 8%" and it is wrong. `chiero-cli`'s `frontend::predefines` runs
+   `cc -dM -E -std=gnu11` and captures the lot, so every sweep driven through the CLI already had
+   `__linux__`, `__BYTE_ORDER__` and `__SSE2__`. What the baked persona actually governs is
+   **(a)** every in-workspace test built on `Config::default()`, **(b)** 012 contract 17's corpus
+   run, which takes its `-D`/`-I` from `builddb` but inherits predefines from the default, and
+   **(c)** any library consumer that does not populate `Config::defines`. That is a large blast
+   radius and a real defect — it is simply not the sweeps.
+
+   The general form, since I have now made this error twice in one day: **before claiming a defect
+   invalidates a published number, check which code path produced that number.** Two mechanisms
+   for one fact (§9.1 1b) means a fix to one of them proves nothing about the other.
 
    ⚠️ It is also the honest way to read a green metric. The diagnosed count went 25 → 22 → 0
    while the endianness defect was live throughout, reversing bit-field member order across a
