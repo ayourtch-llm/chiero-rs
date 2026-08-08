@@ -292,9 +292,11 @@ dependencies = [
  "chiero-check",
  "chiero-gcov",
  "chiero-model",
+ "chiero-pp",
  "chiero-recipe",
  "chiero-span",
  "indexmap",
+ "serde_json",
 ]
 
 [[package]]

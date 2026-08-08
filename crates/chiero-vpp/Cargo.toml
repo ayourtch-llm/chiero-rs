@@ -12,6 +12,8 @@ chiero-model.workspace = true
 chiero-check.workspace = true
 chiero-recipe.workspace = true
 chiero-gcov.workspace = true
+chiero-pp.workspace = true
+serde_json.workspace = true
 indexmap.workspace = true
 
 [lints]
