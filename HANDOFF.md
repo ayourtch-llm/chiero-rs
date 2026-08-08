@@ -1787,6 +1787,31 @@ typing the paths ever would.
    The duration survives as a loose 30 s smoke check, explicitly *not* the assertion, so a
    catastrophic regression fails fast instead of hanging the suite.
 
+5e. 🆕 **A witness of 10 658 bindings — `nsh_md2_encap`, and it is a *reporting* defect.**
+   Chasing 5c's `timeout` rows found this. The entry does finish, in **2 m 22 s against a 120 s
+   budget**, and emits **950 KB of JSON for one finding**. Its witness is **10 658 bindings,
+   10 657 of them the same anonymous label "a lazily-materialized byte"**.
+
+   023 §9 calls a witness *a concrete input someone can re-run*. Ten thousand unnamed bytes is
+   not one: it cannot be read, cannot be typed into a harness, and it is most of both the runtime
+   and the output. Under UCSE an entry that walks a packet buffer materialises a byte at a time,
+   so the *execution* is probably fine and the reporting is not.
+
+   The fix has to bound the rendered list **and say what it left out** — a quietly shortened
+   witness reads as the whole input and is worse than a long one.
+
+   ```sh
+   ./target/release/chiero find-bugs $VPP/src/plugins/nsh/nsh_node.c --entry nsh_md2_encap \
+     --time-budget 120 $INC -I$VPPBUILD/vpp/CMakeFiles/plugins/nsh $DEF --entry-ptr-nonnull --json
+   ```
+
+   ⚠️ **A RED was attempted and thrown away, which is the useful part of this entry.** A `.cir`
+   fixture looping over a symbolic entry pointer produced **one** binding and a 1 170-byte
+   envelope — nothing like the VPP case. Whatever mints ten thousand *distinct* lazy bindings is
+   not "read bytes through a symbolic pointer in a loop", and **finding out what it is comes
+   before writing the test.** Committing that fixture would have been a test passing for the
+   wrong reason, which is the failure this file has recorded three times today.
+
 5c. 🆕 **Three `timeout` rows in `plugins/nsh/`** — `format_nsh_header`, `nsh_md2_decap`,
    `nsh_md2_encap`, from the widened sweep (2026-08-08). The verifier fix removed the cause the
    *old* `timeout` rows had, so this is a different one and nobody has looked. Sampling the stack
