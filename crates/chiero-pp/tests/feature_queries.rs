@@ -433,3 +433,56 @@ fn has_cpp_attribute_is_available_in_c_and_answers_versions() {
         "gcc 13 lacks it"
     );
 }
+
+/// **The persona claims gcc 13.3 on x86-64 and then denies it runs on an operating system.**
+///
+/// Found by 012 contract 17's corpus run over all 1967 configured VPP translation units — the
+/// first time the preprocessor had ever been pointed at VPP under VPP's own flags. One of the 25
+/// diagnosed units is `vppinfra/pmalloc.c`, whose `#if defined(__linux__) / #elif
+/// defined(__FreeBSD__) / #else #error "Unsupported OS"` chain falls straight through, because
+/// `__linux__` was not among the eight macros the engine bakes. gcc 13.3 on this machine
+/// predefines all five below; a persona that impersonates it and omits them is not incomplete in
+/// some abstract way — it compiles a *different program*, one where every Linux-only branch in
+/// VPP and in glibc is dead.
+///
+/// **The `#else` half is the load-bearing one.** Asserting only that `__linux__` is defined would
+/// pass on a preprocessor that defined every identifier it had never heard of.
+///
+/// ⚠️ Deliberately *not* the parked `-march` work (§9.1): nothing here is per-TU, nothing asks a
+/// compiler for anything, and no flag is propagated. These five are fixed facts about the persona
+/// already baked, and `__linux__` is the one the corpus measured.
+#[test]
+fn the_baked_persona_admits_it_runs_on_linux() {
+    let probe = |macro_name: &str| {
+        let source = format!("#if defined({macro_name})\nyes\n#else\nno\n#endif\n");
+        let tu = preprocess_str("os.c", &source, Config::default());
+        tu.token_texts().map(str::to_owned).collect::<Vec<_>>()
+    };
+    for name in [
+        "__linux__",
+        "__unix__",
+        "__gnu_linux__",
+        "__ELF__",
+        "__LP64__",
+    ] {
+        assert_eq!(
+            probe(name),
+            ["yes".to_string()],
+            "gcc 13.3 predefines {name}"
+        );
+    }
+    assert_eq!(
+        probe("__FreeBSD__"),
+        ["no".to_string()],
+        "and the persona is one platform, not all of them — without this the test would pass \
+         on a preprocessor that treated every unknown identifier as defined"
+    );
+
+    // The shape that sent VPP's pmalloc.c into `#error`, reduced to its bones.
+    let chain = "#if defined(__linux__)\nlinux\n\
+                 #elif defined(__FreeBSD__)\nfreebsd\n\
+                 #else\n#error \"Unsupported OS\"\n#endif\n";
+    let tu = preprocess_str("pmalloc.c", chain, Config::default());
+    assert_eq!(tu.token_texts().collect::<Vec<_>>(), ["linux"]);
+    assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
+}
