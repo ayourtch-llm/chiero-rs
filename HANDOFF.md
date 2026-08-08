@@ -1847,9 +1847,21 @@ typing the paths ever would.
    📌 **A witness is per state, which is worth knowing on its own** — the megabyte in the real
    case is one state's, not the run's.
 
-   Ruled out so far: a byte-at-a-time loop through a symbolic entry pointer (1 binding); a wide
-   `copymem` between two stack allocas (0 bindings, and no `materialize_fresh` at all); a wide
-   `copymem` out of an entry pointer (0 bindings, **but the right mint**).
+   Ruled out so far, each with what it proved:
+
+   | fixture | result |
+   |---|---|
+   | byte-at-a-time loop through a symbolic entry pointer | 1 binding — wrong access shape |
+   | wide `copymem` between two stack allocas | 0 bindings, **no `materialize_fresh` at all** — a stack object is not a lazy one |
+   | wide `copymem` out of an entry pointer | 0 bindings, **but the right mint** (`obj=2 size=10640`) |
+   | the same, with the fault *depending on* a copied byte | still 0 bindings |
+
+   The last row is the one that should have worked on the fork theory and did not, so **the fork
+   explanation is incomplete too**. ⚠️ **Four fixtures, four misses: stop writing fixtures.** The
+   next move is to instrument the *real* case at the witness site — the same print that produced
+   the `minted=0` / `minted=10640` pair — and see which state carries its finding and what its
+   path looks like. Guessing the shape has now been wrong four times; watching it has been right
+   twice.
 
 5c. 🆕 **Three `timeout` rows in `plugins/nsh/`** — `format_nsh_header`, `nsh_md2_decap`,
    `nsh_md2_encap`, from the widened sweep (2026-08-08). The verifier fix removed the cause the
