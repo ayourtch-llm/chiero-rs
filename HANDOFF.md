@@ -1738,6 +1738,21 @@ typing the paths ever would.
    - **`__has_attribute(error)` answered 0; gcc answers 1** — the persona's own documented
      failure mode, found in 20 TUs that all build `_FORTIFY_SOURCE=2`.
 
+1d. 🆕 **`__STDC_VERSION__` is `201112L` in the persona and `201710L` under gcc — and this is a
+   decision, not a bug.** VPP's compile commands carry **no `-std=` flag at all**, so gcc's
+   default gnu17 applies and every glibc header configures for C17. chiero says C11.
+
+   I did not change it, because changing it is a claim about the *parser*: 013 makes chiero
+   "C11 + GNU extensions", and a persona announcing C17 over a C11 parser would be a worse lie
+   than the one the persona gate exists to catch. C17 is editorially near-identical to C11, so
+   the likely right answer is to say `201710L` and note that the delta is nil — but that is the
+   owner's call about the language level, not a wave's.
+
+   It is **visible on every run** rather than filed away: `chiero-vpp/tests/persona_gap.rs` prints
+   it as `deliberate __STDC_VERSION__: chiero "201112L" vs gcc "201710L"` with the reason inline.
+   Related to the config-file persona idea (1b) — a named persona is where a language level would
+   naturally live.
+
    🆕 **A second instrument, and it finds what the gate structurally cannot.** Intersect gcc's
    401 predefines with the identifiers VPP actually tests in `#if`/`#elif`, subtract the
    persona's baked set. Runs in seconds, needs no build, and reported **8 gaps** — six fixed,
