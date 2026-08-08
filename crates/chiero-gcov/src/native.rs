@@ -1241,6 +1241,47 @@ fn cycles_count(f: &NoteFunction, succ: &[Vec<usize>], bs: &[u32], arc_counts: &
     for &b in bs {
         in_bs[b as usize] = true;
     }
+    // **If the induced subgraph has no cycle, there is nothing to enumerate.** Kahn's algorithm
+    // settles that in O(V+E) once; the enumeration below is O(V x (V+E)) because it starts a DFS
+    // at *every* block in `bs`, whether or not one exists. Straight-line code is the common case
+    // and it paid the full price for a search that could not succeed.
+    //
+    // Correctness is the definition: a DAG has no elementary circuit, so the count is 0 and `cs`
+    // — which only the cycle-finding path mutates — is untouched.
+    let mut indegree: Vec<usize> = vec![0; in_bs.len()];
+    let mut edges = 0usize;
+    for &b in bs {
+        for &i in succ.get(b as usize).into_iter().flatten() {
+            let to = f.arcs[i].to as usize;
+            if in_bs.get(to).copied().unwrap_or(false) && cs[i] > 0 {
+                indegree[to] += 1;
+                edges += 1;
+            }
+        }
+    }
+    let mut ready: Vec<u32> = bs
+        .iter()
+        .copied()
+        .filter(|&b| indegree[b as usize] == 0)
+        .collect();
+    let (mut seen, mut removed) = (0usize, 0usize);
+    while let Some(v) = ready.pop() {
+        seen += 1;
+        for &i in succ.get(v as usize).into_iter().flatten() {
+            let to = f.arcs[i].to as usize;
+            if in_bs.get(to).copied().unwrap_or(false) && cs[i] > 0 {
+                removed += 1;
+                indegree[to] -= 1;
+                if indegree[to] == 0 {
+                    ready.push(f.arcs[i].to);
+                }
+            }
+        }
+    }
+    if seen == bs.len() && removed == edges {
+        return 0;
+    }
+
     let mut count: i64 = 0;
     for &start in bs {
         let mut path: Vec<usize> = Vec::new();
