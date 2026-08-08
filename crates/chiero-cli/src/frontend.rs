@@ -137,6 +137,63 @@ fn persona(cc: &str, target_flags: &[String]) -> chiero_pp::Persona {
     chiero_pp::Persona::from_defines(name, &String::from_utf8_lossy(&out.stdout))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Does this machine's `cc` predefine `__AVX2__` under `-march=x86-64-v3` and not without it?
+    ///
+    /// Checked rather than assumed: with no compiler installed, or on a machine that is not x86,
+    /// the two probes are legitimately identical and the test below would be asserting a property
+    /// of the machine rather than of chiero — which is the shape of green this file's own history
+    /// keeps warning about.
+    fn avx2_discriminates() -> bool {
+        let dump = |args: &[&str]| -> String {
+            let mut a: Vec<&str> = vec!["-dM", "-E"];
+            a.extend_from_slice(args);
+            a.extend_from_slice(&["-x", "c", "/dev/null"]);
+            std::process::Command::new("cc")
+                .args(&a)
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+                .unwrap_or_default()
+        };
+        !dump(&[]).contains("__AVX2__") && dump(&["-march=x86-64-v3"]).contains("__AVX2__")
+    }
+
+    /// **A cache keyed on nothing answers the first caller's question to everybody else.**
+    ///
+    /// `system_environment` takes the target flags and then memoizes the answer in a `OnceLock`,
+    /// so within one process the first flag-set wins and every later one is silently given its
+    /// persona. One process, one operation, one flag-set is why it has never shown: the moment a
+    /// *sweep* walks VPP's 1963 target-carrying units (060 §1.1's multiarch 1:N is many flag-sets
+    /// in one run) every unit after the first is preprocessed as some other `-march`.
+    ///
+    /// That is the same class as the defect the persona type was built to fix — a predefine set
+    /// that does not match the compilation — arriving through a different door.
+    #[test]
+    fn each_target_flag_set_gets_its_own_persona() {
+        if !avx2_discriminates() {
+            eprintln!(
+                "SKIPPED: this machine's cc does not discriminate -march=x86-64-v3 by __AVX2__"
+            );
+            return;
+        }
+        let plain = system_environment(&[]).1;
+        let v3 = system_environment(&["-march=x86-64-v3".to_string()]).1;
+        assert_eq!(
+            v3.get("__AVX2__"),
+            Some("1"),
+            "-march=x86-64-v3 predefines __AVX2__; this persona was probed for some other flag-set"
+        );
+        assert_eq!(
+            plain.get("__AVX2__"),
+            None,
+            "no -march predefines no __AVX2__; this persona came from a different probe"
+        );
+    }
+}
+
 /// **Where a frontend diagnostic is**, as `path:line:col`, and where it came from when a macro
 /// put it there.
 ///
