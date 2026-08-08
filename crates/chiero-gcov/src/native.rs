@@ -1206,6 +1206,27 @@ fn succ_lists(f: &NoteFunction) -> Vec<Vec<usize>> {
 /// arc along it, so two cycles sharing an arc cannot both claim it. A blocked node is released
 /// only when it turns out to lie on a cycle, which is what keeps the search over simple paths
 /// from being exponential in the common case.
+thread_local! {
+    /// **How many DFS traversals the cycle enumeration starts.** A counter, not a clock: a
+    /// wall-clock bound silently stops being able to fail whenever the build gets faster
+    /// (§9.1 — the verifier's 5-second assertion, disarmed by `opt-level = 2`).
+    ///
+    /// `cycles_count` runs one `circuit` DFS per block *on the line being attributed*, so this
+    /// grows with blocks-per-line — the parameter a one-statement-per-line growth curve holds
+    /// at 1, and the reason three fixes were tried against a curve that could not see this.
+    static CIRCUIT_STARTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Total `circuit` invocations, recursion included, since [`reset_circuit_starts`].
+pub fn circuit_starts() -> u64 {
+    CIRCUIT_STARTS.with(std::cell::Cell::get)
+}
+
+/// Zero the counter, so a caller can attribute a single ingest.
+pub fn reset_circuit_starts() {
+    CIRCUIT_STARTS.with(|c| c.set(0));
+}
+
 fn cycles_count(f: &NoteFunction, succ: &[Vec<usize>], bs: &[u32], arc_counts: &[u64]) -> u64 {
     let mut cs: Vec<i64> = vec![0; f.arcs.len()];
     for &b in bs {
@@ -1247,6 +1268,10 @@ fn circuit(
     cs: &mut [i64],
     count: &mut i64,
 ) -> bool {
+    // Counted on **every entry, including recursion** — the outer loop's start count is
+    // identical for both growth-curve shapes (6403 at n=3200 either way) while one is 17x
+    // slower, so the cost is how far each traversal walks, not how many begin.
+    CIRCUIT_STARTS.with(|c| c.set(c.get() + 1));
     let mut loop_found = false;
     blocked.push(v);
     block_lists.push(Vec::new());
