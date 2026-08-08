@@ -93,3 +93,24 @@ fn a_missing_compiler_falls_back_to_the_baked_persona_once() {
         "a machine with no compiler has no system include path to report"
     );
 }
+
+/// **A probe that fails is not a probe that answered "nothing".**
+///
+/// `cc -march=bogus` exits non-zero and prints no `#define` at all, and `Persona::from_defines`
+/// over that text is a perfectly well-formed persona with **zero** predefines — which is the worst
+/// answer available: `__GNUC__`, `__linux__` and `__x86_64__` all undefined sends every real header
+/// down its `#else` and configures a program nobody compiles. The same shape as a spawn failure,
+/// arriving through a different door, and the same fallback is right.
+///
+/// It must also be *visible*: a run that quietly substituted the baked set for the flags it was
+/// asked about would report a persona count that says nothing went wrong.
+#[test]
+fn a_probe_that_produces_no_defines_falls_back_rather_than_answering_nothing() {
+    let p = Probe::new();
+    let bogus = flags(&["-march=chiero-no-such-arch"]);
+    assert_eq!(
+        p.persona(&bogus),
+        chiero_pp::Persona::baked(),
+        "an unusable probe falls back to the set chiero has always impersonated"
+    );
+}
