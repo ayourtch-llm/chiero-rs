@@ -833,30 +833,41 @@ fn solve_arcs(
     }
 
     // Conservation, to a fixpoint.
+    // **Incidence lists, built once.** The two scans below were `(0..n).filter(..)` *per block,
+    // per side, per fixpoint iteration* — 983 962 192 arc visits for a 3200-arc function,
+    // measured by `conservation_arc_visits()` at a dead-on quadratic 16.0x per 4x arcs.
+    //
+    // The transformation is exactly order-preserving: `(0..n).filter(|i| arcs[i].to == b)` *is*
+    // the list of arcs into `b` in ascending index order, which is what these hold. Nothing about
+    // the conservation arithmetic changes — only how often the graph is re-derived.
+    let mut by_to: Vec<Vec<usize>> = vec![Vec::new(); f.blocks as usize];
+    let mut by_from: Vec<Vec<usize>> = vec![Vec::new(); f.blocks as usize];
+    for (i, a) in f.arcs.iter().enumerate() {
+        if let Some(v) = by_to.get_mut(a.to as usize) {
+            v.push(i);
+        }
+        if let Some(v) = by_from.get_mut(a.from as usize) {
+            v.push(i);
+        }
+    }
+    let empty: Vec<usize> = Vec::new();
     loop {
         let mut changed = false;
         for b in 0..f.blocks {
             for incoming in [true, false] {
-                // Counted, not assumed — this entry's record on reading is 4 wrong to 3 right.
-                CONSERVATION_ARC_VISITS.with(|c| c.set(c.get() + 2 * n as u64));
-                let side: Vec<usize> = (0..n)
-                    .filter(|&i| {
-                        if incoming {
-                            f.arcs[i].to == b
-                        } else {
-                            f.arcs[i].from == b
-                        }
-                    })
-                    .collect();
-                let other: Vec<usize> = (0..n)
-                    .filter(|&i| {
-                        if incoming {
-                            f.arcs[i].from == b
-                        } else {
-                            f.arcs[i].to == b
-                        }
-                    })
-                    .collect();
+                let (side, other) = if incoming {
+                    (
+                        by_to.get(b as usize).unwrap_or(&empty),
+                        by_from.get(b as usize).unwrap_or(&empty),
+                    )
+                } else {
+                    (
+                        by_from.get(b as usize).unwrap_or(&empty),
+                        by_to.get(b as usize).unwrap_or(&empty),
+                    )
+                };
+                CONSERVATION_ARC_VISITS
+                    .with(|c| c.set(c.get() + (side.len() + other.len()) as u64));
                 // **An empty side is three different things**, and reading it as one refused 66
                 // of 108 objects of a real clang build.
                 //
@@ -870,7 +881,7 @@ fn solve_arcs(
                 // one whose single outgoing arc is on the spanning tree and therefore carries no
                 // counter, so conservation is the only thing that could ever have determined it.
                 if incoming && side.is_empty() && b != 0 {
-                    for &i in &other {
+                    for &i in other {
                         if known[i].is_none() {
                             known[i] = Some(0);
                             changed = true;
