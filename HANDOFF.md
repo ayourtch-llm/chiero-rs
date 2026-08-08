@@ -2195,7 +2195,13 @@ typing the paths ever would.
    flaw.**
 
    `grep -rn "\.contains(&" --include=*.rs crates/*/src xtask/src | grep -vE "IndexSet|IndexMap|BTreeSet|HashSet|BTreeMap|HashMap"`
-   returns **87** sites. Most are ranges (`(0x300..=0x36F).contains`) or genuinely small fixed
+   returned **87** sites when the audit was written; **79 at `ee1b251` (2026-08-08)**, after the
+   `chiero-cir` half closed and four `chiero-gcov` sites became `IndexSet`/`IndexMap`. By crate
+   now: `chiero-cir` 10, `chiero-sema` 9, `chiero-gcov` 9, `chiero-exec` 6, `chiero-tool` 5.
+
+   ⚠️ **The count is a rough progress marker and nothing more.** Today's 3.08x in `chiero-gcov`
+   came from two of those sites — and three *other* `contains` conversions in the same file moved
+   the ratio by nothing at all. **The grep finds the shape; only a curve finds the cost.** Most are ranges (`(0x300..=0x36F).contains`) or genuinely small fixed
    lists; the dangerous ones are where the receiver **grows with the input** and the call is in a
    loop. Spot-checked `chiero-gcov`'s four (`note_test`, `note_variant`, the per-line dedupes):
    all bounded by *test count* rather than line count, so O(T²) at worst and not obviously the
