@@ -1775,7 +1775,8 @@ typing the paths ever would.
      `for u in db.c_units() { cfg.persona = persona_for(&u.target_flags) }` — a lookup, and the
      thing that would finally make 060 contract 2 (multiarch 1:N) real.
 
-1z. **⏸️ Original entry, kept because its reasoning held up.** PARKED at the owner's request
+1z. **🗄️ Original entry, kept because its reasoning held up — closed, not parked.** It read:
+   PARKED at the owner's request
    2026-08-07 — `-march`. Do not start without checking in;
    the owner asked to discuss the design first. What was agreed: the *flag propagation* half is a
    bug regardless (chiero probes the compiler with no flags while the sweep replays real ninja
@@ -1853,7 +1854,8 @@ typing the paths ever would.
      the same way — by a corpus falling into a `#else` — and each fix has been another literal.
    - **`chiero-cli`'s `frontend` already captures a whole `cc -dM`**, so two mechanisms exist for
      one fact, and only one of them is available with `--no-default-features`.
-   - **⏸️ It is the natural seam for the PARKED `-march` item**, which is exactly "the persona
+   - **It was the natural seam for the then-parked `-march` item** (unparked and closed
+     2026-08-08), which is exactly "the persona
      must vary per translation unit": VPP compiles one source repeatedly under different
      `-march`, and `__AVX2__`/`__SSE4_2__` are just more predefines. A config-file persona turns
      that from a new subsystem into a per-TU choice of an existing one.
@@ -3033,10 +3035,10 @@ the compiler in ccache and a warm cache makes the measurement about the cache.
 ⚠️ **Never `cargo build --release -p xtask` while a sweep is running** — the shim execs the binary
 being overwritten.
 
-## 9.9 ⏰ THE HEARTBEAT — **running, re-armed 2026-08-07 at the owner's request**
+## 9.9 ⏰ THE HEARTBEAT — **running, re-armed 2026-08-08**
 
-`mcp__tttt__tttt_cron_create`, **`*/10 * * * *`**, `if_busy=wait`, currently **`cron-4`**. Its
-standing job is §8.3's widening pattern.
+`mcp__tttt__tttt_cron_create`, **`*/10 * * * *`**, `if_busy=wait`, `session_id=pty-1`, currently
+**`cron-6`**. Its standing job is §8.3's widening pattern.
 
 ⚠️ **Re-issued 2026-08-07 because the old prompt referred to queue items by number.** §9.1 gets
 renumbered whenever an item closes, and the prompt said "item 2 is PARKED" — which, after item 1
@@ -3046,7 +3048,22 @@ have said nothing about the actually-parked one. The prompt now **names** the pa
 Any future edit to this cron must keep that property: *a number in a standing instruction is a
 reference that rots silently.*
 
-⚠️ **STALE AS OF 2026-08-08, and the same lesson one level up.** The owner unparked `-march` that
+✅ **RE-ARMED 2026-08-08 as `cron-6`; `cron-5` deleted.** The prompt no longer names any item. It
+says: *"Parked items are exactly those §9.1 marks with the pause emoji, and nothing else … That
+file is edited when the state changes; this prompt is not, so believe the file over this
+sentence."*
+
+**The mutable fact now lives in the file that gets edited when it changes**, and the prompt says
+only where to look — plus which of the two to trust when they disagree, since they will.
+
+⚠️ **Invariant this creates, and it must be kept:** the pause emoji in §9.1 now means *actively
+parked* and nothing else. Three occurrences were cleared when the cron was re-armed — a kept
+historical entry, a prose cross-reference, and a note *about* parking — none of them a live park,
+all of them things a reader following the prompt would have declined to work on. **A marker that
+also means "was once parked" cannot be pointed at by an instruction.** Use 🗄️ for closed entries
+kept as record.
+
+⚠️ *The problem it fixed, kept because it is the general form:* The owner unparked `-march` that
 day ("go ahead and design + execute the persona work", then "feel free to tackle march"), and it
 is **built and closed** — but the cron prompt still says *"The one PARKED item is the `-march` /
 per-TU target configuration work: do not start it without checking in with the owner."* A fresh
@@ -3055,7 +3072,7 @@ context reading only the prompt would decline work that is already done.
 Fixing the numbers made the prompt survive renumbering; it did not make it survive a *decision*.
 **A standing instruction encodes a state of the world and there is no mechanism that updates it.**
 Two options, the owner's call: re-arm the cron without that clause, or replace the clause with
-"the parked items are whatever §9.1 marks ⏸️" — which moves the mutable fact into the file that
+"the parked items are whatever §9.1 marks PARKED-emoji" — which moves the mutable fact into the file that
 is edited when it changes, and leaves the prompt saying only where to look. The second is
 probably right for the same reason the numbers were wrong.
 
