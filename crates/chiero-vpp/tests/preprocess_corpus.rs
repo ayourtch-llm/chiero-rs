@@ -92,7 +92,11 @@ fn every_vpp_compile_command_preprocesses_without_panicking() {
     // **What the diagnostics say, not just how many there are.** 25 TUs diagnosed is a number
     // nobody can act on; one message repeated 25 times is a single bug with an address. Counted
     // by TU, because a header included by 400 units would otherwise dominate by sheer arithmetic.
-    let mut causes: Vec<(String, usize)> = Vec::new();
+    // Each cause keeps one example path. **Without it a cause is not addressable**: I spent a
+    // wave reasoning about which VPP file produced `redefinition of macro MFD_HUGETLB` from the
+    // message alone, and was wrong about the file. The panic list below always printed an
+    // example; the diagnostic list did not, and that asymmetry was the whole defect.
+    let mut causes: Vec<(String, usize, PathBuf)> = Vec::new();
     for u in &units {
         let Ok(src) = std::fs::read_to_string(&u.src) else {
             unreadable += 1;
@@ -116,9 +120,9 @@ fn every_vpp_compile_command_preprocesses_without_panicking() {
                 diagnosed += 1;
                 tokens += n as u64;
                 for msg in m {
-                    match causes.iter_mut().find(|(c, _)| *c == msg) {
-                        Some((_, k)) => *k += 1,
-                        None => causes.push((msg, 1)),
+                    match causes.iter_mut().find(|(c, ..)| *c == msg) {
+                        Some((_, k, _)) => *k += 1,
+                        None => causes.push((msg, 1, u.src.clone())),
                     }
                 }
             }
@@ -147,9 +151,9 @@ fn every_vpp_compile_command_preprocesses_without_panicking() {
     if unreadable > 0 {
         eprintln!("  ⚠️ {unreadable} sources the database names do not exist on disk");
     }
-    causes.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
-    for (msg, n) in &causes {
-        eprintln!("  {n:>5} TUs  {msg}");
+    causes.sort_by_key(|(_, n, _)| std::cmp::Reverse(*n));
+    for (msg, n, example) in &causes {
+        eprintln!("  {n:>5} TUs  {msg}  e.g. {}", example.display());
     }
 
     // Distinct messages first: 1900 panics with one cause is one bug, and a list of paths hides

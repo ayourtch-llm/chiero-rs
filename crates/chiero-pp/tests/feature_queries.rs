@@ -458,12 +458,25 @@ fn the_baked_persona_admits_it_runs_on_linux() {
         let tu = preprocess_str("os.c", &source, Config::default());
         tu.token_texts().map(str::to_owned).collect::<Vec<_>>()
     };
+    // **All three spellings of each, because gcc defines all three.** The first version of this
+    // test checked `__linux__` alone, the fix defined `__linux__` alone, and VPP's `pmalloc.c`
+    // went on reaching `#error "Unsupported OS"` — its guard is `#ifdef __linux`, no trailing
+    // underscores. The corpus caught it on the very next run.
+    //
+    // `linux` and `unix` unprefixed are gnu-mode only (gcc drops them under `-std=c11`), and this
+    // persona is gnu mode: `__GNUC__` is baked and `__STRICT_ANSI__` is not. VPP builds `gnu11`.
     for name in [
         "__linux__",
+        "__linux",
+        "linux",
         "__unix__",
+        "__unix",
+        "unix",
         "__gnu_linux__",
         "__ELF__",
         "__LP64__",
+        "__x86_64__",
+        "__x86_64",
     ] {
         assert_eq!(
             probe(name),
@@ -478,11 +491,17 @@ fn the_baked_persona_admits_it_runs_on_linux() {
          on a preprocessor that treated every unknown identifier as defined"
     );
 
-    // The shape that sent VPP's pmalloc.c into `#error`, reduced to its bones.
-    let chain = "#if defined(__linux__)\nlinux\n\
+    // The shape that sent VPP's pmalloc.c into `#error`, reduced to its bones — and spelled
+    // `__linux` the way pmalloc.c actually spells it, not the way I first assumed it did.
+    //
+    // ⚠️ The marker is `IS_LINUX`, not `linux`. This fixture originally said `linux` and started
+    // failing with `["1"]` the moment the fix landed — because gnu-mode `linux` **is** a macro.
+    // That is the hazard of the unprefixed spellings in one line, and it took under a minute to
+    // hit in a file written by someone who had just read gcc's list.
+    let chain = "#ifdef __linux\nIS_LINUX\n\
                  #elif defined(__FreeBSD__)\nfreebsd\n\
                  #else\n#error \"Unsupported OS\"\n#endif\n";
     let tu = preprocess_str("pmalloc.c", chain, Config::default());
-    assert_eq!(tu.token_texts().collect::<Vec<_>>(), ["linux"]);
+    assert_eq!(tu.token_texts().collect::<Vec<_>>(), ["IS_LINUX"]);
     assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
 }

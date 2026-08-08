@@ -480,17 +480,28 @@ impl Engine {
             ("__GNUC_MINOR__", "3"),
             ("__GNUC_PATCHLEVEL__", "0"),
             ("__x86_64__", "1"),
+            ("__x86_64", "1"),
             // **The platform half of the same persona.** A `__GNUC__ 13` / `__x86_64__` compiler
-            // that denies running on an operating system is not a compiler anyone has; gcc 13.3
-            // here predefines all five. 012 contract 17's corpus run found the cost: VPP's
-            // `vppinfra/pmalloc.c` has `#if defined(__linux__) / #elif defined(__FreeBSD__) /
-            // #else #error "Unsupported OS"`, and it fell straight through to the `#error`.
+            // that denies running on an operating system is not a compiler anyone has. 012
+            // contract 17's corpus run found the cost: VPP's `vppinfra/pmalloc.c` reached
+            // `#error "Unsupported OS"`, so every Linux-only branch in VPP *and* in glibc was
+            // dead and the analysed program was not the shipped one — silently, since a branch
+            // never taken reports nothing.
             //
-            // Every Linux-only branch in VPP *and* in glibc was dead without these, which means
-            // the analysed program was not the shipped one — a silent difference, since a branch
-            // that is never taken reports nothing.
+            // ⚠️ **All three spellings, because gcc defines all three.** A first fix here defined
+            // `__linux__` alone and `pmalloc.c` went on erroring: its guard is `#ifdef __linux`.
+            // Guessing which spelling a header uses is not a thing worth doing when gcc will
+            // simply list them (`gcc -dM -E -x c /dev/null`).
+            //
+            // `linux` and `unix` unprefixed are **gnu-mode only** — gcc drops them under
+            // `-std=c11` — and this persona is gnu mode: `__GNUC__` is baked, `__STRICT_ANSI__`
+            // is not, and VPP builds `gnu11`.
             ("__linux__", "1"),
+            ("__linux", "1"),
+            ("linux", "1"),
             ("__unix__", "1"),
+            ("__unix", "1"),
+            ("unix", "1"),
             ("__gnu_linux__", "1"),
             ("__ELF__", "1"),
             ("__LP64__", "1"),
