@@ -3179,6 +3179,16 @@ doubles the wake-ups.
 
 ### 11.3 About the design, and the distinction this project keeps re-deriving
 
+- 🆕 **A number written mid-investigation is stale by the end of it — cite the measurement beside
+  it.** One sweep on 2026-08-08 corrected **four** figures, all written earlier the same day by
+  the person correcting them: the `Vec::contains` site count (87 → 79), the growth gate's runtime
+  (~25 s → **7 s**, *faster*, because the code it measures got 208x faster), the corpus gate's
+  (~18 → ~20 min), and a "three misses" tally that had reached six. Two pointed at resolved
+  causes in a *committed instrument*, which is worse than no pointer: the next reader starts at a
+  solved place with the file's own authority behind them.
+  **Docs about settled measurements keep; docs about live work rot.** Two cheap defences: write
+  `~20 min (1184 s measured)` rather than `~18 min`, and when an investigation closes, re-read
+  every number it produced before trusting any of them.
 - 🆕 **Counting beats reading — but a counter measures what you chose to count, and a quadratic
   count is not automatically the bottleneck.** `cycles_count`'s scratch really was quadratic
   (327 808 014 cells at n=12800, 16.0x per 4x arcs) and fixing it really did make the counter
