@@ -1776,6 +1776,21 @@ typing the paths ever would.
    - **`__has_attribute(error)` answered 0; gcc answers 1** — the persona's own documented
      failure mode, found in 20 TUs that all build `_FORTIFY_SOURCE=2`.
 
+1e. 🆕 **012 contract 17's corpus gate measures a configuration nobody ships — and fixing it is
+   blocked on the persona design, not on effort.** The gate takes each TU's `-D`/`-I` from
+   `builddb`, its system paths from `gcc -E -v`, and its **predefines from `Config::default()`'s
+   baked table**. `chiero-cli` does not: `frontend::predefines` runs `cc -dM -E -std=gnu11` and
+   captures all 401. So the gate preprocesses VPP under a persona the real build never uses.
+
+   That is precisely why the gate earned its keep — it saw the 8% because it used the baked
+   table — but as a *standing* gate it should model the shipped configuration, and the persona
+   gaps are now covered by `persona_gap` instead.
+
+   ⛔ **Not started, deliberately.** The obvious fix is to capture `cc -dM` in `chiero-vpp` too,
+   which would make **three** mechanisms for one fact. The right fix is one mechanism — a named
+   persona the preprocessor owns, which is exactly the owner's config-file idea (1b). Building
+   `Config::from_compiler()` now would pre-empt that design. Raise 1b, 1d and this together.
+
 1d. 🆕 **`__STDC_VERSION__` is `201112L` in the persona and `201710L` under gcc — and this is a
    decision, not a bug.** VPP's compile commands carry **no `-std=` flag at all**, so gcc's
    default gnu17 applies and every glibc header configures for C17. chiero says C11.
