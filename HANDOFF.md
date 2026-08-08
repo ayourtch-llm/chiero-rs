@@ -2324,12 +2324,17 @@ typing the paths ever would.
    nothing measurable, so it was reverted rather than left in a numerically sensitive solver as
    an unproven edit.
 
-   ⛔ **What is actually needed is a profiler, and this machine's `ptrace_scope=1` blocks
-   attaching to a running `cargo test` binary.** The recorded gdb recipe needs the target to be
-   gdb's own *child*, which a test harness is not; `perf` is not installed. Either make the ingest
-   callable from a small standalone binary that gdb can launch directly, or add phase counters to
-   `solve_flow_graph` the way `verify::terminators_examined()` was added. **Counting is what
-   settled the verifier; guessing has now failed here three times running.**
+   ✅ ~~**What is actually needed is a profiler**~~ — **written mid-investigation and wrong within
+   the hour.** `ptrace_scope=1` really does block attaching to a running `cargo test` binary, the
+   recorded gdb recipe needs the target to be gdb's own *child*, and `perf` is not installed — all
+   true, and none of it mattered. **A counter settled it in one edit**
+   (`native::circuit_starts()`), exactly as `verify::terminators_examined()` had settled the
+   verifier, and the same sentence that reached for a profiler already said so.
+
+   Kept as a correction rather than deleted, because the reflex is the thing to notice: **"I need
+   a better tool" is usually cheaper to answer with "I need a number".** A profiler tells you
+   where time went; a counter tells you *why*, survives a faster build, and goes in the repo where
+   the next reader gets it for free.
 
    ⛔ *Original entry, kept because its reasoning is the thing that turned out to be wrong:*
    **`chiero-gcov`'s half is blocked on artifacts.** There are **no
