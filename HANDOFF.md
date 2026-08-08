@@ -3023,6 +3023,17 @@ doubles the wake-ups.
 
 ### 11.3 About the design, and the distinction this project keeps re-deriving
 
+- 🆕 **Recorded blockers rot, and the rate is higher than anyone plans for: three of them were
+  false on 2026-08-08 alone.** (a) *"no `compile_commands.json` exists"* — true when written,
+  and `ninja -t compdb` had been emitting one on stdout in 90 ms for months; the requirement was
+  a *file*, the need was the *data*. (b) *"no `.gcno` artifacts, so no growth curve"* — a `.gcno`
+  never had to be found or written, gcc emits one of any size from generated C. (c) *"what is
+  actually needed is a profiler"* — every fact in it true, and a counter settled the question in
+  one edit.
+  **Each cost seconds to disprove and had blocked real work.** So: when picking up an item marked
+  ⛔, re-measure the blocker *first* — before designing around it, and before believing the entry
+  that says it is impossible. Sweep the whole file's ⛔ markers occasionally rather than waiting
+  to trip over one; that is how (c) was caught, an hour after I wrote it.
 - 🆕 **A corpus gate finds what the tool *says*; it never finds what the tool silently
   *believes*.** 012 contract 17 preprocesses 1967 VPP TUs and counts diagnostics, and it found
   three real defects that way. It was structurally incapable of finding the fourth and worst:
