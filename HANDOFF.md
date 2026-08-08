@@ -1589,8 +1589,16 @@ typing the paths ever would.
 > panics on the C standard's own worked example, after four consecutive widenings of VPP-shaped
 > corpora had begun returning honest zeros. §11.3 carries the general form.
 >
-> **State: 2026-08-08 — `./check.sh` GREEN at 2231 across 264 suites, fmt and clippy clean,
-> gate 3m56s.** Verified on all three CI legs and pushed.
+> 🆕 **And the newest surface is the sharpest so far: 012 contract 17's configured-VPP
+> preprocessor gate (§9.1 item 1c).** 1967 translation units under the flags VPP actually
+> compiles them with, 18 minutes, **three real defects on its first run** — a missing `__linux__`
+> that had killed every Linux-only branch in VPP *and* glibc, a diagnostic class chiero was right
+> about and that was still noise, and `__has_attribute(error)` answered 0 where gcc answers 1.
+> **None of them was visible to the pp-gate**, which has reported 0 findings for weeks: none is
+> about preprocessing *syntax*. A gate that has been green for weeks is an untested surface.
+>
+> **State: 2026-08-08 — `./check.sh` GREEN at 2248 across 267 suites, fmt and clippy clean.**
+> Verified on all three CI legs and pushed.
 >
 > **Closed:** `MemFault::BadRange`; 023 §8's `max_solver_rlimit` and `max_memory_objects` — every
 > budget in that sketch is now built; `--solver-rlimit` on the three solver commands; the CIR
@@ -1705,6 +1713,30 @@ typing the paths ever would.
    design with the owner together, not the reason to begin. What is safe to do first, and is
    independent of any design: keep using 012 contract 17's corpus run to find *which* predefines
    are missing, since that is evidence either design will need.
+
+1c. 🆕 **The configured-VPP preprocessor gate is a live widening surface — three defects on its
+   first run, and the standing job is to keep running it.** `cargo test -p chiero-vpp --test
+   preprocess_corpus -- --ignored --nocapture` (18 min, 1967 TUs, 730M tokens). Diagnosed count
+   as the metric:
+
+   | | diagnosed | what the run said |
+   |---|---|---|
+   | first run, 2026-08-08 | **25** | 3 distinct causes |
+   | after the platform predefines | **22** | `#error "Unsupported OS"` gone |
+   | after 012 c25 + the attribute table | *pending re-measure* | all three causes addressed |
+
+   The three, each a real fix and none guessed at:
+   - **`__linux__` and its two other spellings** were not baked, so `vppinfra/pmalloc.c` reached
+     `#error "Unsupported OS"` and every Linux-only branch in VPP *and* glibc was dead.
+   - **`redefinition of macro MFD_CLOEXEC`** ×5 and `ELF_NOTE_ABI` — **chiero was right and it
+     was still noise**; gcc suppresses diagnostics sited in system headers. 012 contract 25.
+   - **`__has_attribute(error)` answered 0; gcc answers 1** — the persona's own documented
+     failure mode, found in 20 TUs that all build `_FORTIFY_SOURCE=2`.
+
+   ⚠️ **This is why the gate is worth the 18 minutes.** The pp-gate reports 0 findings on its own
+   corpus and has for weeks; none of these three was visible there, because none of them is about
+   preprocessing *syntax* — they are about the persona and about which headers a real build
+   reaches. **A gate that has been green for weeks is not evidence; it is an untested surface.**
 
 2. **Unwidened surfaces, in rough order of expected yield** (§8.3 is the loop):
    - ~~The sema corpus gate's contract 11 and contract 19~~ — **both wrong, and both closed.**
