@@ -282,6 +282,27 @@ pub const TABLE: &[(&str, &str, u32)] = &[
     ("__has_attribute", "copy", 1),
     ("__has_c_attribute", "copy", 0),
     ("__has_cpp_attribute", "copy", 1),
+    // **The diagnostic attributes glibc's `sys/cdefs.h` queries**, added 2026-08-08 after 012
+    // contract 17's corpus run found 20 of VPP's 1967 units asking for them. `error` is the one
+    // that mattered: chiero answered 0, gcc 13 answers 1, and `__attribute_error__` collapses to
+    // nothing under `_FORTIFY_SOURCE=2` when the query says 0 — the module's own stated failure
+    // mode, arriving in real code.
+    //
+    // `diagnose_if` is clang's and 0 really is gcc's answer. It is listed anyway: a table holding
+    // only the rows that turned out to be 1 cannot tell "0 because gcc says so" from "0 because
+    // nobody looked".
+    ("__has_attribute", "error", 1),
+    ("__has_c_attribute", "error", 0),
+    ("__has_cpp_attribute", "error", 1),
+    ("__has_attribute", "__error__", 1),
+    ("__has_c_attribute", "__error__", 0),
+    ("__has_cpp_attribute", "__error__", 1),
+    ("__has_attribute", "warning", 1),
+    ("__has_c_attribute", "warning", 0),
+    ("__has_cpp_attribute", "warning", 1),
+    ("__has_attribute", "diagnose_if", 0),
+    ("__has_c_attribute", "diagnose_if", 0),
+    ("__has_cpp_attribute", "diagnose_if", 0),
     ("__has_attribute", "deprecated", 201904),
     ("__has_c_attribute", "deprecated", 201904),
     ("__has_cpp_attribute", "deprecated", 201904),

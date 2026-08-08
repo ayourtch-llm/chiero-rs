@@ -505,3 +505,40 @@ fn the_baked_persona_admits_it_runs_on_linux() {
     assert_eq!(tu.token_texts().collect::<Vec<_>>(), ["IS_LINUX"]);
     assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
 }
+
+/// **The diagnostic attributes glibc's `sys/cdefs.h` queries** — and the one case where chiero
+/// answered 0 while gcc answers 1.
+///
+/// Found by 012 contract 17's corpus run: 20 of VPP's 1967 translation units asked
+/// `__has_attribute(error)` and `__has_attribute(diagnose_if)`, and chiero said *"not in the
+/// compiler-persona table; answered 0, which may not be what the build compiler says"*. It was
+/// telling the truth — that honesty is the design — but for `error` the guess was wrong: gcc 13
+/// has `__attribute__((error))` and answers 1.
+///
+/// This is the module's own stated failure mode, arriving in real code: **answering 0 where gcc
+/// answers 1 silently swaps the analysed program for one that never ships.** `_FORTIFY_SOURCE=2`
+/// is on for all 20, and `__attribute_error__` collapses to nothing when the query says 0.
+///
+/// `diagnose_if` is clang's, and 0 *is* gcc's answer — kept because a table that only holds the
+/// entries that turned out to be 1 cannot be checked for the difference between "0 because gcc
+/// says so" and "0 because nobody looked".
+#[test]
+fn the_table_covers_the_diagnostic_attributes_glibc_queries() {
+    for name in ["error", "__error__", "warning", "diagnose_if"] {
+        for query in [
+            "__has_attribute",
+            "__has_c_attribute",
+            "__has_cpp_attribute",
+        ] {
+            let expected = gcc_value(query, name);
+            let (ours, diagnostics) = chiero_value(query, name);
+            assert_eq!(ours, expected, "{query}({name})");
+            assert!(
+                diagnostics.is_empty(),
+                "{query}({name}) is in the table now, so nothing is guessed: {diagnostics:?}"
+            );
+        }
+    }
+    // The load-bearing row, stated on its own so a future edit cannot quietly flip it to 0.
+    assert_eq!(gcc_value("__has_attribute", "error"), 1);
+}
