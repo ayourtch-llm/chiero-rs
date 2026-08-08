@@ -1736,7 +1736,20 @@ typing the paths ever would.
    | first run, 2026-08-08 | **25** | 3 distinct causes |
    | after the platform predefines | **22** | `#error "Unsupported OS"` gone |
    | after 012 c25 + the attribute table | **0** | all three causes addressed |
-   | after the endianness predefines | *re-measure in flight* | the fix opens branches that were dead |
+   | final, all persona fixes in | **0** | 792,404,723 tokens — see below |
+
+   🆕 **The number that actually matters is not the 0, it is the token count: 731,159,228 →
+   792,404,723.** Same 1967 translation units, same flags, **+61 million tokens — 8.4% more C**.
+   That is code in `#if` branches the persona had left dead: Linux-only paths in VPP *and* glibc,
+   the little-endian layouts, the `__SSE2__` tables. **chiero had been analysing a program 8%
+   smaller than the one VPP ships**, and every "0 findings" this project published over VPP was
+   silent about that 8%.
+
+   ⚠️ It is also the honest way to read a green metric. The diagnosed count went 25 → 22 → 0
+   while the endianness defect was live throughout, reversing bit-field member order across a
+   whole plugin. **The count says "no unaddressed complaint"; the token delta says "and this much
+   more of the program is now visible".** Track both — a corpus gate whose only number is a count
+   of complaints cannot tell you it is looking at less than half the tree.
 
    ⚠️ **"0 diagnosed" means the preprocessor emits nothing, not that it is right about VPP**, and
    this file has the proof in the very next paragraph: the endianness defect was live during the
