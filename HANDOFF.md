@@ -1597,7 +1597,7 @@ typing the paths ever would.
 > **None of them was visible to the pp-gate**, which has reported 0 findings for weeks: none is
 > about preprocessing *syntax*. A gate that has been green for weeks is an untested surface.
 >
-> **State: 2026-08-08 — `./check.sh` GREEN at 2249 across 268 suites, fmt and clippy clean.**
+> **State: 2026-08-08 — `./check.sh` GREEN at 2249 across 269 suites, fmt and clippy clean.**
 > Verified on all three CI legs and pushed.
 >
 > **This session's closes:** 060 contract 1 (`chiero_vpp::builddb` — VPP's compile database;
@@ -1607,7 +1607,14 @@ typing the paths ever would.
 > the three spellings of `__linux__`, `__has_attribute(error)`, the endianness triple,
 > `__SSE__`/`__SSE2__`, and `_LP64`/`__amd64`/`__SIZEOF_POINTER__`.
 >
-> **Two standing gates exist now and they ask different questions.** `preprocess_corpus`
+> 🆕 **A third gate, and a third question: `chiero-gcov/tests/growth.rs`** — does the cost *scale*?
+> It is `#[ignore]`d and currently **fails on purpose**, because native arc ingest is still
+> superlinear (14.0x / 31.4x per 4x arcs against a linear 4x). That failure is the queued work's
+> marker, not a regression: three data-structure fixes have already landed against it for a
+> cumulative **3.08x**, and what remains needs an algorithmic change. Read §9.1 before touching it
+> — three earlier hypotheses were tried and reverted for moving nothing.
+>
+> **Three standing gates exist now and they ask different questions.** `preprocess_corpus`
 > (18 min) watches what chiero *says*; `persona_gap` (0.1 s) compares what chiero *believes*
 > against gcc, in both definedness and value. The second found the worst defect of the day and
 > the first could never have. §11.3 carries the general form.
