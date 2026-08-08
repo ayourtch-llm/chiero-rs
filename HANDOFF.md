@@ -1492,6 +1492,7 @@ This has now paid out three times in a row, each time on the first run after a w
 | *not a widening* — **re-measuring the pinned 40 and asking why nothing moved** | one retake + one `grep` | the corpus **cannot reach** a 32-byte access: `__AVX2__` is undefined in every configuration chiero compiles, so every AVX2/AVX512 path in vppinfra is invisible to every measurement this project has published. New evidence for the parked `-march` item, and it came from an *unchanged* number |
 | **a new *kind* of gate: the preprocessor under VPP's own flags** (012 c17, 1967 TUs, 18 min) | one ingest + one gate | **three defects the pp-gate could never see**, because none is about preprocessing *syntax*: `__linux__` unbaked (VPP's `pmalloc.c` reached `#error "Unsupported OS"`), `__has_attribute(error)` answered 0 where gcc says 1, and a diagnostic class chiero was *right* about and that was still noise. Diagnosed 25 → 0, and the token count 731M → **792M: 8% more of the program became visible** |
 | *not a widening* — **asking what chiero believes rather than what it says** (`persona_gap`, 0.1 s) | one differential instrument | the **endianness** defect: `__BYTE_ORDER__` undefined, so `#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__` read `0 == 0`, took the big-endian branch on x86-64, and reversed bit-field member order across `srv6-mobile`. **The 18-minute corpus gate is structurally incapable of finding this** — a wrongly-taken branch emits nothing. Output-watching and state-comparison are two different searches |
+| **splitting a clock instead of counting inside it** — timing `ingest_into` apart from the arc-index walk | one column in an existing gate, 4 min | **the gcov growth gate passes for the first time.** 90% of the cost was on the *other side* of the suspect §9.1 had recorded, and two throwaway experiments bisected it to `block_counts` — every block scanning every arc. ⚠️ One of the three fixes was a change **measured and honestly ruled out earlier the same day**; the null result was true while `block_counts` dominated |
 | **the per-TU persona join** — the corpus gate stopped preprocessing 1967 units as one compiler | one crate + one wave, 23 min to re-measure | **+26M tokens, 3.3% more of VPP visible**, 0 diagnosed throughout — and the yield was a *number*: 8 distinct target flag-sets where I had written 5 in four places. A `-march` value is not a flag-set (`-mtune`, `-mprefer-vector-width=512`, `-maes`, four units with none, one naming `-march` twice). One `ninja -t compdb` pipe would have said so at any point |
 | *not a widening* — **disbelieving a "blocked" label** (the gcov `Vec::contains` audit) | one generated `.gcno` | the block was false: gcc emits a `.gcno` of any size from generated C, so no VPP coverage build and no format writer were ever needed. Native ingest measured **quadratic**, then **~250x faster** (17.31 s → ~0.068 s at n=3200, two runs; ±20% at these times) across five fixes. ⚠️ **Six confident hypotheses were refuted by measurement**, four of them before anything worked; counters found every real site. The curve itself was blind twice — once holding blocks-per-line at 1, once measuring below its own noise floor — and a genuinely quadratic counter (327 808 014 cells) turned out to be 7% of the clock. **Counting stops you being confidently wrong; it does not by itself make you right** |
 
@@ -1595,10 +1596,12 @@ typing the paths ever would.
 >    `TranslationUnit::pp_config(&probe)` makes the join unskippable. 060 contract 2 is met.
 >    §9.1 1d (`__STDC_VERSION__`: the persona says C11, gcc's default is gnu17) is still the
 >    **owner's call on the language level** and is the only part of that thread left.
-> 3. **The gcov enumeration's algorithmic half** (§9.1's audit entry). Diagnosed, measured, ~250x
->    already banked across five fixes, and `tests/growth.rs` judges any attempt in 7 seconds. Its
->    failure message now names what the printed columns rule out. ⚠️ Scoreboard is **6 hypotheses
->    refuted, 5 held** — read them before forming a seventh.
+> 3. ✅ **Done 2026-08-08 — the growth gate passes for the first time** (§9.1's audit entry).
+>    `block_counts` scanned every arc for every block and was **90% of the native ingest's clock**;
+>    two smaller fixes went with it. What is left there is a *smaller* residual in the `line`
+>    shape's line half, described in `growth.rs`'s header — worth doing only if a real coverage
+>    ingest turns out to care, and **do not tighten the 8.0x threshold**: the band is ±0.8x and it
+>    would flake rather than bite.
 >
 > ⚠️ **What not to do:** do not "fix" a `Vec::contains` because it looks quadratic — see §9.1,
 > where two that looked it were not and one described in passing was the whole cost. **Nothing is
@@ -1622,11 +1625,9 @@ typing the paths ever would.
 > # what chiero BELIEVES vs gcc: predefine definedness AND value. ~0.1 s. Expect 0 gaps.
 > cargo test -p chiero-vpp --test persona_gap -- --ignored --nocapture
 >
-> # whether cost SCALES: gcov native ingest, two input shapes, n up to 12800. ~7 s.
-> # (It was ~25 s before 2026-08-08's fixes made the ingest ~250x faster. A gate that measures
-> #  the code gets faster when the code does — re-time it, do not trust the comment.)
-> # ⚠️ FAILS ON PURPOSE — the remaining superlinearity is queued algorithmic work, not a
-> # regression. Read §9.1 before touching it; three hypotheses were tried and reverted.
+> # whether cost SCALES: gcov native ingest, two input shapes, n up to 12800. ~5 s.
+> # ✅ PASSES as of 2026-08-08 — the first time. `line` 6.2-7.0x, `onelin` 4.7-5.8x against the
+> # 8.0x threshold (4x is linear, 16x quadratic). It passes; it is NOT linear — see §9.1.
 > cargo test -p chiero-gcov --test growth -- --ignored --nocapture
 > ```
 >
@@ -1679,11 +1680,11 @@ typing the paths ever would.
 > `__SSE__`/`__SSE2__`, and `_LP64`/`__amd64`/`__SIZEOF_POINTER__`.
 >
 > 🆕 **A third gate, and a third question: `chiero-gcov/tests/growth.rs`** — does the cost *scale*?
-> It is `#[ignore]`d and currently **fails on purpose**, because native arc ingest is still
-> superlinear (14.0x / 31.4x per 4x arcs against a linear 4x). That failure is the queued work's
-> marker, not a regression: three data-structure fixes have already landed against it for a
-> cumulative **3.08x**, and what remains needs an algorithmic change. Read §9.1 before touching it
-> — three earlier hypotheses were tried and reverted for moving nothing.
+> `#[ignore]`d, ~5 s, and as of 2026-08-08 it **passes for the first time**. Eight fixes have
+> landed against it in two sessions; the last three came from *splitting the clock* between the
+> line half and the arc half, which put 90% of the cost on the opposite side from the suspect this
+> file had recorded. ⚠️ Passing is not linear — 6-7x against a linear 4x — and the header says
+> where the remainder is.
 >
 > **Three standing gates exist now and they ask different questions.** `preprocess_corpus`
 > (18 min) watches what chiero *says*; `persona_gap` (0.1 s) compares what chiero *believes*
@@ -2612,7 +2613,34 @@ typing the paths ever would.
    ⚠️ **It had also been "ruled out" earlier the same day** by an experiment that stubbed
    `circuit`'s argument. Flagged as unclean at the time, re-tested, and the hypothesis was right.
 
-   **Still unlocated: the time residual.** The next counter must measure something whose unit
+   ✅ **LOCATED AND FIXED 2026-08-08 (second session) — and the suspect named below was wrong.**
+   Not by another counter: by **splitting the clock**. `arc_coverage` runs the whole ordinary line
+   ingest (`ingest_into`) and *then* walks the functions again for the arc index — "the post-decode
+   pipeline" was one name for two amounts of work, the same conflation that sent the parse
+   elimination astray one measurement earlier. Timing them apart put **90% of the clock on the line
+   half**, i.e. the opposite side from the `ArcCoverage` index building this paragraph nominated.
+
+   Two throwaway experiments then bisected it in four minutes — skip `line_counts` + `object.add`
+   (ratio barely moved), then also skip `block_counts` (15.4x → 4.9x):
+
+   | fix | what it was |
+   |---|---|
+   | `block_counts` | every block scanned every arc — Θ(blocks × arcs), **90% of the ingest** |
+   | `acc.shift_remove(key)` per graphed line | O(\|acc\|) each; now one order-preserving `retain` |
+   | `bs.contains(&from)` in the entry-arc sum | quadratic in blocks-per-line; now an indexed bool |
+
+   **1.42 s → ~0.24 s at n=12800**, `line` 15.4x → 6.2–7.0x, `onelin` 11.7x → 4.7–5.8x, and the
+   gate passes for the first time. ⚠️ **Passing is not linear** — the `line` shape's line half is
+   still 8–9.5x, in three `IndexMap`s keyed by `(String, u32)` plus the per-object merge. Do not
+   tighten the 8.0x threshold: the run-to-run band is ±0.8x.
+
+   ⚠️ **The middle fix is the one to remember: it had been measured and honestly ruled out earlier
+   the same day**, and that null result was *true* — while `block_counts` was 90% of the clock,
+   nothing else could move the ratio. **Re-test reverted optimisations after the dominant cost
+   moves**, which this curve makes a 5-second question.
+
+   *Original text, kept because it is the seventh refuted hypothesis on this item:* **Still
+   unlocated: the time residual.** The next counter must measure something whose unit
    tracks *time* — allocations, hash lookups, `IndexMap` probes — in the `ArcCoverage` index
    building (`line_blocks`, `counts`, `tests`, `order`, each keyed by a `FuncKey` holding two
    `String`s and cloned per insert). That is the largest block still measured only as part of a
