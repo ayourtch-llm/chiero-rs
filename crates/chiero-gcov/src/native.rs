@@ -1009,6 +1009,9 @@ fn line_counts(f: &NoteFunction, arc_counts: &[u64], blocks: &[u64]) -> Function
             v.push(i);
         }
     }
+    // Scratch for `cycles_count`, allocated once for the whole function.
+    let mut cyc_in_bs = vec![false; f.blocks as usize];
+    let mut cyc_indeg = vec![0usize; f.blocks as usize];
     let mut graphed: IndexMap<(String, u32), u64> = IndexMap::new();
     for (key, bs) in &on_line {
         let mut count: u64 = 0;
@@ -1019,7 +1022,14 @@ fn line_counts(f: &NoteFunction, arc_counts: &[u64], blocks: &[u64]) -> Function
                 }
             }
         }
-        count = count.saturating_add(cycles_count(f, &succ, bs, arc_counts));
+        count = count.saturating_add(cycles_count(
+            f,
+            &succ,
+            bs,
+            arc_counts,
+            &mut cyc_in_bs,
+            &mut cyc_indeg,
+        ));
         acc.shift_remove(key);
         graphed.insert(key.clone(), count);
     }
@@ -1271,7 +1281,18 @@ pub fn cycles_cells() -> u64 {
 /// arc along it, so two cycles sharing an arc cannot both claim it. A blocked node is released
 /// only when it turns out to lie on a cycle, which is what keeps the search over simple paths
 /// from being exponential in the common case.
-fn cycles_count(f: &NoteFunction, succ: &[Vec<usize>], bs: &[u32], arc_counts: &[u64]) -> u64 {
+fn cycles_count(
+    f: &NoteFunction,
+    succ: &[Vec<usize>],
+    bs: &[u32],
+    arc_counts: &[u64],
+    // **Scratch, owned by the caller and reused across every line of the function.** Sizing these
+    // per call by the max block index made Θ(n) calls each zero Θ(n) cells — 327 808 014 cells at
+    // n=12800, measured, and the whole residual of this ingest. Reset costs O(|bs|) below, which
+    // sums to the number of block-lines: linear.
+    in_bs: &mut [bool],
+    indegree: &mut [usize],
+) -> u64 {
     let mut cs: Vec<i64> = vec![0; f.arcs.len()];
     for &b in bs {
         for &i in succ.get(b as usize).into_iter().flatten() {
@@ -1281,15 +1302,24 @@ fn cycles_count(f: &NoteFunction, succ: &[Vec<usize>], bs: &[u32], arc_counts: &
     // **Membership by index, built once.** `bs.contains(&w)` is O(|bs|) and sits in `circuit`'s
     // innermost recursion, so it multiplied an already-quadratic call count — measured at
     // 5 128 004 calls for n=3200 when every block lands on one line (`tests/growth.rs`).
-    let mut in_bs = vec![false; bs.iter().map(|&b| b as usize + 1).max().unwrap_or(0)];
-    // Cells allocated and zeroed across every `cycles_count` call. This is invoked once per
-    // *line*, and each call sizes by the **max block index**, so a quadratic reading here is the
-    // whole hypothesis. Counted rather than argued — an earlier test of this stubbed `circuit`'s
-    // argument and was not clean.
-    CYCLES_CELLS.with(|c| c.set(c.get() + (in_bs.len() + in_bs.len()) as u64));
+    // Cells *touched* per call, now O(|bs|) rather than O(max block index).
+    CYCLES_CELLS.with(|c| c.set(c.get() + 2 * bs.len() as u64));
     for &b in bs {
-        in_bs[b as usize] = true;
+        if let Some(v) = in_bs.get_mut(b as usize) {
+            *v = true;
+        }
     }
+    // Everything below leaves `in_bs`/`indegree` clean for the next line — see `restore`.
+    let restore = |in_bs: &mut [bool], indegree: &mut [usize]| {
+        for &b in bs {
+            if let Some(v) = in_bs.get_mut(b as usize) {
+                *v = false;
+            }
+            if let Some(v) = indegree.get_mut(b as usize) {
+                *v = 0;
+            }
+        }
+    };
     // **If the induced subgraph has no cycle, there is nothing to enumerate.** Kahn's algorithm
     // settles that in O(V+E) once; the enumeration below is O(V x (V+E)) because it starts a DFS
     // at *every* block in `bs`, whether or not one exists. Straight-line code is the common case
@@ -1297,7 +1327,6 @@ fn cycles_count(f: &NoteFunction, succ: &[Vec<usize>], bs: &[u32], arc_counts: &
     //
     // Correctness is the definition: a DAG has no elementary circuit, so the count is 0 and `cs`
     // — which only the cycle-finding path mutates — is untouched.
-    let mut indegree: Vec<usize> = vec![0; in_bs.len()];
     let mut edges = 0usize;
     for &b in bs {
         for &i in succ.get(b as usize).into_iter().flatten() {
@@ -1328,6 +1357,7 @@ fn cycles_count(f: &NoteFunction, succ: &[Vec<usize>], bs: &[u32], arc_counts: &
         }
     }
     if seen == bs.len() && removed == edges {
+        restore(in_bs, indegree);
         return 0;
     }
 
@@ -1346,11 +1376,12 @@ fn cycles_count(f: &NoteFunction, succ: &[Vec<usize>], bs: &[u32], arc_counts: &
             &mut path,
             start,
             &mut blocked,
-            &in_bs,
+            in_bs,
             &mut cs,
             &mut count,
         );
     }
+    restore(in_bs, indegree);
     count.max(0) as u64
 }
 
