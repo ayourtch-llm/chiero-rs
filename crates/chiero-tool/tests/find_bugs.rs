@@ -660,3 +660,60 @@ fn every_run_says_it_looked_at_one_thread() {
     // And it does not cost the proof: this function *is* proven for all inputs on one thread.
     assert!(env.proven, "{env:#?}");
 }
+
+/// **A finding that rests on a global's initial value must say so.**
+///
+/// Found 2026-08-07 by widening the VPP plugin sweep from one entry per file to three.
+/// `plugins/hs_apps/test_builtins.c`'s `handle_get_64bytes` produced a **`proven: true`,
+/// `Exact`** null dereference — and it is real C: `tb_main` is a zero-initialised global whose
+/// `send_data` function pointer is assigned in `test_builtins_init` at plugin load, so calling
+/// the handler *before* init does dereference NULL.
+///
+/// The trouble is what the envelope did **not** say. Its only assumption was
+/// `entry_ptr_nonnull`, which is about parameters. Nothing recorded that the run began at an
+/// arbitrary function with every global still holding its static initial value — which is the
+/// entire basis of the finding, and an assumption chiero cannot discharge from one function
+/// because whether that entry is reachable before initialisation is a whole-program question.
+///
+/// Under UCSE (021 §5) starting mid-program is *required* — "you cannot reach VPP internals
+/// from `main`" — so this is the price of it, and 023 §7's rule cuts both ways: a truncated
+/// search may not be reported as a proof, and **a finding resting on a premise must name it**.
+/// The previous `Exact` on real VPP code, `_vec_update_len`, was a false proof of exactly this
+/// family, so an unqualified `proven: true` here is the shape this project has already paid for
+/// once.
+///
+/// The fix is the one `entry_ptr_nonnull` already models: state the premise. It does not cap
+/// fidelity — a stated premise is not an approximation.
+#[test]
+fn a_finding_that_rests_on_a_globals_initial_value_names_that_premise() {
+    // `g` is a zero-initialised global holding a pointer; the entry loads it and stores
+    // through it. Reading `g` as zero is correct C *for a program that has just started*, and
+    // an assumption for a run that begins here.
+    const VIA_GLOBAL: &str = "\
+global @g : size 8 align 8
+
+func @f() -> i32 {
+entry:
+  .line 1
+  %0 = addrglobal @g
+  %1 = load ptr, %0 align 8
+  store i32 1i32 -> %1 align 4
+  ret 0i32
+}";
+    let env = find_bugs(&m(VIA_GLOBAL), &cfg("f"));
+    let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
+    assert!(
+        !v["result"]["findings"]
+            .as_array()
+            .expect("findings")
+            .is_empty(),
+        "the fixture is supposed to find the null store: {v}"
+    );
+    let assumptions = v["assumptions"].as_array().expect("assumptions").len();
+    let text = v["assumptions"].to_string();
+    assert!(
+        text.contains("global"),
+        "a finding that depends on a global's initial value has to name that premise; the \
+         envelope carried {assumptions} assumption(s) and none mentions globals: {text}"
+    );
+}
