@@ -107,7 +107,7 @@ fn native_arc_ingest_does_not_grow_quadratically_in_arcs_per_function() {
     const SHAPES: [(&str, &str); 2] = [("\n", "line"), (" ", "onelin")];
     let mut verdicts: Vec<(&str, f64)> = Vec::new();
     for (sep, tag) in SHAPES {
-        let mut points: Vec<(usize, f64, u64, u64, f64)> = Vec::new();
+        let mut points: Vec<(usize, f64, u64, u64, f64, f64)> = Vec::new();
         for n in SIZES {
             let Some(stem) = build_and_run(&dir, n, sep, tag) else {
                 eprintln!("SKIPPED: gcc could not build the n={n} probe");
@@ -122,6 +122,15 @@ fn native_arc_ingest_does_not_grow_quadratically_in_arcs_per_function() {
             let parse = p0.elapsed().as_secs_f64();
             assert!(!recs.is_empty(), "n={n} parsed no records");
 
+            // **Structure building, timed apart from byte decoding.** Conflating the two is what
+            // sent §9.1's elimination to the wrong place: `records()` is linear and 0.4% of the
+            // clock, but `read_notes` turns those records into functions, blocks, arcs and lines,
+            // which is a different amount of work on the same bytes.
+            let n0 = Instant::now();
+            let note = chiero_gcov::native::read_notes(&notes).expect("read notes");
+            let build = n0.elapsed().as_secs_f64();
+            assert!(!note.functions.is_empty(), "n={n} built no functions");
+
             chiero_gcov::native::reset_circuit_starts();
             let start = Instant::now();
             let cov = chiero_gcov::native::arc_coverage(&dir, &stem).expect("ingest");
@@ -132,19 +141,20 @@ fn native_arc_ingest_does_not_grow_quadratically_in_arcs_per_function() {
                 !cov.functions().is_empty(),
                 "n={n} ingested no functions, so the curve would time nothing"
             );
-            points.push((n, secs, starts, visits, parse));
+            points.push((n, secs, starts, visits, parse, build));
         }
 
         eprintln!("native arc ingest, ratio per 4x arcs (4x = linear, 16x = quadratic):");
         let mut worst: f64 = 0.0;
         for w in points.windows(2) {
-            let ((n0, t0, c0, v0, p0), (n1, t1, c1, v1, p1)) = (w[0], w[1]);
+            let ((n0, t0, c0, v0, p0, b0), (n1, t1, c1, v1, p1, b1)) = (w[0], w[1]);
             // A floor keeps a sub-millisecond first point from inventing a huge ratio out of noise.
             let ratio = t1 / t0.max(1e-4);
             eprintln!(
                 "  {n0:>5} -> {n1:>5}   {t0:>8.4}s -> {t1:>8.4}s   {ratio:>6.1}x   \
-                 circuit {c0}->{c1}  conservation {v0}->{v1}  |  parse {p0:.4}s->{p1:.4}s = {:.1}x",
-                p1 / p0.max(1e-4)
+                 circuit {c0}->{c1}  conservation {v0}->{v1}  |  parse {:.1}x  build {b0:.4}s->{b1:.4}s = {:.1}x",
+                p1 / p0.max(1e-4),
+                b1 / b0.max(1e-4)
             );
             if n0 >= 200 {
                 worst = worst.max(ratio);
