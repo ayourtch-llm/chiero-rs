@@ -1613,7 +1613,9 @@ typing the paths ever would.
 > # what chiero BELIEVES vs gcc: predefine definedness AND value. ~0.1 s. Expect 0 gaps.
 > cargo test -p chiero-vpp --test persona_gap -- --ignored --nocapture
 >
-> # whether cost SCALES: gcov native ingest, two input shapes. ~25 s.
+> # whether cost SCALES: gcov native ingest, two input shapes, n up to 12800. ~7 s.
+> # (It was ~25 s before 2026-08-08's fixes made the ingest ~208x faster. A gate that measures
+> #  the code gets faster when the code does — re-time it, do not trust the comment.)
 > # ⚠️ FAILS ON PURPOSE — the remaining superlinearity is queued algorithmic work, not a
 > # regression. Read §9.1 before touching it; three hypotheses were tried and reverted.
 > cargo test -p chiero-gcov --test growth -- --ignored --nocapture
