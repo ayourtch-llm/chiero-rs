@@ -62,7 +62,8 @@ stay small and stable; a change here recompiles the world.
 | Crate | Owns | Must not |
 |---|---|---|
 | `chiero-lex` | Translation phases 1–3, pp-token stream | Expand macros, resolve includes |
-| `chiero-pp` | Phase 4: macro table, expansion, `#if` eval, include resolution, `_Pragma` | Build an AST, know C's grammar beyond `#if` expressions |
+| `chiero-pp` | Phase 4: macro table, expansion, `#if` eval, include resolution, `_Pragma`, and the `Persona` type (§4.1) | Build an AST, know C's grammar beyond `#if` expressions, **run a compiler** |
+| `chiero-probe` | Asking a real compiler what it predefines under a given `-march`, memoized per flag-set | Interpret a target flag itself — only the compiler knows what `-march=x86-64-v3` implies |
 | `chiero-ast` | AST node types, arena, visitor | Parse |
 | `chiero-parse` | Phases 5–7 grammar → AST | Resolve types (beyond the typedef disambiguation it is forced to do) |
 | `chiero-sema` | Type system, name resolution, layout/ABI, constant evaluation, typedef feedback to the parser | Lower to CIR |
@@ -70,6 +71,13 @@ stay small and stable; a change here recompiles the world.
 
 Splitting `chiero-lower` out of `chiero-sema` keeps `chiero-cir` free of any frontend
 dependency, which is what makes §3 possible.
+
+**`chiero-probe` is split out of `chiero-pp` for the mirror reason**: a `Persona` is *read* from
+`cc -dM -E` text, and something has to run the compiler that produces it. Keeping the subprocess
+out of `chiero-pp` is what lets the preprocessor stay a pure function of its inputs — and keeping
+it in **one** crate is what stops each surface growing its own probe. `chiero-cli` and
+`chiero-vpp` both need "what does this compiler predefine under these flags"; two answers to that
+question is the defect that hid 8% of VPP for months ([012 §4.1](012-preprocessor.md)).
 
 ### Symbolic core
 
@@ -210,7 +218,7 @@ runtime, and conflating the two is how the earlier wording contradicted itself.
 chiero-rs/
 ├── Cargo.toml              [workspace] with a shared [workspace.dependencies]
 ├── crates/
-│   ├── chiero-span/ chiero-lex/ chiero-pp/ chiero-ast/ chiero-parse/
+│   ├── chiero-span/ chiero-lex/ chiero-pp/ chiero-probe/ chiero-ast/ chiero-parse/
 │   ├── chiero-sema/ chiero-lower/ chiero-cir/ chiero-solver/ chiero-mem/
 │   ├── chiero-model/ chiero-exec/ chiero-gcov/ chiero-diff/ chiero-select/
 │   ├── chiero-check/ chiero-opt/ chiero-recipe/ chiero-vpp/ chiero-tool/ chiero-cli/

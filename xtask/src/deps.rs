@@ -20,8 +20,12 @@ pub enum Layer {
 pub fn layer(crate_name: &str) -> Option<Layer> {
     Some(match crate_name {
         "chiero-span" => Layer::Foundation,
-        "chiero-lex" | "chiero-pp" | "chiero-ast" | "chiero-parse" | "chiero-sema"
-        | "chiero-lower" => Layer::Frontend,
+        // `chiero-probe` is Frontend because what it produces is a `chiero_pp::Persona` — the
+        // compiler the preprocessor impersonates. It runs a subprocess, which is why it is not
+        // *in* `chiero-pp`: 012 §4.1 keeps the frontend free of them, and both surfaces that need
+        // to ask a real compiler now ask the same crate rather than each growing a probe.
+        "chiero-lex" | "chiero-pp" | "chiero-probe" | "chiero-ast" | "chiero-parse"
+        | "chiero-sema" | "chiero-lower" => Layer::Frontend,
         "chiero-cir" | "chiero-solver" | "chiero-mem" | "chiero-model" | "chiero-exec" => {
             Layer::Core
         }

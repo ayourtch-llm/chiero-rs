@@ -248,8 +248,12 @@ nondeterministic preprocessor would break every golden test
 ### 4.1 The compiler persona, and what the feature queries answer for
 
 **chiero's predefine set is an impersonation of the build compiler, not a self-report.** The
-baked set claims **gcc 13.3 on x86-64**, and `chiero-cli` replaces it wholesale with a real
-`cc -dM` capture when one is available. Everything follows from that:
+baked set claims **gcc 13.3 on x86-64**, and `chiero-probe` replaces it wholesale with a real
+`cc -dM` capture when one is available — **keyed on the target flags**, because `__AVX2__` and
+`__SSE4_2__` exist only under the right `-march` and VPP compiles one source repeatedly under
+several ([060 §1.1](060-vpp-integration.md)). Running the compiler is that crate's whole job:
+`chiero-pp` reads the text and never spawns a process, and there is exactly one probe rather than
+one per surface. Everything follows from that:
 
 - `__has_attribute(x)` and `__has_builtin(x)` answer **what the impersonated compiler
   recognizes**, never what chiero models. chiero acts on four attributes and models a handful of

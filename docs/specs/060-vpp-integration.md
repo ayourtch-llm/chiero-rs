@@ -183,8 +183,24 @@ that silently skips 30% is not, and only measurement distinguishes them.
    `-nostdinc` are collected into `TranslationUnit::unhandled` rather than dropped; the
    first two of those have no representation in `chiero_pp::Config` at all, so that gap is
    in the config type, not in the ingest.
-2. A source compiled under 3 `CLIB_MARCH_VARIANT`s yields 3 `TranslationUnit`s with
-   distinct `march`, and no index keyed on path alone collapses them.
+2. ✅ **Met 2026-08-08** — `crates/chiero-vpp/tests/multiarch.rs`, and the structural half in
+   `builddb.rs`. A source compiled under several `CLIB_MARCH_VARIANT`s yields one
+   `TranslationUnit` each, `units_for` returns all of them, and each carries the target
+   flags it was compiled with.
+
+   **The field is `target_flags: Vec<String>`, not the `march: Option<Symbol>` §1 sketches**,
+   because `-march` is not the only flag that selects a persona — `-mavx2` and `-mtune` are
+   handed over the same way — and **only the compiler knows what each implies**. They go to a
+   `cc -dM -E` probe uninterpreted.
+
+   ⚠️ **The structural half alone does not meet this contract, and for a while it was all
+   there was.** `pp_config` left the persona baked, so all N units of a source preprocessed
+   to the *same* program: `__AVX2__` was undefined in every one, and that is the guard on
+   every 32-byte vector type in vppinfra. A wrongly-taken `#if` branch emits no diagnostic, so
+   nothing failed. `pp_config` now takes a [`chiero_probe::Probe`] and the join is
+   unskippable; the test asserts two variants of one source preprocess to *different*
+   programs, and that the probe runs once per **distinct** flag-set (5 for VPP's 1967 units)
+   rather than once per unit.
 3. A finding in a multiarch function names its variant.
 4. `clib_mem_alloc` produces exactly one state (no NULL branch); `malloc` in the same
    program produces two.
