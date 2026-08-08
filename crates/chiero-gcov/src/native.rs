@@ -1000,12 +1000,21 @@ fn line_counts(f: &NoteFunction, arc_counts: &[u64], blocks: &[u64]) -> Function
 
     // `accumulate_line_info`, for the lines this function attributed a block to.
     let succ = succ_lists(f);
+    // Predecessor map, built once. **Tried twice before and reverted twice**, because
+    // `cycles_count` and then the conservation fixpoint each dominated it. Both are fixed now, so
+    // the question is genuinely new — and the counter, not the diff, decides it.
+    let mut preds: Vec<Vec<usize>> = vec![Vec::new(); f.blocks as usize];
+    for (i, a) in f.arcs.iter().enumerate() {
+        if let Some(v) = preds.get_mut(a.to as usize) {
+            v.push(i);
+        }
+    }
     let mut graphed: IndexMap<(String, u32), u64> = IndexMap::new();
     for (key, bs) in &on_line {
         let mut count: u64 = 0;
         for &b in bs {
-            for (i, a) in f.arcs.iter().enumerate() {
-                if a.to == b && !bs.contains(&a.from) {
+            for &i in preds.get(b as usize).into_iter().flatten() {
+                if !bs.contains(&f.arcs[i].from) {
                     count = count.saturating_add(arc_counts[i]);
                 }
             }
