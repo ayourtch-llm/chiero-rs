@@ -1602,6 +1602,12 @@ typing the paths ever would.
 > cargo test -p chiero-gcov --test growth -- --ignored --nocapture
 > ```
 >
+> ✅ **All three re-run and confirmed at `91d0260` (2026-08-08), so these are verified numbers and
+> not remembered ones:** `preprocess_corpus` 1967/1967, 0 panicked, **0 diagnosed**, 792 404 723
+> tokens — byte-identical to the run before it, which is how we know the `__SSE__`/`__SSE2__`
+> predefines were already in that one; `persona_gap` **0 gaps**, 15 values compared, 1 deliberate
+> difference; `growth` fails as intended at 14.0x / 31.4x.
+>
 > **They ask three different questions and each found something the others structurally could
 > not** — the corpus gate cannot see a wrongly-taken `#if` branch (it emits no diagnostic), and
 > neither of the first two can see a cost curve. Do not treat any one of them as coverage for
