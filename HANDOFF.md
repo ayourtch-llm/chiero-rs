@@ -2076,6 +2076,33 @@ typing the paths ever would.
    `"canceled"` — so the string separates *a limit* from *a theory declined*, and only the
    armed budget says which limit.
 
+5h. 🆕 **The dominant finding class on `vnet/` is a false positive, and its cause is
+   architectural.** Sampling the 44 findings — nobody had — shows most of the 17 `out-of-bounds`
+   are one shape: *"N-byte access at offset 0 of the M-byte unnamed local"*, M < N.
+
+   Worked through on `vnet/crypto/node.c`'s `crypto_dequeue_frame`, which calls a **function
+   pointer** — `(hdl) (vm, &n_elts, &enqueue_thread_idx)` — passing the address of a `u32`. The
+   envelope names the cause itself: `max_indirect (16) reached` and `unresolvable callee`. So
+   chiero dispatched the indirect call to a candidate declaring a wider pointee, and that
+   candidate's 8-byte store landed in a 4-byte local.
+
+   ⚠️ **The candidate filter cannot catch this, and that is a consequence of a locked decision,
+   not an oversight.** The rule is `(CTy::Ptr, Value::Ptr(_)) => true` — any pointer parameter
+   accepts any pointer argument — and it can be no sharper, because **020 §4.13b makes CIR
+   pointers untyped**: the pointee type lives on `Load`/`Store`, so a call site does not record
+   whether an argument was `u32 *` or `u64 *`.
+
+   📌 **A design that fits the evidence rather than reopening §4.13b:** an indirect-call candidate
+   whose *own* access faults past the extent of an object the caller passed is, by that fact,
+   the wrong candidate — a real program cannot have made that call. Using the fault to **reject
+   the candidate** rather than to report a finding costs nothing when the candidate is right and
+   removes the class when it is wrong. Worth designing before implementing; it interacts with
+   `max_indirect` and with what "the search was cut" then means.
+
+   The honesty machinery is doing its job throughout — fidelity is `Approximated`, never `Exact`,
+   and the assumptions name `max_indirect` and the unresolvable callee. **This is noise a reader
+   must filter, not a claim chiero got wrong**, which is a different and much smaller failure.
+
 6. **`InstKind::Call` carries no result type**, so an indirect call's result width is whatever
    candidate ran. The arity and parameter-type filters cut the wildest cases and cannot close it;
    the engine survives the rest by degrading. The real fix is a CIR change — **135 sites**
