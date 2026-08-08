@@ -2225,32 +2225,39 @@ typing the paths ever would.
    §11.3's rule applies: **do not fix the site; ask which read path does not end in a stable
    symbol across a fork.**
 
-   ✅ **Measured, 2026-08-08 — with one claim retracted below.** Instrumenting the loads:
+   ✅ **MEASURED AT THE MEMORY BOUNDARY, 2026-08-08** — after two wrong mechanisms guessed from
+   reading source:
 
    ```text
-   LOAD #0 INVENTED       <- the guard's read: memory produced nothing
-   LOAD OK term=Term(4)   <- the subscript's read: the real term
+   READ obj=2 off=0 value=Some(Term(3))   raw=[] live=[]   <- the guard's load
+   READ obj=2 off=0 value=Some(Term(27))  raw=[] live=[]   <- the subscript's load
    ```
 
-   The first read after the unmodeled call produces no value and chiero **invents** one; the
-   second returns a real term, so **the guard constrains a symbol nothing else uses**. Confirmed
-   the only way that settles it: adding one load **before** the call makes the reproduction pass.
-   The call does havoc (`ModelApproximate`, as VPP's does) and the object ends up
-   **`Array`-promoted**, matching VPP's `unwitnessed` text ("whose value is a whole array rather
-   than a number"). This explains **19 of the 44** `vnet/` findings.
+   **Two reads of one address return different terms**, no faults, on the non-null path. The
+   guard binds `Term(3)`; the subscript indexes with `Term(27)`; nothing relates them, so index 6
+   is satisfiable and the pointer lands at offset 48. This explains **19 of the 44** `vnet/`
+   findings.
 
-   ⚠️⚠️ **RETRACTED: "the havoc's write fails and the loop breaks silently".** I committed that as
-   the mechanism and it is wrong — inferred from reading `havoc_range_reporting`, not measured.
-   Instrumenting that loop shows it **never runs** on this path: zero writes. The havoc takes
-   `havoc_object`'s promoting path instead, which is also why the object is `Array`-promoted.
+   Three controls, each measured:
 
-   ❓ **So *why* the first read of an `Array`-promoted lazy object yields nothing is open.** After
-   two wrong mechanisms on this entry — both plausible, both from reading rather than measuring —
-   the next step is an instrumented run. ⚠️ **Do not assert a mechanism here without measuring
-   it.** That is twice.
+   | change | result |
+   |---|---|
+   | remove the `call` | **passes** — a lazy object alone is stable |
+   | add a load *before* the call | **passes** — the object is materialised first |
+   | `--entry-ptr-nonnull`, as the VPP run used | still fails — the null path is not it |
 
-   📌 021 §6's family regardless: a read path that does not end in a symbol. The fix is a design
-   question and belongs against 021 §6 rather than patched where it shows.
+   **The ingredient is a lazy object plus an unmodeled call.** The call's havoc promotes the
+   object, and reads afterwards mint a fresh symbol each time instead of returning the one that
+   is there.
+
+   ⚠️⚠️ **Two mechanisms were asserted on this entry before this and both were wrong** —
+   *"havoc'd reads are unstable"* and *"the havoc's write fails and the loop breaks silently"* —
+   each plausible, each taken from reading the source. The `READ` line above is the first
+   statement here measured at the boundary the values actually cross. **On this entry, instrument
+   the boundary; do not reason about the code.**
+
+   📌 021 §6's family: a read path that does not end in *the same* symbol. The fix belongs there
+   as a design question, not at the site.
 
    *(Historical: the blocker before this was a missing instrument, not a missing idea.)* Settling it needs the
    *actual lowered CIR* for `format_vnet_dev_counter_name` — which term the guard constrains and

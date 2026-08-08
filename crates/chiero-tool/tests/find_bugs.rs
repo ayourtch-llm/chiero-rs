@@ -765,30 +765,36 @@ entry:
 /// | the same with the guard's `udiv 40/8` unfolded | constrained |
 /// | **lazy object + havoc + guard** | **offset 48** — this test |
 ///
-/// ✅ **What is measured, and only that:**
+/// ✅ **Measured, at the memory boundary, after two wrong mechanisms guessed from reading:**
 ///
 /// ```text
-/// LOAD #0 INVENTED       <- the guard's read: memory produced nothing
-/// LOAD OK term=Term(4)   <- the subscript's read: the real term
+/// READ obj=2 off=0 value=Some(Term(3))   raw=[] live=[]     <- the guard's load
+/// READ obj=2 off=0 value=Some(Term(27))  raw=[] live=[]     <- the subscript's load
 /// ```
 ///
-/// The first read after the unmodeled call produces no value and chiero **invents** one; the
-/// second returns a real term. The guard therefore constrains a symbol nothing else uses.
-/// Confirmed the only way that settles it: adding one load **before** the call makes this test
-/// pass.
+/// **Two reads of one address return different terms**, with no faults, on the non-null path.
+/// The guard binds `Term(3)`; the subscript indexes with `Term(27)`; nothing relates them, so
+/// index 6 is satisfiable and the pointer lands at offset 48.
 ///
-/// The call *does* havoc — the envelope carries `ModelApproximate`, as VPP's does — and the
-/// object ends up **`Array`-promoted**, which is what VPP's `unwitnessed` text says too
-/// ("whose value is a whole array rather than a number").
+/// Three controls, each measured:
 ///
-/// ⚠️ **What is NOT established, after one wrong guess already:** *why* the first read of an
-/// `Array`-promoted lazy object yields nothing. It is **not** `havoc_range_reporting`'s
-/// `Symbolic` fill failing — instrumenting that loop shows it never runs here, so the havoc
-/// takes `havoc_object`'s promoting path instead. Anything more specific needs measuring, not
-/// reasoning.
+/// | change | result |
+/// |---|---|
+/// | remove the `call` | **passes** — a lazy object alone is stable |
+/// | add a load *before* the call | **passes** — the object is materialised first |
+/// | `--entry-ptr-nonnull` (as the VPP run used) | still fails, so the null path is not it |
 ///
-/// 📌 021 §6's family regardless: a read path that does not end in a symbol, and a guard that
-/// binds an invented value constrains nothing.
+/// So the ingredient is **a lazy object plus an unmodeled call**. The call's havoc promotes the
+/// object, and reads of it afterwards mint a fresh symbol each time rather than returning the
+/// one already there.
+///
+/// ⚠️ **Two mechanisms were asserted here before this and both were wrong** — "havoc'd reads are
+/// unstable" and "the havoc's write fails and the loop breaks silently" — each plausible, each
+/// read out of the source rather than measured. The `READ` line above is the first statement on
+/// this entry taken at the boundary where the values actually cross.
+///
+/// 📌 021 §6's family: a read path that does not end in *the same* symbol. The fix belongs there
+/// as a design question, not at this site.
 #[test]
 #[ignore = "reproduces an open defect; see the table above"]
 fn probe_lazy_two_loads() {
@@ -821,7 +827,9 @@ bb2:
 }
 
 func @opaque(%0: ptr) -> void";
-    let env = find_bugs(&m(M), &cfg("f"));
+    let mut c = cfg("f");
+    c.entry_ptr_nonnull = true;
+    let env = find_bugs(&m(M), &c);
     let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
     let msgs: Vec<String> = v["result"]["findings"]
         .as_array()
