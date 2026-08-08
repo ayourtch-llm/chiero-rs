@@ -1588,14 +1588,30 @@ typing the paths ever would.
 > panics on the C standard's own worked example, after four consecutive widenings of VPP-shaped
 > corpora had begun returning honest zeros. §11.3 carries the general form.
 >
-> **State: 2026-08-07 — `./check.sh` GREEN at 2228 passed across 264 suites, fmt and clippy
-> clean, and the gate now takes **3m56s** rather than 6m51s.** That is the first run verified against all three CI legs; the tree had been **red in
-> CI** (26 fmt diffs, 2 clippy errors) while the old one-leg script called it green. Closed this
-> session: `MemFault::BadRange`; 023 §8's `max_solver_rlimit` and `max_memory_objects` — with
-> which **every budget in that sketch is built**; `--solver-rlimit` on the three commands that
-> run a solver; and — the biggest of them — **the CIR verifier's super-quadratic `dominators`**,
-> which was what VPP's last two `timeout` rows actually were. The plugin sweep now has **zero**
-> `timeout` rows.
+> **State: 2026-08-08 — `./check.sh` GREEN at 2229 passed across 264 suites, fmt and clippy
+> clean, gate 3m56s (was 6m51s).** Verified on all three CI legs and pushed; the tree had been
+> **red in CI** (26 fmt diffs, 2 clippy errors) while the old one-leg script called it green.
+>
+> **Closed:** `MemFault::BadRange`; 023 §8's `max_solver_rlimit` and `max_memory_objects` — with
+> which **every budget in that sketch is built**; `--solver-rlimit` on the three commands that run
+> a solver; the CIR verifier's **super-quadratic `dominators`** and seven more scans beside it,
+> which is what VPP's `timeout` rows actually were; `vars_of` paying for the whole arena on every
+> solver query; `globals_at_initial_value`, so a `proven: true` finding names the premise it rests
+> on; `[profile.dev] opt-level = 2`; and `pick_entries.py --built-only`.
+>
+> ⚠️ **The recurring lesson of this stretch, four times over: chiero was right and the corpus or
+> the environment was wrong.** A duplicate definition, a missing declaration, a stale generated
+> header, and a function behind `#if SESSION_DEBUG > 0` — every one looked like a frontend gap and
+> gcc agreed with chiero on all of them. **Check a `failed` row against gcc before believing it is
+> ours.**
+>
+> ⚠️ **And three tests that could not fail**, each caught only by mutating *after* green: a ratio
+> of durations (load-sensitive), a counter that was identical on the defective code, and a
+> wall-clock bound that stopped discriminating when the build got faster. §11.1 carries them.
+>
+> **Open leads, none blocking:** the 10 658-binding witness on `nsh_md2_encap` (§9.1, four
+> measured dead ends and the structural reason for them); the VPP build directory is **stale**;
+> `pick_entries.py` names functions the preprocessor removes.
 >
 > *Earlier in the session, at 2215/263, measured after the `BadRange` closure:* Up from 2154 at the previous session's start and 2193/258 before the
 > last two preprocessor closures. Earlier in the session: §7.11's seven waves over the
