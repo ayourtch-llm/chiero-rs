@@ -1,6 +1,9 @@
 //! C preprocessing (translation phase 4) with macro provenance.
 
 pub mod features;
+pub mod persona;
+
+pub use persona::Persona;
 
 use chiero_lex::{EncPrefix, LexConfig, LexSession, PpToken, PpTokenKind, Punct, Symbol};
 use chiero_span::{ExpnCtx, ExpnKind, FileId, MacroId, SourceMap, Span};
@@ -24,8 +27,11 @@ pub struct Config {
     pub system_paths: Vec<PathBuf>,
     pub max_include_depth: usize,
     pub max_macro_expansion_depth: usize,
-    /// Command-line-style object macros, applied after target predefines.
+    /// Command-line-style object macros, applied after the persona.
     pub defines: Vec<(String, String)>,
+    /// **Who chiero is impersonating.** See [`Persona`] — the default is the set chiero has
+    /// always baked, now named and replaceable.
+    pub persona: Persona,
 }
 
 impl Default for Config {
@@ -41,6 +47,7 @@ impl Default for Config {
             max_include_depth: 200,
             max_macro_expansion_depth: 256,
             defines: Vec::new(),
+            persona: Persona::baked(),
         }
     }
 }
@@ -491,77 +498,17 @@ impl Engine {
         ] {
             engine.add_builtin(builtin);
         }
-        for (name, value) in [
-            ("__STDC__", "1"),
-            ("__STDC_HOSTED__", "1"),
-            ("__STDC_VERSION__", "201112L"),
-            // **The baked set is a persona: gcc 13.3 on x86-64.** `__GNUC_MINOR__` is not
-            // optional decoration — `features.h` defines `__GNUC_PREREQ(maj,min)` as constant
-            // `0` unless *both* it and `__GNUC__` exist, so omitting it collapsed every version
-            // shield in every glibc header for any consumer that does not populate
-            // `Config::defines` from a real compiler.
-            ("__GNUC__", "13"),
-            ("__GNUC_MINOR__", "3"),
-            ("__GNUC_PATCHLEVEL__", "0"),
-            ("__x86_64__", "1"),
-            ("__x86_64", "1"),
-            // **The platform half of the same persona.** A `__GNUC__ 13` / `__x86_64__` compiler
-            // that denies running on an operating system is not a compiler anyone has. 012
-            // contract 17's corpus run found the cost: VPP's `vppinfra/pmalloc.c` reached
-            // `#error "Unsupported OS"`, so every Linux-only branch in VPP *and* in glibc was
-            // dead and the analysed program was not the shipped one — silently, since a branch
-            // never taken reports nothing.
-            //
-            // ⚠️ **All three spellings, because gcc defines all three.** A first fix here defined
-            // `__linux__` alone and `pmalloc.c` went on erroring: its guard is `#ifdef __linux`.
-            // Guessing which spelling a header uses is not a thing worth doing when gcc will
-            // simply list them (`gcc -dM -E -x c /dev/null`).
-            //
-            // `linux` and `unix` unprefixed are **gnu-mode only** — gcc drops them under
-            // `-std=c11` — and this persona is gnu mode: `__GNUC__` is baked, `__STRICT_ANSI__`
-            // is not, and VPP builds `gnu11`.
-            ("__linux__", "1"),
-            ("__linux", "1"),
-            ("linux", "1"),
-            ("__unix__", "1"),
-            ("__unix", "1"),
-            ("unix", "1"),
-            ("__gnu_linux__", "1"),
-            ("__ELF__", "1"),
-            ("__LP64__", "1"),
-            ("_LP64", "1"),
-            ("__amd64__", "1"),
-            ("__amd64", "1"),
-            // **x86-64 baseline SIMD, and *not* the parked `-march` item.** gcc defines both with
-            // no `-march` at all, at `-march=x86-64-v2` and at `v3` — they do not vary per
-            // translation unit the way `__SSE4_2__` and `__AVX2__` do, so a fixed persona has a
-            // right answer for them. Verified against gcc at all three levels, not assumed.
-            //
-            // Without them `vppinfra/vector.c:8` leaves the global `u32x4_compare_word_mask_table`
-            // undefined — a table that exists in the shipped program and did not exist in the one
-            // chiero analysed — and `clib.h:160` swaps `sfence` for `__sync_synchronize()`.
-            ("__SSE__", "1"),
-            ("__SSE2__", "1"),
-            ("__SIZEOF_POINTER__", "8"),
-            // **The persona had no endianness, and "no endianness" is not neutral — it is
-            // big-endian.** With all three undefined, `#if` reads each as `0`, so *both* of VPP's
-            // real call sites evaluated `0 == 0` and both branches were taken:
-            //
-            // - `vppinfra/byte_order.h:11` tests `== __ORDER_LITTLE_ENDIAN__` — right by accident.
-            // - `srv6-mobile/mobile.h:41` tests `== __ORDER_BIG_ENDIAN__` — **wrong**, and its
-            //   branch defines `BITALIGN2(A,B)` as `A; B` rather than `B; A`, so every bit-field
-            //   struct in that plugin was declared in reverse member order. 020 contract 30's
-            //   class exactly: a layout difference that produces no diagnostic.
-            //
-            // The values are gcc's own (`1234`/`4321`/`3412`), not invented ordinals, because
-            // real code compares against them numerically as well as by name.
-            ("__ORDER_LITTLE_ENDIAN__", "1234"),
-            ("__ORDER_BIG_ENDIAN__", "4321"),
-            ("__ORDER_PDP_ENDIAN__", "3412"),
-            ("__BYTE_ORDER__", "1234"),
-            ("__FLOAT_WORD_ORDER__", "1234"),
-        ] {
-            engine.add_predefined_object(name, value);
+        // **The persona, not a literal.** This was an array here; it is a named, replaceable
+        // value now — see `Persona`. Installed before `Config::defines`, because a `-D` on the
+        // command line beats what the compiler predefines.
+        for (name, value) in engine
+            .config
+            .persona
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect::<Vec<_>>()
+        {
+            engine.add_predefined_object(&name, &value);
         }
         for name in [
             "__has_include",
