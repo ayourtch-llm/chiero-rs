@@ -2256,8 +2256,19 @@ typing the paths ever would.
    statement here measured at the boundary the values actually cross. **On this entry, instrument
    the boundary; do not reason about the code.**
 
-   📌 021 §6's family: a read path that does not end in *the same* symbol. The fix belongs there
-   as a design question, not at the site.
+   📌 021 §6's family: a read path that does not end in *the same* symbol.
+
+   ✅ **And the fix has a specific shape: 021 is silent, so it needs a sentence before it needs
+   code.** §3.1 says a lazily-materialized object is "fully `Yes` with unknown *values*", and
+   contract 7 says reading its bytes yields no finding — **neither says that two reads of one
+   address give the same value.** No written contract is violated by the behaviour above, which
+   is exactly how it survived.
+
+   So the design decision is: *state* that a byte's value is stable within a path once
+   materialized, add it as a contract, and then the implementation follows and is testable. The
+   committed reproduction becomes its test. ⚠️ Do not fix the code first — a rule this basic
+   being absent is why 021 §6's family keeps recurring, and the eleventh instance will land the
+   same way if only the tenth site is patched.
 
    *(Historical: the blocker before this was a missing instrument, not a missing idea.)* Settling it needs the
    *actual lowered CIR* for `format_vnet_dev_counter_name` — which term the guard constrains and
