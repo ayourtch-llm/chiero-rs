@@ -2295,9 +2295,30 @@ typing the paths ever would.
    question rather than a correctness one: is *"this function does not validate its enum
    parameter"* worth a finding?
 
-   ⚠️ **Two of fifteen is evidence, not a characterisation** — thirteen are unexamined, and
-   generalising from a small sample of one message is the mistake corrected immediately above.
-   The remaining lesson stands: **a shared *message* is not a shared *cause*.** `pointer-outside-object` says the offset can leave the object; that can
+   **Four of fifteen sampled now, all the same shape**, and the whole list is consistent with it:
+
+   | site | index | guard |
+   |---|---|---|
+   | `lookup_input_names[lkd->lkd_input]` | field of a lazy object | none |
+   | `dvr_dpo_db[dproto]` | entry parameter, enum type | none |
+   | `qos_source_names[qs]` | `va_arg (*args, int)` | none |
+   | `mfib_entry_src_vfts[msrc->mfes_src]` | field of a lazy object | none |
+
+   Every array in all fifteen is a small `static` dispatch or format table — `*_names`,
+   `*_strings`, `*_vfts`, `*_db`, `*_cfg`. **The class is: a static table indexed by an
+   enum-shaped value that the function does not check.** chiero is right about every one; C's
+   enum type constrains nothing at the ABI, and `va_arg(*args, int)` least of all.
+
+   📌 **So the open question is a policy one, and it belongs to the owner.** These are true, they
+   are numerous, and they are almost certainly not what a reader wants first. Options, none free:
+   accept them as findings; constrain an enum-typed entry value to its declared range (which C
+   does not guarantee and VPP's `format_qos_source` visibly does not); or keep them and **rank**
+   — 050's envelope already carries the machinery to say "true, and here is the premise", which
+   is how `globals_at_initial_value` handles the same tension.
+
+   ⚠️ Eleven remain unread. Four of fifteen is a strong indication and still not a census — the
+   entry above records what it cost to call 19 findings one cause when it was 4. **A shared
+   *message* is not a shared *cause*, and a shared *shape* in four samples is not all fifteen.** `pointer-outside-object` says the offset can leave the object; that can
    happen for as many reasons as there are ways to lose a constraint. The next one needs the same
    treatment from scratch — pick one, `chiero cir` it, instrument the boundary — and not the
    assumption that it is this bug again.
