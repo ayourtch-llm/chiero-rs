@@ -1234,6 +1234,13 @@ fn cycles_count(f: &NoteFunction, succ: &[Vec<usize>], bs: &[u32], arc_counts: &
             cs[i] = arc_counts[i].min(i64::MAX as u64) as i64;
         }
     }
+    // **Membership by index, built once.** `bs.contains(&w)` is O(|bs|) and sits in `circuit`'s
+    // innermost recursion, so it multiplied an already-quadratic call count — measured at
+    // 5 128 004 calls for n=3200 when every block lands on one line (`tests/growth.rs`).
+    let mut in_bs = vec![false; bs.iter().map(|&b| b as usize + 1).max().unwrap_or(0)];
+    for &b in bs {
+        in_bs[b as usize] = true;
+    }
     let mut count: i64 = 0;
     for &start in bs {
         let mut path: Vec<usize> = Vec::new();
@@ -1247,7 +1254,7 @@ fn cycles_count(f: &NoteFunction, succ: &[Vec<usize>], bs: &[u32], arc_counts: &
             start,
             &mut blocked,
             &mut block_lists,
-            bs,
+            &in_bs,
             &mut cs,
             &mut count,
         );
@@ -1264,7 +1271,8 @@ fn circuit(
     start: u32,
     blocked: &mut Vec<u32>,
     block_lists: &mut Vec<Vec<u32>>,
-    bs: &[u32],
+    // Membership by block index: `bs.contains(&w)` was O(|bs|) in this recursion.
+    in_bs: &[bool],
     cs: &mut [i64],
     count: &mut i64,
 ) -> bool {
@@ -1280,7 +1288,7 @@ fn circuit(
         let w = f.arcs[i].to;
         // `w < start` keeps each cycle to the one rotation whose lowest block starts it, which is
         // what makes the enumeration terminate rather than merely deduplicate afterwards.
-        if w < start || cs[i] <= 0 || !bs.contains(&w) {
+        if w < start || cs[i] <= 0 || !in_bs.get(w as usize).copied().unwrap_or(false) {
             continue;
         }
         path.push(i);
@@ -1292,7 +1300,18 @@ fn circuit(
             }
             loop_found = true;
         } else if !path.iter().any(|&e| cs[e] <= 0) && !blocked.contains(&w) {
-            loop_found |= circuit(f, succ, w, path, start, blocked, block_lists, bs, cs, count);
+            loop_found |= circuit(
+                f,
+                succ,
+                w,
+                path,
+                start,
+                blocked,
+                block_lists,
+                in_bs,
+                cs,
+                count,
+            );
         }
         path.pop();
     }
@@ -1302,7 +1321,7 @@ fn circuit(
     } else {
         for &i in succ.get(v as usize).into_iter().flatten() {
             let w = f.arcs[i].to;
-            if w < start || cs[i] <= 0 || !bs.contains(&w) {
+            if w < start || cs[i] <= 0 || !in_bs.get(w as usize).copied().unwrap_or(false) {
                 continue;
             }
             let Some(index) = blocked.iter().position(|&b| b == w) else {
