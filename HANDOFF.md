@@ -1746,6 +1746,28 @@ typing the paths ever would.
    `-march=x86-64-v2`, so `__SSE4_2__` is undefined and `vppinfra/crc32.h` never defines
    `clib_crc32c_with_init`. The other four are two parser/sema gaps in generated API headers.
 
+   🆕 **2026-08-08 — `probe.sh` was run, since this entry names it as a prerequisite to the design
+   rather than part of it. The answer is neither "intrinsics" nor "`#pragma GCC target`".** The
+   five default TUs are clean at 900–1700 ms each. The `-march`-gated ones report **`clean` in
+   1 ms**:
+
+   ```
+   vppinfra/test/aes_cbc.c   [clang, 3 target(s)]  {"status":"clean","ms":1}
+   vppinfra/vector.c         [clang, 1 target(s)]  {"status":"clean","ms":1}
+   vlib/main.c               [clang, 1 target(s)]  {"status":"clean","ms":1670}
+   ```
+
+   ⚠️ **A 1 ms "clean" is not a pass, it is an empty analysis** — the persona compiles almost none
+   of those files, so there is nothing to be clean about. Same class as `--verify-cir` dropping
+   all nine functions of `crc32_5tuple.c`, and the same class as the 8% of VPP the persona was
+   hiding before today's predefine fixes. **So the intrinsics question cannot be asked yet:** the
+   TUs that would answer it are not being analysed at all, and the failure is silent. Fix the
+   configuration first and the question may look different — or may answer itself.
+
+   *(`plugins/nat/cnat/cnat_node_vip.c` reports `NO TARGET`: not built in this configuration, so
+   the `clib_crc32c_with_init` failure named below cannot be reproduced from this build directory
+   either. See the stale-build-directory item.)*
+
    🆕 **2026-08-08 — the missing ingredient now exists, which changes the shape of the design (it
    does *not* unpark it).** When this was parked there was no mechanism that knew which `-march`
    any given TU used. 060 contract 1's `BuildDb` is that mechanism:
