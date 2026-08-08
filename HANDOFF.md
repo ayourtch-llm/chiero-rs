@@ -2211,11 +2211,26 @@ typing the paths ever would.
    two paragraphs up says *"the ratio had not moved, so only the constant had"*, and here not even
    the constant moved.
 
-   **Next reader: start from the curve, not from a reading.** The remaining suspect is Johnson's
-   circuit enumeration (`native.rs` ~1250–1290), where `bs.contains(&w)` and
-   `blocked.iter().position(...)` sit in the innermost recursion of a cycle enumeration that is
-   already superlinear. Whether the fix is membership sets or a different solve is an open
-   question — and the curve now answers it in about two seconds per attempt.
+   **Next reader: do not read. Profile.** Three hypotheses were tried in one session and the
+   ratio moved on none of them:
+
+   | hypothesis | how it looked | ratio after |
+   |---|---|---|
+   | the three `Vec::contains` sites §9.1 named | a scan inside a loop | 15.4x (was 14.7x) |
+   | Johnson's circuit enumeration, ~1250–1290 | `Vec` membership in the innermost recursion | not the path — the curve's input has **no loops at all**, so there are no cycles to enumerate |
+   | `accumulate_line_info`'s arc scan, ~980 | `for (key, bs) in &on_line { for &b in bs { for a in f.arcs` — textbook lines×blocks×arcs | 15.4x, unchanged; **reverted** |
+
+   Each looked obvious. Each was wrong. The third was hoisted into a predecessor map built once
+   per function — the exact fix that took the CIR verifier from hours to 2.4 s — and it changed
+   nothing measurable, so it was reverted rather than left in a numerically sensitive solver as
+   an unproven edit.
+
+   ⛔ **What is actually needed is a profiler, and this machine's `ptrace_scope=1` blocks
+   attaching to a running `cargo test` binary.** The recorded gdb recipe needs the target to be
+   gdb's own *child*, which a test harness is not; `perf` is not installed. Either make the ingest
+   callable from a small standalone binary that gdb can launch directly, or add phase counters to
+   `solve_flow_graph` the way `verify::terminators_examined()` was added. **Counting is what
+   settled the verifier; guessing has now failed here three times running.**
 
    ⛔ *Original entry, kept because its reasoning is the thing that turned out to be wrong:*
    **`chiero-gcov`'s half is blocked on artifacts.** There are **no
