@@ -1491,3 +1491,87 @@ fn march_selects_the_persona_and_therefore_which_functions_exist() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// **A 32-byte vector store past the end of a 16-byte object is caught, from C, `Exact`.**
+///
+/// This path was unreachable until 2026-08-08 and untested after it. VPP's baseline is
+/// `-march=x86-64-v2`, `__AVX2__` is defined only at v3 and above, and none of the pinned 40
+/// entries is compiled at either — so no measurement this project published had ever lowered a
+/// 256-bit vector access.
+///
+/// ⚠️ **And it does not go through the wide-load path anything else tests.** `chiero-exec`'s
+/// `a_width_limit_does_not_mask_a_use_after_free` calls `Memory::read_term(.., 32, ..)` directly;
+/// a `vector_size(32)` access from C lowers to **`copymem`** instead — 020 §4.13b's "no aggregate
+/// values in CIR" applied to vector types, and the reason `unsupported-access-width` never fires
+/// on VPP's vector code. The AVX-512 lowering of one VPP TU holds 7779 `copymem` of 32 bytes or
+/// wider, so this is the shape that half of vppinfra actually produces.
+///
+/// The bug shape is a real one: "adjacent packet overwrite with very big packets" is a VPP fix
+/// in this repo's own replay-candidate list.
+#[test]
+fn a_wide_vector_store_past_the_end_of_an_object_is_caught() {
+    let src = "\
+typedef unsigned char u8x32 __attribute__ ((vector_size (32)));
+typedef unsigned char u8x16 __attribute__ ((vector_size (16)));
+
+void vec_oob (u8x32 *src)
+{
+  unsigned char buf[16];
+  u8x32 *p = (u8x32 *) buf;
+  *p = *src;
+}
+
+void vec_ok (u8x16 *src)
+{
+  unsigned char buf[16];
+  u8x16 *p = (u8x16 *) buf;
+  *p = *src;
+}
+";
+    let f = write("vec_oob.c", src);
+    let p = f.to_str().unwrap();
+
+    let r = run(&[
+        "find-bugs",
+        p,
+        "--entry",
+        "vec_oob",
+        "--entry-ptr-nonnull",
+        "--json",
+    ]);
+    let v = json(&r);
+    let findings = v["result"]["findings"].as_array().expect("findings");
+    let msg = findings
+        .iter()
+        .map(|f| f["message"].as_str().unwrap_or(""))
+        .find(|m| m.starts_with("out-of-bounds"))
+        .unwrap_or_else(|| panic!("no out-of-bounds finding: {v}"));
+    assert!(
+        msg.contains("32-byte") && msg.contains("16 bytes"),
+        "the report names the width that overran and the object it overran: {msg}"
+    );
+    assert_eq!(
+        findings[0]["fidelity"].as_str(),
+        Some("Exact"),
+        "a concrete 32-into-16 store needs no approximation: {v}"
+    );
+
+    // **The negative half.** A checker that flagged every vector store has to fail something,
+    // and this is the assertion written for it — though in practice the message check above
+    // fires first: with a mutant flagging every access of 16 bytes or more, the first
+    // out-of-bounds finding is no longer the 32-into-16 one, so naming the width catches it
+    // before the clean case does. Both were run; the mutant dies twice over.
+    let ok = json(&run(&[
+        "find-bugs",
+        p,
+        "--entry",
+        "vec_ok",
+        "--entry-ptr-nonnull",
+        "--json",
+    ]));
+    assert_eq!(
+        ok["result"]["findings"].as_array().map(Vec::len),
+        Some(0),
+        "a 16-byte vector store into a 16-byte object is in bounds: {ok}"
+    );
+}
