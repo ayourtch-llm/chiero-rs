@@ -2281,8 +2281,23 @@ typing the paths ever would.
    than one cause and I attributed all of it to the first one I found — the fourth time on this
    entry that a whole category got pinned on a single mechanism.
 
-   📌 **The remaining 15 are open, and the lesson is the reusable part: a shared *message* is not
-   a shared *cause*.** `pointer-outside-object` says the offset can leave the object; that can
+   🔍 **Two of the remaining 15 sampled (2026-08-08) — and they are not defects at all.** Both
+   index an array with a value **nothing in the function checks**:
+
+   - `vnet/dpo/lookup_dpo.c`: `lookup_input_names[lkd->lkd_input]`, where `lkd` comes from
+     `lookup_dpo_get(index)` — a lazily-materialized object, so `lkd_input` is unconstrained.
+   - `vnet/dpo/dvr_dpo.c`: `dvr_dpo_db[dproto]`, where `dproto` is an **entry parameter** of enum
+     type indexing a six-element array.
+
+   Neither has a guard. chiero is **right**: call `dvr_dpo_add_or_lock` with `dproto = 9` and you
+   index out of bounds; C's enum type does not stop you. These are true statements conditional on
+   UCSE's premise — the same family as `globals_at_initial_value`, and a **signal-to-noise**
+   question rather than a correctness one: is *"this function does not validate its enum
+   parameter"* worth a finding?
+
+   ⚠️ **Two of fifteen is evidence, not a characterisation** — thirteen are unexamined, and
+   generalising from a small sample of one message is the mistake corrected immediately above.
+   The remaining lesson stands: **a shared *message* is not a shared *cause*.** `pointer-outside-object` says the offset can leave the object; that can
    happen for as many reasons as there are ways to lose a constraint. The next one needs the same
    treatment from scratch — pick one, `chiero cir` it, instrument the boundary — and not the
    assumption that it is this bug again.
