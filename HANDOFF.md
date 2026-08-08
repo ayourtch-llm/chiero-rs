@@ -2256,10 +2256,24 @@ typing the paths ever would.
    statement here measured at the boundary the values actually cross. **On this entry, instrument
    the boundary; do not reason about the code.**
 
-   📌 021 §6's family: a read path that does not end in *the same* symbol.
+   ✅✅ **FIXED 2026-08-08 — 021 contract 7b, written then met.** `materialize_fresh` asked
+   `o.sym_at(k)` (the `Bytes` side) and stored a promoted object's mint into `arr.data` alone, so
+   the question went to one representation and the answer into the other and **every read minted
+   afresh**. The symbol is now recorded on both; `probe_lazy_two_loads` loses its `#[ignore]` and
+   is the contract's test.
 
-   ✅ **And the fix has a specific shape: 021 is silent, so it needs a sentence before it needs
-   code.** §3.1 says a lazily-materialized object is "fully `Yes` with unknown *values*", and
+   📌 **It is `memoize_via`'s bug one field over** — that helper exists because "the
+   initialization lives in an array, so writing the mask was a no-op there", the `init` mask was
+   fixed and `sym` was left. A `sym_via` twin would have been the third copy of one asymmetry
+   waiting for a fourth field, so both sides are written in one place instead.
+
+   ⏭️ **Owed: re-measure the `vnet/` sweep.** It should lose most of the 19
+   `pointer-outside-object` findings; §10 says re-measure after a fix, not only before, and this
+   is exactly the case that rule was written for. The `--built-only` list is `/tmp/vnet_built.tsv`
+   (regenerate with `pick_entries.py --built-only --per-file 1`).
+
+   *(Historical, and the reason the fix landed in this order: 021 was silent, so it needed a
+   sentence before it needed code.)* §3.1 says a lazily-materialized object is "fully `Yes` with unknown *values*", and
    contract 7 says reading its bytes yields no finding — **neither says that two reads of one
    address give the same value.** No written contract is violated by the behaviour above, which
    is exactly how it survived.
