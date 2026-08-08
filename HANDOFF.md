@@ -1648,7 +1648,7 @@ typing the paths ever would.
 > **None of them was visible to the pp-gate**, which has reported 0 findings for weeks: none is
 > about preprocessing *syntax*. A gate that has been green for weeks is an untested surface.
 >
-> **State: 2026-08-08 — `./check.sh` GREEN at 2249 across 269 suites, fmt and clippy clean.**
+> **State: 2026-08-08 — `./check.sh` GREEN at 2257 across 270 suites, fmt and clippy clean.**
 > Verified on all three CI legs and pushed.
 >
 > **This session's closes:** 060 contract 1 (`chiero_vpp::builddb` — VPP's compile database;
@@ -1758,11 +1758,22 @@ typing the paths ever would.
    its own argument, so the command failed outright; and the new test deleted the shared scratch
    directory out from under its neighbours.
 
-   **What is left, and it is now small: per-TU selection.** `BuildDb` already carries the real
-   `-march` for all 1967 VPP compilations in `TranslationUnit::args`. Choosing a `Persona` per TU
-   is a lookup over tested machinery, not a subsystem — and it is what makes 060 contract 2's
-   multiarch 1:N real. Also still open: `frontend` probes once per *invocation*, so a sweep over
-   many TUs would want the persona cached per flag-set.
+   ✅ **Per-TU selection landed too — `TranslationUnit::target_flags`.** Measured on VPP:
+
+       target flags: 1963 of 1967 C units carry one
+       distinct -march: haswell, silvermont, x86-64-v2, x86-64-v3, x86-64-v4
+
+   **Five targets, and every chiero measurement to date used none of them.** That is 060 §1.1's
+   multiarch as a number rather than a warning. Kept apart from `defines`/`include_paths` because
+   they *select a persona* rather than configure the preprocessor — only the compiler knows what
+   `-march=haswell` implies, so they go to a `cc -dM -E` probe uninterpreted.
+
+   **What remains, and it is genuinely small:**
+   - `frontend` probes the compiler once per *invocation*; a sweep over many TUs wants the persona
+     **cached per flag-set** (5 probes, not 1963).
+   - Nothing yet *joins* the two: a sweep still passes one persona for the whole run. The join is
+     `for u in db.c_units() { cfg.persona = persona_for(&u.target_flags) }` — a lookup, and the
+     thing that would finally make 060 contract 2 (multiarch 1:N) real.
 
 1z. **⏸️ Original entry, kept because its reasoning held up.** PARKED at the owner's request
    2026-08-07 — `-march`. Do not start without checking in;
