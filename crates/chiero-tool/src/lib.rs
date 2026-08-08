@@ -1171,6 +1171,34 @@ pub fn find_bugs(module: &chiero_cir::Module, cfg: &BugCfg) -> Envelope {
              check has paths this run did not explore",
         );
     }
+    // **A run that read a global read it at its *initial* value, and that is a premise.**
+    //
+    // chiero gives static storage its C initial value — zero unless stated (C11 6.7.9p10) —
+    // which is exactly right for a program that has just started, and an assumption for one
+    // that begins in the middle, which under UCSE (021 §5) is every run. Whether this entry is
+    // reachable before initialisation runs is a whole-program question and one function cannot
+    // answer it.
+    //
+    // Found on VPP: `handle_get_64bytes` calls through `tb_main.send_data`, a function pointer
+    // in a zero-initialised global that `test_builtins_init` assigns at plugin load. The
+    // dereference is real C and the finding came back `proven: true`, `Exact`, naming no premise
+    // at all. 023 §7's rule cuts both ways — a truncated search may not be called a proof, and a
+    // finding resting on a premise must name it.
+    //
+    // It does **not** cap fidelity, for the same reason `entry_ptr_nonnull` does not: a stated
+    // premise is not an approximation. What it must not do is stay silent.
+    if let Some(names) = globals_premise(module, &run) {
+        env = env.with_assumption(
+            "globals_at_initial_value",
+            &format!(
+                "execution began at `{}`, so {names} held the value C gives static storage \
+                 before anything runs; a caller reached after initialisation sees different \
+                 values, and whether this entry is reachable before it is not a question one \
+                 function can answer",
+                cfg.entry
+            ),
+        );
+    }
     for a in &assumptions {
         env = env.with_assumption(&format!("{:?}", a.kind), &a.detail);
     }
@@ -1438,6 +1466,37 @@ pub fn check_reachable(module: &chiero_cir::Module, cfg: &BugCfg, line: u32) -> 
              line may still be reachable",
         ),
     )
+}
+
+/// The globals a run actually touched, rendered for the assumption above — or `None` when it
+/// touched none, which is the only case where the premise is vacuous.
+///
+/// Named rather than counted while the list is short, because "the finding depends on `tb_main`"
+/// is something a reader can check and "the finding depends on 1 global" is not. Past a handful
+/// the names stop helping and the count is the honest summary.
+fn globals_premise(module: &chiero_cir::Module, run: &chiero_exec::RunResult) -> Option<String> {
+    let mut ids: Vec<chiero_cir::GlobalId> = Vec::new();
+    for s in run.states() {
+        for g in s.globals_touched() {
+            if !ids.contains(&g) {
+                ids.push(g);
+            }
+        }
+    }
+    if ids.is_empty() {
+        return None;
+    }
+    ids.sort_by_key(|g| g.0);
+    let named: Vec<String> = ids
+        .iter()
+        .filter_map(|g| module.globals.get(g.0 as usize))
+        .map(|g| format!("`{}`", g.name))
+        .collect();
+    Some(if named.len() == ids.len() && ids.len() <= 4 {
+        format!("the global(s) {}", named.join(", "))
+    } else {
+        format!("{} global(s) this run read", ids.len())
+    })
 }
 
 /// A concrete input that follows this state's path.

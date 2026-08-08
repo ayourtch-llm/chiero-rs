@@ -680,6 +680,21 @@ pub struct State {
 }
 
 impl State {
+    /// The file-scope variables this state has actually **touched**, in first-use order.
+    ///
+    /// Populated lazily on first access (021 §5), so a non-empty answer means the run read or
+    /// wrote a global rather than merely that the module declares one.
+    ///
+    /// **It exists to let a report name a premise.** chiero gives static storage its C initial
+    /// value — zero unless stated — which is correct for a program that has just started and is
+    /// an *assumption* for a run that begins in the middle of one, which under UCSE is every
+    /// run. Whether the entry is reachable before initialisation is a whole-program question,
+    /// and one function is not enough to answer it: a `proven: true` null dereference on VPP's
+    /// `handle_get_64bytes` rested on exactly this and said nothing about it.
+    pub fn globals_touched(&self) -> Vec<GlobalId> {
+        self.global_objs.keys().copied().collect()
+    }
+
     pub fn object_size_for_test(&self) -> Option<u64> {
         self.stack
             .last()?

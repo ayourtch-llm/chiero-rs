@@ -716,4 +716,21 @@ entry:
         "a finding that depends on a global's initial value has to name that premise; the \
          envelope carried {assumptions} assumption(s) and none mentions globals: {text}"
     );
+    assert!(
+        text.contains("`g`"),
+        "and names which global, because \"depends on `g`\" is checkable and \"depends on 1 \
+         global\" is not: {text}"
+    );
+
+    // **And it stays silent when there is nothing to state.** Without this the premise becomes
+    // an unconditional line on every envelope, which is how a real qualification turns into
+    // noise a reader learns to skip — the failure mode 050 §3 is written against. A mutant
+    // dropping the empty check survived until this assertion existed.
+    let clean = find_bugs(&m(CLEAN), &cfg("f"));
+    let cv: serde_json::Value = serde_json::from_str(&clean.to_json()).expect("valid JSON");
+    assert!(
+        !cv["assumptions"].to_string().contains("global"),
+        "a run that touched no global must not claim a premise about globals: {}",
+        cv["assumptions"]
+    );
 }
