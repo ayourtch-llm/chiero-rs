@@ -2159,12 +2159,30 @@ typing the paths ever would.
    havoc'd object was promoted to an SMT **`Array`** (020 §4.13b's `ite_threshold`), and there is
    no witness because a witness binds numbers.
 
-   ❓ **Which is a refinement of the refuted hypothesis, not a repeat of it.** The probe that
-   refuted it used a small object in **`Bytes`** representation. Whether repeated reads are equally
-   stable through the **`Array`** representation is a *different* question and untested. Same
-   decisive shape — two loads of one address, branch on `a != b` — but the object must first be
-   promoted past the threshold. ⚠️ If it is stable there too, the guard-versus-subscript story is
-   dead entirely and the next suspect is how the guard's comparison is built over an array select.
+   ✅ **Tested through `Array` too, and this is the answer.** Same shape — promote an object past
+   `ite_threshold` with a symbolic-offset store, then two `load i32` of one address, branch on
+   `a != b`. `Bytes` gave **one** state; `Array` gives **two**, `fidelity: Unknown`, and the
+   assumptions say it outright, once per load:
+
+   > `a load produced no value, so its result is invented`
+
+   **A load from an `Array`-promoted object does not produce a value, and the result is invented
+   per load** — so two reads of one address get two unrelated fresh symbols, their inequality is
+   satisfiable, and the branch forks. That is why `c->unit < ARRAY_LEN (units)` never constrains
+   the subscript: the guard binds one invented value and the subscript reads another.
+
+   ⚠️ **The earlier hypothesis was right about the effect and wrong about the cause**, which is
+   why the refutation had to be kept: havoc'd `Bytes` reads *are* stable, and the instability is
+   the `Array` read path inventing rather than returning.
+
+   📌 **This is §11.3's recurring family, and the rule there says what to do**: *"chiero not
+   knowing a value is not the program failing to write one… when you find the ninth, do not fix
+   the site — ask which read path does not end in a symbol."* This is that read path. Not knowing
+   the value is honest; inventing a **different** one on each read of one address is not — memory
+   is memory within a path.
+
+   The fix is a design question (return a stable symbol per address, or refuse the read and say
+   so) and it should be settled against 021 §6 rather than patched where it shows.
 
    Between this and 5h, **36 of the 44 `vnet/` findings are characterised**: one class traced to
    an architectural cause, one to a precise open question. Neither is chiero claiming something
