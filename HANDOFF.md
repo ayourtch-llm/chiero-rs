@@ -1823,12 +1823,25 @@ typing the paths ever would.
    whatever `copymem` does with an uninitialised source does not go through `materialize_fresh`
    at all.
 
-   **Three fixtures, three misses, and the entry says so rather than shipping the fourth.**
-   Ruled out: a byte-at-a-time loop through a symbolic entry pointer (1 binding); a wide
-   `copymem` out of an uninitialised alloca (0 bindings). **The next step is not another guess** —
-   it is to find what in `nsh_md2_encap` calls `materialize_fresh` ten thousand times, and the
-   cheap way is the debug binary with a breakpoint or a print at that site on the real input,
-   since the real case is a single reproducible command.
+   ✅ **Observed rather than guessed, 2026-08-08.** A temporary `eprintln!` in
+   `materialize_fresh`, run on the real command: **nine calls, and one of them is
+   `obj=2 off=0 size=10640`.** So it is *one wide access to a large lazy object* minting 10 640
+   symbols in a single call — not ten thousand small ones. Four distinct objects touched in all.
+
+   A synthetic `copymem` of 10 640 bytes **out of an entry-pointer parameter** reproduces that
+   call exactly (`FRESH obj=2 off=0 size=10640`) — the lazy object is the ingredient the earlier
+   attempts lacked, since two stack allocas never reach `materialize_fresh` at all.
+
+   ⚠️ **And its witness is still empty, which is the remaining question.** Minting 10 640 symbols
+   is reproduced; turning them into 10 657 *bindings* is not. Both cases mint; only the real one
+   reports. The binding list is built from `s.inputs` plus `s.mem.minted_symbols()` around
+   `chiero-exec/src/lib.rs:2824`, and `mentioned` (occurrence in the path condition) decides
+   `pinned` rather than inclusion — so **what differs is upstream of the filter**, and that is
+   where the next look goes.
+
+   Ruled out so far: a byte-at-a-time loop through a symbolic entry pointer (1 binding); a wide
+   `copymem` between two stack allocas (0 bindings, and no `materialize_fresh` at all); a wide
+   `copymem` out of an entry pointer (0 bindings, **but the right mint**).
 
 5c. 🆕 **Three `timeout` rows in `plugins/nsh/`** — `format_nsh_header`, `nsh_md2_decap`,
    `nsh_md2_encap`, from the widened sweep (2026-08-08). The verifier fix removed the cause the
