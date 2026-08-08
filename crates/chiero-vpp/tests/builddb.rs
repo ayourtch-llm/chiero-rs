@@ -6,15 +6,23 @@
 //! written and is false now. The database does not exist as a *file* even today, but
 //! `ninja -C <build> -t compdb` emits it on stdout in 90 ms, so the ingest reads text, not a path.
 //!
-//! **Every shape asserted below was measured in VPP's own database first** (6235 entries, 2226 of
-//! them C), so these fixtures are miniatures of real rows rather than invented ones:
+//! **Every shape asserted below was measured in VPP's own database first**, so these fixtures are
+//! miniatures of real rows rather than invented ones:
 //!
 //! | measured in VPP | fixture that pins it |
 //! |---|---|
-//! | 259 of 2226 entries have a **relative** `file` | `a_relative_file_resolves_against_its_directory` |
-//! | 275 sources appear under **more than one** TU (max 9) | `one_source_can_produce_several_translation_units` |
+//! | 2902 of 6235 entries are **not compilations** | `a_row_that_is_not_a_compilation_is_counted_not_analysed` |
+//! | 208 of 1562 C sources build **more than once** (max 5) | `one_source_can_produce_several_translation_units` |
 //! | 5495 `-D` and 7857 `-I`, and **nothing else** configuration-bearing | `defines_and_include_paths_are_extracted_from_the_command` |
-//! | 2226 TUs carry only **418** distinct (defines, includes) | `two_units_sharing_a_configuration_share_a_config_id` |
+//! | 1967 C units carry only **423** distinct (defines, includes) | `two_units_sharing_a_configuration_share_a_config_id` |
+//!
+//! ⚠️ **The first row is a correction, and it is the reason to write the numbers down.** The
+//! first measurement here said "6235 entries, 2226 of them C" and fed that into these docs. It
+//! was wrong: `ninja -t compdb` with no rule argument dumps *every* edge, and 2902 of VPP's are
+//! phony order-only ones with an empty `command`. The real figure is **1967 C compilations**.
+//! The mistake was caught only because the ignored real-corpus test below asserted every unit has
+//! an include path, and 259 rows had none — a test that had merely counted would have agreed with
+//! the wrong number forever.
 
 use chiero_vpp::builddb::BuildDb;
 use std::path::{Path, PathBuf};
@@ -31,9 +39,13 @@ fn db(entries: &[String]) -> BuildDb {
     BuildDb::parse(&format!("[{}]", entries.join(",\n"))).expect("fixture parses")
 }
 
-/// **259 of VPP's 2226 C entries name their source relatively** (`CMakeFiles/plugins/nat/…`),
-/// and the rest absolutely. A reader that takes `file` at face value looks for a quarter of the
-/// corpus in whatever directory it happens to be running from.
+/// A relative `file` is resolved against `directory`; an absolute one is left alone.
+///
+/// ⚠️ **No VPP compilation actually needs this** — every one of its 1967 C units names its source
+/// absolutely. The 148 relative paths in VPP's database all belong to the phony rows the test
+/// below excludes, which is the opposite of what the first measurement here claimed. It stays
+/// because CMake's own `compile_commands.json` writer *does* emit relative paths and the format
+/// permits them; it is kept honest by saying so rather than by citing evidence it does not have.
 ///
 /// The negative half matters as much: an already-absolute `file` must *not* be re-rooted.
 #[test]
@@ -58,8 +70,8 @@ fn a_relative_file_resolves_against_its_directory() {
 }
 
 /// 060 §1.1: "**The source→TU mapping is 1:N, not 1:1.** Every index keyed by file path is
-/// wrong." Measured: 275 of VPP's 1710 distinct C sources compile more than once, the worst
-/// nine times over.
+/// wrong." Measured: 208 of VPP's 1562 distinct C sources compile more than once, the worst
+/// five times over.
 ///
 /// So the lookup returns *all* of them, and the test would fail on any implementation that
 /// keyed a map by path — the classic shape, where the last row silently wins.
@@ -132,7 +144,7 @@ fn defines_and_include_paths_are_extracted_from_the_command() {
 /// analysis." So the id must be a function of *exactly* the configuration-bearing flags:
 /// hashing the whole command line would make every TU unique and buy nothing.
 ///
-/// Measured on VPP: **2226 C TUs carry 418 distinct configurations**, a 5.3× collapse. That
+/// Measured on VPP: **1967 C TUs carry 423 distinct configurations**, a 4.6× collapse. That
 /// number is the contract's whole value, and it only exists if `-o`, `-MF`, `-Wall` and friends
 /// are excluded. Both directions are asserted, because an id that ignored `-D` too would also
 /// pass the first half.
@@ -237,5 +249,153 @@ fn a_database_that_is_not_one_is_an_error_rather_than_an_empty_answer() {
     assert!(
         BuildDb::parse("[]").unwrap().units().is_empty(),
         "but empty *is* empty"
+    );
+}
+
+/// **A flag that would change the configuration and is not modelled must say so.**
+///
+/// None of these occurs in VPP's database — measured, not assumed — so implementing them would
+/// be building for an imagined caller. Dropping them silently, though, hands back a confidently
+/// wrong `Config` on some other project. `-U` and `-include` have no representation in
+/// `chiero_pp::Config` at all, so this is the honest place to stop.
+///
+/// The separated spelling must also eat its argument, or `-isystem /usr/inc` leaves `/usr/inc`
+/// looking like a positional source file.
+#[test]
+fn a_configuration_flag_this_ingest_does_not_model_is_named_rather_than_dropped() {
+    let d = db(&[entry(
+        "/src/a.c",
+        "/b",
+        "-DKEPT -UGONE -isystem /usr/inc -I/src -include prelude.h -nostdinc",
+        "a.o",
+    )]);
+    let u = &d.units()[0];
+    assert_eq!(
+        u.unhandled,
+        vec!["-UGONE", "-isystem", "-include", "-nostdinc"],
+        "each unmodelled configuration flag is reported"
+    );
+    assert_eq!(u.defines, vec![("KEPT".to_string(), "1".to_string())]);
+    assert_eq!(
+        u.include_paths,
+        vec![PathBuf::from("/src")],
+        "-isystem's argument was consumed, not mistaken for a path or a source"
+    );
+    assert!(
+        !u.args.contains(&"/usr/inc".to_string()) || u.unhandled.contains(&"-isystem".to_string()),
+        "sanity: the argument is still in args for a caller that wants it"
+    );
+}
+
+/// **A row that describes no compilation is not a translation unit.**
+///
+/// `ninja -t compdb` with no rule argument dumps *every* edge, and 2902 of VPP's 6235 are phony
+/// order-only ones — empty `command`, an `output` like
+/// `cmake_object_order_depends_target_vlibmemoryclient`, and a `file` that is a generated source
+/// rather than an input. Treating them as units gives 2226 "C entries" instead of 1967, and each
+/// carries no defines and no include paths — a configuration that would analyse a different
+/// program in perfect silence.
+///
+/// **Counted, not dropped.** A filter that quietly shrinks a corpus is one nobody can check, so
+/// the count is part of the answer and a caller can see what it did not get.
+#[test]
+fn a_row_that_is_not_a_compilation_is_counted_not_analysed() {
+    let d = BuildDb::parse(
+        r#"[
+        {"directory":"/b","command":"clang -DA -I/src -c /src/a.c","file":"/src/a.c","output":"a.o"},
+        {"directory":"/b","command":"","file":"CMakeFiles/gen/x.api.c","output":"cmake_object_order_depends_target_q"},
+        {"directory":"/b","command":"   ","file":"/src/z.c","output":"phony"}
+        ]"#,
+    )
+    .unwrap();
+    assert_eq!(
+        d.units().iter().map(|u| u.src.clone()).collect::<Vec<_>>(),
+        vec![PathBuf::from("/src/a.c")],
+        "only the row with a compiler invocation is a unit"
+    );
+    assert_eq!(
+        d.non_compilations(),
+        2,
+        "and the rest are counted, not silently gone"
+    );
+}
+
+/// The real thing. Ignored because it needs a built VPP, and 070 §4 gives an ignored test no
+/// contract credit — the gate-runnable fixtures above carry contract 1; this carries the
+/// *numbers*, which are what make the fixtures more than invention.
+///
+/// Run it with `cargo test -p chiero-vpp -- --ignored`. It regenerates the database rather than
+/// reading a file, because VPP's build writes none.
+#[test]
+#[ignore = "external corpus — needs a built VPP tree"]
+fn vpps_own_compile_database_parses_and_every_c_unit_is_configured() {
+    let build = Path::new("/home/ubuntu/vpp/build-root/build-vpp-native/vpp");
+    if !build.join("build.ninja").exists() {
+        eprintln!("no VPP build at {}; skipping", build.display());
+        return;
+    }
+    let out = std::process::Command::new("ninja")
+        .args(["-C", build.to_str().unwrap(), "-t", "compdb"])
+        .output()
+        .expect("ninja -t compdb");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let d = BuildDb::parse(&String::from_utf8(out.stdout).unwrap()).expect("VPP's database parses");
+
+    let c: Vec<_> = d.c_units().collect();
+    eprintln!(
+        "VPP: {} entries, {} C, {} distinct configs, {} unmodelled-flag units",
+        d.units().len(),
+        c.len(),
+        d.distinct_configs(),
+        c.iter().filter(|u| !u.unhandled.is_empty()).count()
+    );
+
+    // 060 contract 1: *every* TU yields a ConfigId and a resolved include path set.
+    for u in &c {
+        assert!(
+            u.src.is_absolute(),
+            "unresolved source: {}",
+            u.src.display()
+        );
+        assert_ne!(
+            u.config,
+            chiero_pp::ConfigId::default(),
+            "{}",
+            u.src.display()
+        );
+        assert!(!u.include_paths.is_empty(), "{}", u.src.display());
+        assert!(
+            u.unhandled.is_empty(),
+            "{}: {:?}",
+            u.src.display(),
+            u.unhandled
+        );
+    }
+
+    // Loose bounds, not the exact figures: the numbers move when VPP is reconfigured, and a
+    // test that pins them would fail for the wrong reason. What must hold is the *shape* —
+    // a large corpus that collapses hard, and a source→TU mapping that is genuinely 1:N.
+    assert!(c.len() > 1500, "only {} C units", c.len());
+    assert!(
+        d.non_compilations() > 1000,
+        "only {} non-compilation rows — `ninja -t compdb` dumps every edge, so a database \
+         with almost none is not the one this was measured against",
+        d.non_compilations()
+    );
+    assert!(
+        d.distinct_configs() * 3 < c.len(),
+        "{} configs over {} units is barely a collapse; a ConfigId scoped to the whole \
+         command line would look exactly like this",
+        d.distinct_configs(),
+        c.len()
+    );
+    let multi = c.iter().filter(|u| d.units_for(&u.src).count() > 1).count();
+    assert!(
+        multi > 100,
+        "only {multi} units share a source with another"
     );
 }

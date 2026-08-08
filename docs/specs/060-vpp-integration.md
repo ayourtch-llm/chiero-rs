@@ -16,9 +16,17 @@ they determine the `ConfigId` ([012 §3.3](012-preprocessor.md)), which determin
 `#if` branches exist, which determines layout, which determines every offset in the
 analysis.
 
-**The VPP tree at `/home/ubuntu/vpp` is not built yet** — no `compile_commands.json`
-exists — so building it is a prerequisite of the VPP milestone, not something to discover
-mid-implementation.
+~~**The VPP tree at `/home/ubuntu/vpp` is not built yet** — no `compile_commands.json`
+exists~~ — **stale as of 2026-08-08.** VPP is built, and its build still writes no
+`compile_commands.json`, but `ninja -C <build> -t compdb` emits the identical format on
+stdout in 90 ms. So [`chiero_vpp::builddb`](../../crates/chiero-vpp/src/builddb.rs) reads
+**text, not a path**, and no VPP tree needs re-configuring.
+
+⚠️ **`-t compdb` with no rule argument dumps every ninja edge, not every compilation.**
+2902 of VPP's 6235 entries are phony order-only rows — empty `command`, an `output` like
+`cmake_object_order_depends_target_…`, and a `file` naming a *generated* source. Counting
+them gives 2226 "C entries"; the real figure is **1967 C compilations** over 1562 distinct
+sources. `BuildDb` reports the skipped count rather than dropping them silently.
 
 ```rust
 pub struct BuildDb { units: Vec<TranslationUnit> }
@@ -161,8 +169,20 @@ that silently skips 30% is not, and only measurement distinguishes them.
 
 ## 8. Testable contracts
 
-1. `compile_commands.json` from a real VPP build parses, and every TU yields a `ConfigId`
-   and a resolved include path set.
+1. ✅ **Met 2026-08-08** — `crates/chiero-vpp/tests/builddb.rs`, 10 gate-runnable tests plus
+   an `#[ignore]`d one over VPP's real database. `compile_commands.json` from a real VPP
+   build parses, and every TU yields a `ConfigId` and a resolved include path set.
+
+   **The `ConfigId` is a function of exactly `-D` and `-I`** — the flags that decide which
+   `#if` branches exist — and not of `-o`, `-MF` or the warning flags. That scoping is the
+   whole value: VPP's **1967 C units carry 423 distinct configurations**, a 4.6× collapse,
+   where an id hashed over the command line would be unique per unit and buy nothing.
+
+   `-D` (5495) and `-I` (7857) are the *only* configuration-bearing flags VPP passes —
+   measured, not assumed. `-U`, `-isystem`, `-iquote`, `-include`, `-imacros` and
+   `-nostdinc` are collected into `TranslationUnit::unhandled` rather than dropped; the
+   first two of those have no representation in `chiero_pp::Config` at all, so that gap is
+   in the config type, not in the ingest.
 2. A source compiled under 3 `CLIB_MARCH_VARIANT`s yields 3 `TranslationUnit`s with
    distinct `march`, and no index keyed on path alone collapses them.
 3. A finding in a multiarch function names its variant.
