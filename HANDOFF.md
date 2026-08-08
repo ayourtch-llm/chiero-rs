@@ -1586,10 +1586,13 @@ typing the paths ever would.
 > 1. **Run the three gates below** (~19 min total, mostly one of them). They are the fastest way
 >    to learn whether anything drifted, and two of them were built the same day so their
 >    expectations have only one datapoint behind them.
-> 2. **Raise §9.1's 1b + 1d + 1e with the owner as one conversation.** All three are the same
->    question — *where does the compiler persona live?* — and each has a wrong cheap answer that
->    would make it worse (a third `cc -dM` capture; a language level nobody chose; a gate
->    measuring a configuration nobody ships). This is the highest-value blocked item.
+> 2. ✅ **Done 2026-08-08 — the persona work and `-march` both shipped** (§9.1 item 1). What is
+>    left of that thread is small and *not* blocked: cache the `cc -dM` probe per flag-set (five
+>    probes, not 1963), and join `BuildDb`'s per-TU `target_flags` to `Config::persona` in the
+>    sweep, which is what makes 060 contract 2's multiarch 1:N real. §9.1 1d
+>    (`__STDC_VERSION__`: the persona says C11, gcc's default is gnu17) is still the owner's call
+>    on the *language level*, and 1e (the corpus gate inherits the baked persona rather than the
+>    shipped configuration) is now a small fix rather than a design question.
 > 3. **The gcov enumeration's algorithmic half** (§9.1's audit entry). Diagnosed, measured, 3.08x
 >    already banked, and `tests/growth.rs` will judge any attempt in 25 seconds. ⚠️ Read the three
 >    failed hypotheses there *before* forming a fourth.
