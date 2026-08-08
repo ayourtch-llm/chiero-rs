@@ -80,118 +80,14 @@ type SystemEnvironment = (Vec<PathBuf>, chiero_pp::Persona);
 /// code the compiler never sees — the full-tree sweep's first run reported 101 findings that
 /// were entirely that.
 ///
-/// Probed once: the answer is a property of the machine.
+/// **Probed once *per flag-set*, in `chiero-probe`, which is the whole of this function's
+/// history.** It used to memoize in a `OnceLock` that took the target flags and then ignored
+/// them, so the first caller's `-march` was answered to every later one. One process, one
+/// operation, one flag-set is why that never showed here — and 060 §1.1's multiarch 1:N is
+/// precisely many flag-sets in one run.
 fn system_environment(target_flags: &[String]) -> SystemEnvironment {
-    static PROBED: std::sync::OnceLock<SystemEnvironment> = std::sync::OnceLock::new();
-    PROBED
-        .get_or_init(|| {
-            let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
-            (include_paths(&cc), persona(&cc, target_flags))
-        })
-        .clone()
-}
-
-fn include_paths(cc: &str) -> Vec<PathBuf> {
-    let Ok(out) = std::process::Command::new(cc)
-        .args(["-E", "-v", "-std=gnu11", "-x", "c", "/dev/null"])
-        .output()
-    else {
-        return Vec::new();
-    };
-    let text = String::from_utf8_lossy(&out.stderr);
-    let mut paths = Vec::new();
-    let mut inside = false;
-    for line in text.lines() {
-        if line.starts_with("#include <...>") {
-            inside = true;
-        } else if line.starts_with("End of search list") {
-            break;
-        } else if inside {
-            paths.push(PathBuf::from(line.trim()));
-        }
-    }
-    paths
-}
-
-/// The compiler's own predefines, as a [`chiero_pp::Persona`].
-///
-/// **One mechanism, not two.** This used to hand-parse `-dM` output into a `Vec` while the
-/// library baked a separate 23-entry array, so a fix to either proved nothing about the other —
-/// which is exactly how an 8%-of-VPP defect got attributed to the wrong measurements. The parsing
-/// lives in `Persona::from_defines` now; this function only knows how to run a compiler.
-fn persona(cc: &str, target_flags: &[String]) -> chiero_pp::Persona {
-    let mut args: Vec<String> = vec!["-dM".into(), "-E".into(), "-std=gnu11".into()];
-    args.extend(target_flags.iter().cloned());
-    args.extend(["-x".into(), "c".into(), "/dev/null".into()]);
-    let Ok(out) = std::process::Command::new(cc).args(&args).output() else {
-        // No compiler is a fact about the machine, not about the code — fall back to the set
-        // chiero has always baked rather than to an empty persona, which would predefine nothing
-        // and send every real header down its `#else`.
-        return chiero_pp::Persona::baked();
-    };
-    let name = if target_flags.is_empty() {
-        cc.to_string()
-    } else {
-        format!("{cc} {}", target_flags.join(" "))
-    };
-    chiero_pp::Persona::from_defines(name, &String::from_utf8_lossy(&out.stdout))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Does this machine's `cc` predefine `__AVX2__` under `-march=x86-64-v3` and not without it?
-    ///
-    /// Checked rather than assumed: with no compiler installed, or on a machine that is not x86,
-    /// the two probes are legitimately identical and the test below would be asserting a property
-    /// of the machine rather than of chiero — which is the shape of green this file's own history
-    /// keeps warning about.
-    fn avx2_discriminates() -> bool {
-        let dump = |args: &[&str]| -> String {
-            let mut a: Vec<&str> = vec!["-dM", "-E"];
-            a.extend_from_slice(args);
-            a.extend_from_slice(&["-x", "c", "/dev/null"]);
-            std::process::Command::new("cc")
-                .args(&a)
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-                .unwrap_or_default()
-        };
-        !dump(&[]).contains("__AVX2__") && dump(&["-march=x86-64-v3"]).contains("__AVX2__")
-    }
-
-    /// **A cache keyed on nothing answers the first caller's question to everybody else.**
-    ///
-    /// `system_environment` takes the target flags and then memoizes the answer in a `OnceLock`,
-    /// so within one process the first flag-set wins and every later one is silently given its
-    /// persona. One process, one operation, one flag-set is why it has never shown: the moment a
-    /// *sweep* walks VPP's 1963 target-carrying units (060 §1.1's multiarch 1:N is many flag-sets
-    /// in one run) every unit after the first is preprocessed as some other `-march`.
-    ///
-    /// That is the same class as the defect the persona type was built to fix — a predefine set
-    /// that does not match the compilation — arriving through a different door.
-    #[test]
-    fn each_target_flag_set_gets_its_own_persona() {
-        if !avx2_discriminates() {
-            eprintln!(
-                "SKIPPED: this machine's cc does not discriminate -march=x86-64-v3 by __AVX2__"
-            );
-            return;
-        }
-        let plain = system_environment(&[]).1;
-        let v3 = system_environment(&["-march=x86-64-v3".to_string()]).1;
-        assert_eq!(
-            v3.get("__AVX2__"),
-            Some("1"),
-            "-march=x86-64-v3 predefines __AVX2__; this persona was probed for some other flag-set"
-        );
-        assert_eq!(
-            plain.get("__AVX2__"),
-            None,
-            "no -march predefines no __AVX2__; this persona came from a different probe"
-        );
-    }
+    let probe = chiero_probe::Probe::shared();
+    (probe.include_paths(), probe.persona(target_flags))
 }
 
 /// **Where a frontend diagnostic is**, as `path:line:col`, and where it came from when a macro
@@ -397,4 +293,81 @@ pub(crate) fn records(path: &Path, src: &str, f: Frontend) -> Result<Vec<Record>
         });
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Does this machine's `cc` predefine `__AVX2__` under `-march=x86-64-v3` and not without it?
+    ///
+    /// Checked rather than assumed: with no compiler installed, or on a machine that is not x86,
+    /// the two probes are legitimately identical and the test below would be asserting a property
+    /// of the machine rather than of chiero — which is the shape of green this file's own history
+    /// keeps warning about.
+    fn avx2_discriminates() -> bool {
+        let dump = |args: &[&str]| -> String {
+            let mut a: Vec<&str> = vec!["-dM", "-E"];
+            a.extend_from_slice(args);
+            a.extend_from_slice(&["-x", "c", "/dev/null"]);
+            std::process::Command::new("cc")
+                .args(&a)
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+                .unwrap_or_default()
+        };
+        !dump(&[]).contains("__AVX2__") && dump(&["-march=x86-64-v3"]).contains("__AVX2__")
+    }
+
+    fn frontend(target_flags: &[&str]) -> Frontend {
+        Frontend {
+            system_headers: true,
+            target_flags: target_flags.iter().map(|s| s.to_string()).collect(),
+            ..Frontend::default()
+        }
+    }
+
+    /// **The `-march` on the command line has to reach the persona the file is preprocessed with.**
+    ///
+    /// This asks `Frontend::pp()` rather than the probe, because the probe having a keyed cache
+    /// proves nothing about whether the composition passes the key: `system_environment` used to
+    /// take the target flags and then memoize the answer in a `OnceLock`, so within one process the
+    /// first flag-set won and every later one was silently given its persona. One process, one
+    /// operation, one flag-set is why that never showed here — and 060 §1.1's multiarch 1:N is
+    /// precisely many flag-sets in one run.
+    #[test]
+    fn each_target_flag_set_gets_its_own_persona() {
+        if !avx2_discriminates() {
+            eprintln!(
+                "SKIPPED: this machine's cc does not discriminate -march=x86-64-v3 by __AVX2__"
+            );
+            return;
+        }
+        // Deliberately in this order: under the `OnceLock` this replaces, the *first* call's
+        // answer was handed to every later one, so asking the plain one first is what exposes it.
+        let plain = frontend(&[]).pp().persona;
+        let v3 = frontend(&["-march=x86-64-v3"]).pp().persona;
+        assert_eq!(
+            v3.get("__AVX2__"),
+            Some("1"),
+            "-march=x86-64-v3 predefines __AVX2__; this persona was probed for some other flag-set"
+        );
+        assert_eq!(
+            plain.get("__AVX2__"),
+            None,
+            "no -march predefines no __AVX2__; this persona came from a different probe"
+        );
+    }
+
+    /// `--no-system-headers` is a deliberate configuration, not an absent one: the baked persona
+    /// is what a caller with no compiler gets, and it must not silently acquire a `-march`.
+    #[test]
+    fn without_system_headers_the_persona_is_the_baked_one() {
+        let f = Frontend {
+            system_headers: false,
+            target_flags: vec!["-march=x86-64-v3".into()],
+            ..Frontend::default()
+        };
+        assert_eq!(f.pp().persona, chiero_pp::Persona::baked());
+    }
 }

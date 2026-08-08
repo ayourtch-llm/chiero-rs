@@ -20,6 +20,7 @@ chiero-tool.workspace = true
 chiero-cir.workspace = true
 chiero-lex.workspace = true
 chiero-pp.workspace = true
+chiero-probe.workspace = true
 chiero-ast.workspace = true
 chiero-parse.workspace = true
 chiero-sema.workspace = true

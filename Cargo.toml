@@ -18,6 +18,7 @@ repository = "https://github.com/ayourtch-llm/chiero-rs"
 chiero-span   = { path = "crates/chiero-span",   version = "0.1.0" }
 chiero-lex    = { path = "crates/chiero-lex",    version = "0.1.0" }
 chiero-pp     = { path = "crates/chiero-pp",     version = "0.1.0" }
+chiero-probe  = { path = "crates/chiero-probe",  version = "0.1.0" }
 chiero-ast    = { path = "crates/chiero-ast",    version = "0.1.0" }
 chiero-parse  = { path = "crates/chiero-parse",  version = "0.1.0" }
 chiero-sema   = { path = "crates/chiero-sema",   version = "0.1.0" }

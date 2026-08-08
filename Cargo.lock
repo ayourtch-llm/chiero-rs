@@ -74,6 +74,7 @@ dependencies = [
  "chiero-opt",
  "chiero-parse",
  "chiero-pp",
+ "chiero-probe",
  "chiero-recipe",
  "chiero-select",
  "chiero-sema",
@@ -195,6 +196,13 @@ dependencies = [
  "chiero-lex",
  "chiero-span",
  "indexmap",
+]
+
+[[package]]
+name = "chiero-probe"
+version = "0.1.0"
+dependencies = [
+ "chiero-pp",
 ]
 
 [[package]]
