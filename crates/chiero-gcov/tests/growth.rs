@@ -131,6 +131,15 @@ fn native_arc_ingest_does_not_grow_quadratically_in_arcs_per_function() {
             let build = n0.elapsed().as_secs_f64();
             assert!(!note.functions.is_empty(), "n={n} built no functions");
 
+            // The `.gcda` side of the byte decode. `records()` reads either artifact, so the data
+            // half costs nothing extra to isolate — and until now the whole `.gcda` path had only
+            // ever been measured inside the total.
+            let d0 = Instant::now();
+            let drecs = chiero_gcov::native::records(&dir.join(format!("{stem}.gcda")))
+                .expect("parse data");
+            let data = d0.elapsed().as_secs_f64();
+            assert!(!drecs.is_empty(), "n={n} parsed no data records");
+
             chiero_gcov::native::reset_circuit_starts();
             let start = Instant::now();
             let cov = chiero_gcov::native::arc_coverage(&dir, &stem).expect("ingest");
@@ -141,7 +150,7 @@ fn native_arc_ingest_does_not_grow_quadratically_in_arcs_per_function() {
                 !cov.functions().is_empty(),
                 "n={n} ingested no functions, so the curve would time nothing"
             );
-            points.push((n, secs, starts, visits, parse, build));
+            points.push((n, secs, starts, visits, parse + data, build));
         }
 
         eprintln!("native arc ingest, ratio per 4x arcs (4x = linear, 16x = quadratic):");
@@ -152,7 +161,7 @@ fn native_arc_ingest_does_not_grow_quadratically_in_arcs_per_function() {
             let ratio = t1 / t0.max(1e-4);
             eprintln!(
                 "  {n0:>5} -> {n1:>5}   {t0:>8.4}s -> {t1:>8.4}s   {ratio:>6.1}x   \
-                 circuit {c0}->{c1}  conservation {v0}->{v1}  |  parse {:.1}x  build {b0:.4}s->{b1:.4}s = {:.1}x",
+                 circuit {c0}->{c1}  conservation {v0}->{v1}  |  parse+data {:.1}x  build {b0:.4}s->{b1:.4}s = {:.1}x",
                 p1 / p0.max(1e-4),
                 b1 / b0.max(1e-4)
             );
