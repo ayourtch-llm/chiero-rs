@@ -1199,13 +1199,6 @@ fn succ_lists(f: &NoteFunction) -> Vec<Vec<usize>> {
     out
 }
 
-/// The counts of the elementary cycles lying entirely within `bs`, by Hawick and James'
-/// enumeration — the algorithm `gcc/gcov.cc` cites and implements in `circuit`/`unblock`.
-///
-/// Each cycle is worth its **minimum** remaining arc count, which is then subtracted from every
-/// arc along it, so two cycles sharing an arc cannot both claim it. A blocked node is released
-/// only when it turns out to lie on a cycle, which is what keeps the search over simple paths
-/// from being exponential in the common case.
 thread_local! {
     /// **How many DFS traversals the cycle enumeration starts.** A counter, not a clock: a
     /// wall-clock bound silently stops being able to fail whenever the build gets faster
@@ -1227,6 +1220,13 @@ pub fn reset_circuit_starts() {
     CIRCUIT_STARTS.with(|c| c.set(0));
 }
 
+/// The counts of the elementary cycles lying entirely within `bs`, by Hawick and James'
+/// enumeration — the algorithm `gcc/gcov.cc` cites and implements in `circuit`/`unblock`.
+///
+/// Each cycle is worth its **minimum** remaining arc count, which is then subtracted from every
+/// arc along it, so two cycles sharing an arc cannot both claim it. A blocked node is released
+/// only when it turns out to lie on a cycle, which is what keeps the search over simple paths
+/// from being exponential in the common case.
 fn cycles_count(f: &NoteFunction, succ: &[Vec<usize>], bs: &[u32], arc_counts: &[u64]) -> u64 {
     let mut cs: Vec<i64> = vec![0; f.arcs.len()];
     for &b in bs {
