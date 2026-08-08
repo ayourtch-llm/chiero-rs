@@ -1880,6 +1880,20 @@ impl Memory {
     /// bytes and C imposes none on them. The scalar rule — an N-byte access wants N-byte
     /// alignment — is about scalar loads and stores, and applying it here makes every
     /// `strcpy` into a `char` buffer a false positive.
+    /// A write defined **byte by byte**, as `memcpy` is — so no offset is misaligned for it.
+    ///
+    /// **The strip is deliberate and had no comment, which cost a wave.** Measured, it looks
+    /// exactly like a gap: a copy to a misaligned offset records nothing while [`Self::read_term`]
+    /// at the identical offset records `misaligned`, and 021 §5 step 3 says the check "is always
+    /// recorded". A RED was written asserting the copy path had lost it. The assertion was wrong —
+    /// a byte write has no alignment requirement, and neither does a copy built out of byte
+    /// writes. **An undocumented deliberate behaviour is indistinguishable from a defect**, so it
+    /// is documented here, and `tests/copy_alignment.rs` holds the reasoning.
+    ///
+    /// ⚠️ What *is* open: `CopyMem` carries the access's real alignment (`copymem …, 32i64
+    /// align 16`) and `chiero-exec` discards it, so a struct assignment and a `u8x32` vector move
+    /// — which does require 32-byte alignment, the whole difference between vppinfra's `u8x32` and
+    /// `u8x32u` — are the same access to this model. HANDOFF §9.1.
     pub fn write_bytewise(&mut self, p: Pointer, bytes: &[u8], at: Span) -> AccessResult<()> {
         let mut r = self.write(p, bytes, at);
         r.faults
