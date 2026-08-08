@@ -30,7 +30,7 @@
 //! call count unchanged throughout — which is how you know they were cost-per-call changes and
 //! not accidental semantic ones.
 //!
-//! Four more fixes followed, for **~208x in total** (17.31 s → 0.083 s at n=3200): an acyclic
+//! Four more fixes followed, for **~250x in total** (17.31 s → ~0.068 s at n=3200, two runs; ±20% at these times): an acyclic
 //! early-out that skips the enumeration entirely, the conservation fixpoint's incidence lists
 //! hoisted out of its loop, `cycles_count`'s scratch allocated once per function, and — on the
 //! third attempt, after the two costs hiding it were gone — the `accumulate_line_info` hoist that

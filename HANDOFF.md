@@ -1490,7 +1490,7 @@ This has now paid out three times in a row, each time on the first run after a w
 | *not a widening* — **re-measuring the pinned 40 and asking why nothing moved** | one retake + one `grep` | the corpus **cannot reach** a 32-byte access: `__AVX2__` is undefined in every configuration chiero compiles, so every AVX2/AVX512 path in vppinfra is invisible to every measurement this project has published. New evidence for the parked `-march` item, and it came from an *unchanged* number |
 | **a new *kind* of gate: the preprocessor under VPP's own flags** (012 c17, 1967 TUs, 18 min) | one ingest + one gate | **three defects the pp-gate could never see**, because none is about preprocessing *syntax*: `__linux__` unbaked (VPP's `pmalloc.c` reached `#error "Unsupported OS"`), `__has_attribute(error)` answered 0 where gcc says 1, and a diagnostic class chiero was *right* about and that was still noise. Diagnosed 25 → 0, and the token count 731M → **792M: 8% more of the program became visible** |
 | *not a widening* — **asking what chiero believes rather than what it says** (`persona_gap`, 0.1 s) | one differential instrument | the **endianness** defect: `__BYTE_ORDER__` undefined, so `#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__` read `0 == 0`, took the big-endian branch on x86-64, and reversed bit-field member order across `srv6-mobile`. **The 18-minute corpus gate is structurally incapable of finding this** — a wrongly-taken branch emits nothing. Output-watching and state-comparison are two different searches |
-| *not a widening* — **disbelieving a "blocked" label** (the gcov `Vec::contains` audit) | one generated `.gcno` | the block was false: gcc emits a `.gcno` of any size from generated C, so no VPP coverage build and no format writer were ever needed. Native ingest measured **quadratic**, then **~208x faster** (17.31 s → 0.083 s at n=3200) across five fixes. ⚠️ **Six confident hypotheses were refuted by measurement**, four of them before anything worked; counters found every real site. The curve itself was blind twice — once holding blocks-per-line at 1, once measuring below its own noise floor — and a genuinely quadratic counter (327 808 014 cells) turned out to be 7% of the clock. **Counting stops you being confidently wrong; it does not by itself make you right** |
+| *not a widening* — **disbelieving a "blocked" label** (the gcov `Vec::contains` audit) | one generated `.gcno` | the block was false: gcc emits a `.gcno` of any size from generated C, so no VPP coverage build and no format writer were ever needed. Native ingest measured **quadratic**, then **~250x faster** (17.31 s → ~0.068 s at n=3200, two runs; ±20% at these times) across five fixes. ⚠️ **Six confident hypotheses were refuted by measurement**, four of them before anything worked; counters found every real site. The curve itself was blind twice — once holding blocks-per-line at 1, once measuring below its own noise floor — and a genuinely quadratic counter (327 808 014 cells) turned out to be 7% of the clock. **Counting stops you being confidently wrong; it does not by itself make you right** |
 
 The loop, and it is deliberately mechanical:
 
@@ -1614,7 +1614,7 @@ typing the paths ever would.
 > cargo test -p chiero-vpp --test persona_gap -- --ignored --nocapture
 >
 > # whether cost SCALES: gcov native ingest, two input shapes, n up to 12800. ~7 s.
-> # (It was ~25 s before 2026-08-08's fixes made the ingest ~208x faster. A gate that measures
+> # (It was ~25 s before 2026-08-08's fixes made the ingest ~250x faster. A gate that measures
 > #  the code gets faster when the code does — re-time it, do not trust the comment.)
 > # ⚠️ FAILS ON PURPOSE — the remaining superlinearity is queued algorithmic work, not a
 > # regression. Read §9.1 before touching it; three hypotheses were tried and reverted.
@@ -2387,7 +2387,8 @@ typing the paths ever would.
    hiding it were removed. **Re-test reverted optimisations after the dominant cost moves.** The
    curve makes that a 25-second question rather than an argument.
 
-   **Session total on this item: 17.31 s → 0.083 s, ~208x across five fixes** — four of which
+   **Session total on this item: 17.31 s → ~0.068 s, ~250x across five fixes** (two runs;
+   ±20% variance at these times) — four of which
    would have been got wrong by reading.
 
    **Still open, and the number is bigger than it first looked.** The curve now runs to
@@ -3182,7 +3183,7 @@ doubles the wake-ups.
 - 🆕 **A number written mid-investigation is stale by the end of it — cite the measurement beside
   it.** One sweep on 2026-08-08 corrected **four** figures, all written earlier the same day by
   the person correcting them: the `Vec::contains` site count (87 → 79), the growth gate's runtime
-  (~25 s → **7 s**, *faster*, because the code it measures got 208x faster), the corpus gate's
+  (~25 s → **7 s**, *faster*, because the code it measures got ~250x faster), the corpus gate's
   (~18 → ~20 min), and a "three misses" tally that had reached six. Two pointed at resolved
   causes in a *committed instrument*, which is worse than no pointer: the next reader starts at a
   solved place with the file's own authority behind them.
