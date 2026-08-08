@@ -2295,7 +2295,8 @@ typing the paths ever would.
    question rather than a correctness one: is *"this function does not validate its enum
    parameter"* worth a finding?
 
-   **Four of fifteen sampled now, all the same shape**, and the whole list is consistent with it:
+   **Eight of fifteen sampled, all the same shape**, and the remaining seven share the array
+   naming:
 
    | site | index | guard |
    |---|---|---|
@@ -2303,6 +2304,10 @@ typing the paths ever would.
    | `dvr_dpo_db[dproto]` | entry parameter, enum type | none |
    | `qos_source_names[qs]` | `va_arg (*args, int)` | none |
    | `mfib_entry_src_vfts[msrc->mfes_src]` | field of a lazy object | none |
+   | `fed_formatters[fed->mfd_type](fed, s)` | field of a lazy object — **then called** | none |
+   | `ip_null_action_strings[ind->ind_action]` | field of a lazy object | none |
+   | `ip4_main.fib_masks[len]` | prefix-length parameter | none |
+   | `ip_null_dpos[indi]` | derived index | none |
 
    Every array in all fifteen is a small `static` dispatch or format table — `*_names`,
    `*_strings`, `*_vfts`, `*_db`, `*_cfg`. **The class is: a static table indexed by an
@@ -2316,9 +2321,10 @@ typing the paths ever would.
    — 050's envelope already carries the machinery to say "true, and here is the premise", which
    is how `globals_at_initial_value` handles the same tension.
 
-   ⚠️ Eleven remain unread. Four of fifteen is a strong indication and still not a census — the
-   entry above records what it cost to call 19 findings one cause when it was 4. **A shared
-   *message* is not a shared *cause*, and a shared *shape* in four samples is not all fifteen.** `pointer-outside-object` says the offset can leave the object; that can
+   ⚠️ Seven remain unread, and two of those resisted a quick grep rather than being checked and
+   cleared. Eight of fifteen is a characterisation; it is still not a census, and the entry above
+   records what it cost to call 19 findings one cause when it was 4. **A shared *message* is not a
+   shared *cause*, and a shared *shape* in eight samples is not all fifteen.** `pointer-outside-object` says the offset can leave the object; that can
    happen for as many reasons as there are ways to lose a constraint. The next one needs the same
    treatment from scratch — pick one, `chiero cir` it, instrument the boundary — and not the
    assumption that it is this bug again.
