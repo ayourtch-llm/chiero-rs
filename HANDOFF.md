@@ -2344,10 +2344,27 @@ typing the paths ever would.
    again (1.00 s / 1.07 s against 1.05 s / 1.15 s — noise) and was reverted a second time. So the
    scan genuinely is not the cost, at either scale.
 
-   That leaves the `.gcno`/`.gcda` parse itself, `solve_flow_graph`'s conservation loop, and the
-   `IndexMap` traffic in `accumulate_line_info` — **none of them measured**. Add a counter to one
-   before touching it. Scoreboard on this entry: **4 hypotheses wrong, 3 right**, and every one of
-   the wrong four looked obvious in the source.
+   ✅ **LOCATED 2026-08-08 — `solve_arcs`' conservation fixpoint**, by counter
+   (`native::conservation_arc_visits()`), not by reading:
+
+   | n | 50 | 200 | 800 | 3200 |
+   |---|---|---|---|---|
+   | arc visits | 254 992 | 3 898 192 | 61 670 992 | **983 962 192** |
+   | ratio per 4x arcs | | 15.3x | 15.8x | **16.0x** |
+
+   Quadratic, and the **wall-clock ratio is also 16.0x** — the counter tracking the clock is what
+   makes this the answer rather than a sixth plausible site. It is identical for both curve
+   shapes, which fits: once the acyclic early-out landed, the remaining cost stopped caring about
+   blocks-per-line.
+
+   The loop scans all `n` arcs **per block, per side, per iteration**. The fix is the same hoist
+   that failed twice elsewhere — incoming/outgoing arc lists built once per function — and this
+   time a counter says it is the right place. ⛔ **Deliberately left for its own wave:**
+   `solve_arcs` is the numerically sensitive core of 030 §4.1, and `arc_counts` feeds every
+   coverage number the project publishes. Do it with the full suite and `tests/growth.rs` in view.
+
+   Scoreboard on this entry: **4 hypotheses wrong, 4 right.** Every wrong one looked obvious in
+   the source; every right one came from a counter or a curve.
 
    ⚠️ *Kept below: three hypotheses that were tried first and moved nothing.* **Do not read.
    Profile.**
