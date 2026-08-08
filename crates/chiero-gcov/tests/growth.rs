@@ -107,12 +107,21 @@ fn native_arc_ingest_does_not_grow_quadratically_in_arcs_per_function() {
     const SHAPES: [(&str, &str); 2] = [("\n", "line"), (" ", "onelin")];
     let mut verdicts: Vec<(&str, f64)> = Vec::new();
     for (sep, tag) in SHAPES {
-        let mut points: Vec<(usize, f64, u64, u64)> = Vec::new();
+        let mut points: Vec<(usize, f64, u64, u64, f64)> = Vec::new();
         for n in SIZES {
             let Some(stem) = build_and_run(&dir, n, sep, tag) else {
                 eprintln!("SKIPPED: gcc could not build the n={n} probe");
                 return;
             };
+            // **The parse, timed on its own.** By elimination it is the last suspect for the
+            // residual (§9.1), and elimination is not measurement — this is the measurement, and
+            // it touches nothing in the solver to get it.
+            let notes = dir.join(format!("{stem}.gcno"));
+            let p0 = Instant::now();
+            let recs = chiero_gcov::native::records(&notes).expect("parse notes");
+            let parse = p0.elapsed().as_secs_f64();
+            assert!(!recs.is_empty(), "n={n} parsed no records");
+
             chiero_gcov::native::reset_circuit_starts();
             let start = Instant::now();
             let cov = chiero_gcov::native::arc_coverage(&dir, &stem).expect("ingest");
@@ -123,18 +132,19 @@ fn native_arc_ingest_does_not_grow_quadratically_in_arcs_per_function() {
                 !cov.functions().is_empty(),
                 "n={n} ingested no functions, so the curve would time nothing"
             );
-            points.push((n, secs, starts, visits));
+            points.push((n, secs, starts, visits, parse));
         }
 
         eprintln!("native arc ingest, ratio per 4x arcs (4x = linear, 16x = quadratic):");
         let mut worst: f64 = 0.0;
         for w in points.windows(2) {
-            let ((n0, t0, c0, v0), (n1, t1, c1, v1)) = (w[0], w[1]);
+            let ((n0, t0, c0, v0, p0), (n1, t1, c1, v1, p1)) = (w[0], w[1]);
             // A floor keeps a sub-millisecond first point from inventing a huge ratio out of noise.
             let ratio = t1 / t0.max(1e-4);
             eprintln!(
                 "  {n0:>5} -> {n1:>5}   {t0:>8.4}s -> {t1:>8.4}s   {ratio:>6.1}x   \
-                 circuit {c0} -> {c1}  conservation {v0} -> {v1}"
+                 circuit {c0}->{c1}  conservation {v0}->{v1}  |  parse {p0:.4}s->{p1:.4}s = {:.1}x",
+                p1 / p0.max(1e-4)
             );
             if n0 >= 200 {
                 worst = worst.max(ratio);
