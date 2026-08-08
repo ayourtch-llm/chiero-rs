@@ -1666,10 +1666,11 @@ typing the paths ever would.
 > **None of them was visible to the pp-gate**, which has reported 0 findings for weeks: none is
 > about preprocessing *syntax*. A gate that has been green for weeks is an untested surface.
 >
-> **State: 2026-08-08, second session — `./check.sh` GREEN at 2265 across 274 suites**, fmt and
-> clippy clean. Up from 2257/270 at the first session's end.
+> **State: 2026-08-08, second session — `./check.sh` GREEN at 2275 across 276 suites**, fmt and
+> clippy clean, both solver legs. Up from 2257/270 at the first session's end.
 >
-> **This session's closes:** the whole persona thread — `chiero-probe` (the **24th** crate: one
+> **This session's closes:** the witness reporting defect (§9.1 5e); the gcov growth gate, which
+> passes for the first time; and the whole persona thread — `chiero-probe` (the **24th** crate: one
 > place that runs `cc -dM -E`, memoized per flag-set), `TranslationUnit::pp_config(&probe)` so the
 > join cannot be skipped, **060 contract 2**, and §9.1 1e (the corpus gate stopped measuring a
 > configuration nobody ships). Three defects found along the way, each by measurement rather than
