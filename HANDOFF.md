@@ -2388,9 +2388,27 @@ typing the paths ever would.
    **Session total on this item: 17.31 s → 0.083 s, ~208x across five fixes** — four of which
    would have been got wrong by reading.
 
-   **Still open:** `line` at 8.6x against a linear 4x, so `tests/growth.rs` still fails on
-   purpose, and what remains is **unmeasured again**. Candidates: the `.gcno`/`.gcda` parse, the
-   `IndexMap` traffic. Counter first.
+   **Still open, and the number is bigger than it first looked.** The curve now runs to
+   **n=12800**, because at n=3200 the ingest had dropped to ~0.1 s — where process startup, file
+   I/O and gcc's output size are a visible share of the clock, and a "ratio" is partly noise. The
+   added point says the residual is real:
+
+   | shape | 3200 → 12800 | |
+   |---|---|---|
+   | `line` | 0.109 s → 1.390 s | **12.8x** |
+   | `onelin` | 0.082 s → 0.880 s | **10.7x** |
+
+   Roughly n^1.8 against a linear 4x, while the conservation counter stays **exactly linear**
+   across the same step (153 728 → 614 528) — so the fix that landed earlier still holds at four
+   times the size, and the residual is elsewhere.
+
+   ⚠️ **An instrument that has stopped discriminating still prints numbers**, and they look just
+   as authoritative. This curve had stopped growing past the point where its subject dominated the
+   clock — the same failure as the input-shape blindness in its own header, twice in one file.
+
+   **Unmeasured candidates:** the `.gcno`/`.gcda` parse, and the `IndexMap` traffic in
+   `accumulate_line_info` (`acc.entry((bl.file.clone(), line))` clones the filename per line).
+   **Counter first** — that instruction has been right five times on this entry.
 
    Scoreboard on this entry: **4 hypotheses wrong, 5 right.** Every wrong one looked obvious in
    the source; every right one came from a counter or a curve.
