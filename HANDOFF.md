@@ -1832,12 +1832,20 @@ typing the paths ever would.
    call exactly (`FRESH obj=2 off=0 size=10640`) — the lazy object is the ingredient the earlier
    attempts lacked, since two stack allocas never reach `materialize_fresh` at all.
 
-   ⚠️ **And its witness is still empty, which is the remaining question.** Minting 10 640 symbols
-   is reproduced; turning them into 10 657 *bindings* is not. Both cases mint; only the real one
-   reports. The binding list is built from `s.inputs` plus `s.mem.minted_symbols()` around
-   `chiero-exec/src/lib.rs:2824`, and `mentioned` (occurrence in the path condition) decides
-   `pinned` rather than inclusion — so **what differs is upstream of the filter**, and that is
-   where the next look goes.
+   ⚠️ **Its witness is still empty, and a second probe says why — the fixture forks.** Printing
+   at the witness-assembly site (`chiero-exec/src/lib.rs`, just before `extra` is built) gives
+   **two** terminated states: `minted=0` and `minted=10640`. The division-by-zero finding is
+   reported from the **mint-free** one, so the envelope is small while a 10 640-mint state sits
+   beside it unreported.
+
+   So the remaining question is not "why are mints not bindings" — they are, on the state that
+   has them. It is **why the fixture's finding lands on the fork without the mints**, and what
+   `nsh_md2_encap` does differently to put its finding on the state that has them. `copymem` out
+   of a lazy object evidently forks (a symbolic base resolving over candidate objects is the
+   obvious suspect, 021 §5.1); the fixture needs the fault on the *materialising* path.
+
+   📌 **A witness is per state, which is worth knowing on its own** — the megabyte in the real
+   case is one state's, not the run's.
 
    Ruled out so far: a byte-at-a-time loop through a symbolic entry pointer (1 binding); a wide
    `copymem` between two stack allocas (0 bindings, and no `materialize_fresh` at all); a wide
