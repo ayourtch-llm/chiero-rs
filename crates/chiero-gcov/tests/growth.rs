@@ -13,6 +13,25 @@
 //! Ratio per doubling is the whole point (§9.1): a single timing never distinguishes linear from
 //! quadratic. Sizes quadruple here, so **4× per step is linear and 16× is quadratic**.
 //!
+//! # What it found, so nobody re-runs the dead ends
+//!
+//! ⚠️ **The two sites the audit named above are not the cost.** They were converted to `IndexSet`
+//! and the ratio did not move; a third guess — hoisting `accumulate_line_info`'s arc scan into a
+//! predecessor map, the exact fix that took the CIR verifier from hours to 2.4 s — moved nothing
+//! either and was reverted. **Three confident readings, three misses.**
+//!
+//! What worked was counting. [`chiero_gcov::native::circuit_starts`] showed the cycle
+//! enumeration's recursion running **5 128 004** times at n=3200 in the `onelin` shape against
+//! **6 405** in `line` — quadratic against linear. Two O(1) lookups then followed from the
+//! evidence rather than from reading, for a cumulative **17.31 s → 5.61 s (3.08×)**, with the
+//! call count unchanged throughout — which is how you know they were cost-per-call changes and
+//! not accidental semantic ones.
+//!
+//! **This test still fails, on purpose.** The remaining superlinearity is the quadratic *call
+//! count* itself — one DFS per block on the attributed line — and cutting it needs an algorithmic
+//! change to the enumeration, not another data structure. It is queued in §9.1, and the numbers
+//! above are what any attempt should be judged against.
+//!
 //! # ⚠️ The input shape decides which defect is visible, and that is the real lesson here
 //!
 //! The first version of this file put one statement per source line. Every line then carries one
