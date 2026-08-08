@@ -1746,6 +1746,19 @@ typing the paths ever would.
    `-march=x86-64-v2`, so `__SSE4_2__` is undefined and `vppinfra/crc32.h` never defines
    `clib_crc32c_with_init`. The other four are two parser/sema gaps in generated API headers.
 
+   🆕 **2026-08-08 — the missing ingredient now exists, which changes the shape of the design (it
+   does *not* unpark it).** When this was parked there was no mechanism that knew which `-march`
+   any given TU used. 060 contract 1's `BuildDb` is that mechanism:
+   `TranslationUnit::args` holds the full command line for all **1967** C compilations, including
+   the **1964** `-march=` occurrences, keyed per translation unit, tested, with **423** distinct
+   configurations already identified.
+
+   Combined with the owner's config-file persona idea (1b), the natural shape is: **a persona is a
+   named set of predefines, and `BuildDb` selects one per TU.** That turns `-march` from a new
+   subsystem into a lookup over machinery that already exists and is under test. ⚠️ Still parked —
+   the owner asked to discuss the design, and having a better design is not the same as having
+   permission. Raise it together with 1b, 1d and 1e.
+
    🆕 **Measured 2026-08-07, and it makes the item bigger than those seven entries.** Retaking the
    pinned 40 after `BadRange` left the defect list gave byte-identical numbers, and the kept
    envelopes say why: `unsupported-access-width` occurs **zero** times in all forty — the corpus
