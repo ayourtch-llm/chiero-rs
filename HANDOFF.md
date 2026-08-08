@@ -476,7 +476,8 @@ have entrenched conventions real lowering then had to match.)
 | **032 test selection** | 🟡 18/20 | mutation gate: **recall 100%, coverage-only 14.3%, reduction 65%** |
 | **041 `prove_equivalent`** + §2/§3 | 🟡 contracts 1–6, 9–18, 21, 22, 24 | z3 proves `x*2 == x<<1` over all 2^32; finds `INT_MIN` as the one input two `abs()`s disagree on — and **gcc confirms it**, via `chiero-replay` |
 | **050 tool interface** | 🟡 10 operations + a CLI (contracts 1–3, 4b, 5–8, 11, 12 partly, 14) | envelope + `select_tests`, `expansion_sites`, `explain_macro_expansion`, `prove_equivalent`(+replay), `impact`, `find_bugs`, `check_reachable`, `find_optimizations`, `layout`; all reachable as `chiero <op>`. **No MCP/JSON-RPC server**, so contract 18 cannot run |
-| 040 checkers, 042 recipes, 060 vpp | partial | `chiero-check` runs **2** checkers by default; `chiero-recipe`, `chiero-vpp` exist |
+| 040 checkers, 042 recipes | partial | `chiero-check` runs **2** checkers by default; `chiero-recipe` exists |
+| 060 vpp | **contract 1 met 2026-08-08** | `chiero_vpp::builddb` — VPP's compile database; 1967 C units → **423 configurations**; `chiero-vpp` was an empty placeholder until this |
 | **`layout` on real VPP** | ✅ fixed 2026-08-07 | anonymous members counted, partial field lists refuse a number, and each hole names the fields it sits between — §7.7 |
 | **CI** | ✅ both solver legs gate | `solver: [none, z3]`; `check-proof-surface` moved from prose into the workflow |
 | **`find-bugs` on real VPP** | 🟡 measured 2026-08-06 | pinned 40: **231 → 21 findings**, `--entry-ptr-nonnull` **1**. Plugins: **477 entries over 92 plugins → 18 findings, 1 `Exact` and it is true**; two engine panics found and fixed. §7.6 |
@@ -2754,7 +2755,18 @@ doubles the wake-ups.
 
 ### 11.3 About the design, and the distinction this project keeps re-deriving
 
-- **"Did not look" must stay distinct from "found nothing", at every scale.** Selector
+- 🆕 **A cause without an address is not addressable — and the asymmetry hides in instruments
+  that report two kinds of thing.** 012 contract 17's corpus run printed an example path for each
+  distinct *panic* and only a count for each distinct *diagnostic*. That cost a wave: I reasoned
+  about which VPP file produced `redefinition of macro MFD_HUGETLB` from the message alone, and
+  **the guess turned out to be right**, which is worse than being wrong, because nothing would
+  have corrected it. When an instrument groups results by kind, every kind gets an example.
+- 🆕 **Do not guess a spelling that a tool will enumerate.** A first fix defined `__linux__` and
+  claimed VPP's `pmalloc.c` no longer reached `#error "Unsupported OS"`. It still did — the guard
+  is `#ifdef __linux`. gcc predefines all three spellings of each platform macro and
+  `gcc -dM -E -x c /dev/null` prints them in 20 ms. The corpus caught it on the *next* run, which
+  is the only reason the wrong claim in the commit message lived for minutes rather than months.
+- - **"Did not look" must stay distinct from "found nothing", at every scale.** Selector
   (`Selection::NeedsAst`), recipe (`RecipeTally::needs_ast`), sweep (`Tier1Report::unreadable`),
   each with `is_complete()`. It earned its keep on first contact: a `recipe-sweep` with no `-I`
   reported *36 unreadable, PARTIAL* rather than `0 candidates`, which would have read as a clean
