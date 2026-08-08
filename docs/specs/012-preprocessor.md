@@ -372,3 +372,28 @@ mitigations: per-TU expansion tables dropped after lowering, retaining only the
     Every table row is re-asked of the real compiler.
 24. **`__GNUC_PREREQ(4,9)` is true under the baked persona** (§4.1). A `__GNUC__` with no
     `__GNUC_MINOR__` makes it constant 0 and silently reconfigures every glibc header.
+25. ✅ **Met 2026-08-08 — a diagnostic whose site is inside a system header is separated from the
+    ones a person can act on, and counted rather than dropped.**
+    `PreprocessedTu::system_diagnostics`, tested in `chiero-pp/tests/system_headers.rs`.
+
+    Found by contract 17's corpus run: five of the 25 diagnosed VPP units report `redefinition of
+    macro MFD_CLOEXEC` and four siblings. chiero is **right** — 6.10.3p2 makes a non-identical
+    redefinition a constraint violation, and `<sys/mman.h>` really does define it as `1U` before
+    `<linux/memfd.h>` says `0x0001U`. Nobody can act on it: both files are glibc's and the
+    kernel's, and every C program on this machine has the same clash.
+
+    gcc's rule, measured rather than recalled — the *same header text* warns from a user path and
+    is silent from a system one:
+
+    ```text
+    $ cp /usr/include/linux/memfd.h uh/memfd_user.h
+    $ gcc -E -I/usr/include c.c   # includes "uh/memfd_user.h"
+    uh/memfd_user.h:8: warning: "MFD_CLOEXEC" redefined      <- and three more
+    $ gcc -E d.c                  # includes <linux/memfd.h>, byte-identical content
+                                  <- nothing
+    ```
+
+    **Separated, not deleted**, so "did not report" and "found nothing" stay different facts — a
+    preprocessor that dropped these would claim a clean tree it never checked. Membership is by
+    path containment, not parent-directory equality: `/usr/include` holds `linux/memfd.h` several
+    levels down, and that is the case that started this.

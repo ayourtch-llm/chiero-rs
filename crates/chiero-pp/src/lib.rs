@@ -106,7 +106,31 @@ pub struct ConditionalRecord {
 pub struct PreprocessedTu {
     pub tokens: Vec<PpToken>,
     pub source_map: SourceMap,
+    /// Diagnostics a person can act on — those whose site is the translation unit's own source
+    /// or one of its project headers.
     pub diagnostics: Vec<Diagnostic>,
+    /// **Diagnostics whose site is inside a system header — real, and not the programmer's.**
+    ///
+    /// Every compiler does this, and it is measured rather than recalled: the *same header text*
+    /// warns from a user path and is silent from a system one.
+    ///
+    /// ```text
+    /// $ cp /usr/include/linux/memfd.h uh/memfd_user.h
+    /// $ gcc -E -I/usr/include c.c   # includes "uh/memfd_user.h"
+    /// uh/memfd_user.h:8: warning: "MFD_CLOEXEC" redefined      ← and three more
+    /// $ gcc -E d.c                  # includes <linux/memfd.h>, byte-identical content
+    ///                               ← nothing
+    /// ```
+    ///
+    /// 012 contract 17's corpus run found the cost: five of 25 diagnosed VPP units reported
+    /// `redefinition of macro MFD_CLOEXEC` and siblings. chiero was *right* — C11 6.10.3p2 makes
+    /// a non-identical redefinition a constraint violation, and `<sys/mman.h>` really does define
+    /// it as `1U` before `<linux/memfd.h>` says `0x0001U`. Nobody can act on it: both files
+    /// belong to glibc and the kernel headers, and every C program on the machine has the clash.
+    ///
+    /// **Kept rather than dropped**, so "did not report" and "found nothing" stay distinct —
+    /// a preprocessor that deleted these would be claiming a clean tree it never checked.
+    pub system_diagnostics: Vec<Diagnostic>,
     pub config: ConfigId,
     pub deps: Vec<FileId>,
     pub pragmas: Vec<PragmaRecord>,
@@ -583,10 +607,29 @@ impl Engine {
                 }
             }
         }
+        let source_map = std::mem::take(&mut self.source_map);
+        // **Diagnostics from system headers are separated, not deleted** — see
+        // [`PreprocessedTu::system_diagnostics`]. `Path::starts_with` compares whole components,
+        // so `/usr/include` contains `/usr/include/linux/memfd.h` and does not accidentally
+        // contain `/usr/include-mine/x.h`.
+        let (system_diagnostics, diagnostics) = std::mem::take(&mut self.diagnostics)
+            .into_iter()
+            .partition(|diagnostic: &Diagnostic| {
+                source_map
+                    .lookup_file(diagnostic.span.lo)
+                    .map(|id| source_map.file(id).path())
+                    .is_some_and(|path| {
+                        self.config
+                            .system_paths
+                            .iter()
+                            .any(|root| path.starts_with(root))
+                    })
+            });
         PreprocessedTu {
             tokens,
-            source_map: std::mem::take(&mut self.source_map),
-            diagnostics: std::mem::take(&mut self.diagnostics),
+            source_map,
+            diagnostics,
+            system_diagnostics,
             config: self.config.id,
             deps: std::mem::take(&mut self.deps),
             pragmas: std::mem::take(&mut self.pragmas),
