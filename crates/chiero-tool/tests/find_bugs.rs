@@ -765,32 +765,30 @@ entry:
 /// | the same with the guard's `udiv 40/8` unfolded | constrained |
 /// | **lazy object + havoc + guard** | **offset 48** — this test |
 ///
-/// ✅ **Root cause, confirmed by instrumenting the loads:**
+/// ✅ **What is measured, and only that:**
 ///
 /// ```text
 /// LOAD #0 INVENTED       <- the guard's read: memory produced nothing
 /// LOAD OK term=Term(4)   <- the subscript's read: the real term
 /// ```
 ///
-/// **Havocking a lazy object that has not yet been materialised does nothing.**
-/// `havoc_range_reporting`'s `Symbolic` fill mints a `clobberN` per byte and `write_sym_byte`s
-/// it — but against an object that does not exist yet the write fails and the loop `break`s
-/// silently. The first read afterwards therefore gets no value and chiero **invents** one; the
-/// object is materialised by that read, so every later read returns the real term. A guard on
-/// the first read constrains a symbol nothing else uses.
+/// The first read after the unmodeled call produces no value and chiero **invents** one; the
+/// second returns a real term. The guard therefore constrains a symbol nothing else uses.
+/// Confirmed the only way that settles it: adding one load **before** the call makes this test
+/// pass.
 ///
-/// Confirmed the only way that settles it: adding one load **before** the call — which
-/// materialises the object, so the havoc has something to write to — makes this test pass.
+/// The call *does* havoc — the envelope carries `ModelApproximate`, as VPP's does — and the
+/// object ends up **`Array`-promoted**, which is what VPP's `unwitnessed` text says too
+/// ("whose value is a whole array rather than a number").
 ///
-/// That is exactly the VPP shape: `format (s, "%s", c->name)` is the first thing that touches
-/// `c`, so its havoc is a no-op and the guard's read is invented.
+/// ⚠️ **What is NOT established, after one wrong guess already:** *why* the first read of an
+/// `Array`-promoted lazy object yields nothing. It is **not** `havoc_range_reporting`'s
+/// `Symbolic` fill failing — instrumenting that loop shows it never runs here, so the havoc
+/// takes `havoc_object`'s promoting path instead. Anything more specific needs measuring, not
+/// reasoning.
 ///
-/// 📌 The fix is a design question about *where* materialisation happens: `chiero-mem` cannot
-/// materialise a lazy object because laziness is `chiero-exec`'s, so either the engine
-/// materialises reachable objects before havocking them, or the silent `break` becomes a
-/// refusal that says so. **The silence is the part that is certainly wrong** — 021 §6's family
-/// again, and a havoc that writes nothing while reporting success is the same shape as every
-/// other entry in it.
+/// 📌 021 §6's family regardless: a read path that does not end in a symbol, and a guard that
+/// binds an invented value constrains nothing.
 #[test]
 #[ignore = "reproduces an open defect; see the table above"]
 fn probe_lazy_two_loads() {
