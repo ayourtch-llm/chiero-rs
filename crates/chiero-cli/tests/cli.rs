@@ -1363,3 +1363,55 @@ fn the_solver_budget_reaches_check_reachables_witness() {
         "and the inputs are unpinned rather than zeros wearing the solver's authority: {t}"
     );
 }
+
+/// **`chiero cir` — a window into what lowering actually produced.**
+///
+/// 020 makes the textual format normative and round-tripping it a contract, and the printer has
+/// been round-trip tested since. Until now **nothing outside Rust could see it**: no operation
+/// prints a module, so every question about what a function lowered to was answered by reading
+/// `chiero-lower` and guessing.
+///
+/// That cost a real investigation on 2026-08-08. A `pointer-outside-object` finding on
+/// `vnet/dev/counters.c` put four independently-verified facts in contradiction — the offset
+/// check probes the path condition, the `PtrAdd` is downstream of the guard, reads are stable in
+/// every memory representation, and the report only fires on `Sat` — and settling *which* is
+/// false needs to know which term the guard constrains and which the `PtrAdd` uses. That is one
+/// `grep` over the lowered CIR and unanswerable without it. Four probes went into hypotheses
+/// first; this is the instrument that would have replaced them.
+///
+/// Not `get_cfg` (050 lists that operation and it remains unbuilt): this prints the *whole*
+/// module in 020's format rather than a block/edge summary, which is what a reader debugging
+/// lowering needs and a superset of what `get_cfg` would show.
+#[test]
+fn cir_prints_the_lowered_module_in_the_normative_format() {
+    let p = write(
+        "dump.c",
+        "int f (int x)\n{\n  if (x > 3) return 1;\n  return 2;\n}\n",
+    );
+    let r = run(&["cir", p.to_str().expect("utf-8 path")]);
+    assert_eq!(r.code, 0, "{}", r.err);
+
+    // The shape 020 specifies: a target line, a `func` header, named blocks, a terminator.
+    for want in ["target ", "func @f(", "entry:", "ret "] {
+        assert!(
+            r.out.contains(want),
+            "the dump is missing `{want}`, so it is not 020's format:\n{}",
+            r.out
+        );
+    }
+    // **The branch has to be there.** Without it this passes on a dump that prints headers and
+    // drops the body, which is the shape of every "it printed something" test.
+    assert!(
+        r.out.contains("br "),
+        "the `if` lowered to a conditional branch and the dump must show it:\n{}",
+        r.out
+    );
+    // **And it must round-trip**, which is what makes it the normative format rather than a
+    // rendering: 020 contract 5 says a well-formed module re-parses.
+    let m = chiero_cir::text::parse(&r.out).expect("the dump must re-parse (020's round trip)");
+    assert_eq!(
+        chiero_cir::text::print(&m),
+        r.out,
+        "printing the re-parsed module must reproduce the dump byte for byte"
+    );
+}
