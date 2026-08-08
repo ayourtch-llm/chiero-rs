@@ -1492,6 +1492,7 @@ This has now paid out three times in a row, each time on the first run after a w
 | *not a widening* — **re-measuring the pinned 40 and asking why nothing moved** | one retake + one `grep` | the corpus **cannot reach** a 32-byte access: `__AVX2__` is undefined in every configuration chiero compiles, so every AVX2/AVX512 path in vppinfra is invisible to every measurement this project has published. New evidence for the parked `-march` item, and it came from an *unchanged* number |
 | **a new *kind* of gate: the preprocessor under VPP's own flags** (012 c17, 1967 TUs, 18 min) | one ingest + one gate | **three defects the pp-gate could never see**, because none is about preprocessing *syntax*: `__linux__` unbaked (VPP's `pmalloc.c` reached `#error "Unsupported OS"`), `__has_attribute(error)` answered 0 where gcc says 1, and a diagnostic class chiero was *right* about and that was still noise. Diagnosed 25 → 0, and the token count 731M → **792M: 8% more of the program became visible** |
 | *not a widening* — **asking what chiero believes rather than what it says** (`persona_gap`, 0.1 s) | one differential instrument | the **endianness** defect: `__BYTE_ORDER__` undefined, so `#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__` read `0 == 0`, took the big-endian branch on x86-64, and reversed bit-field member order across `srv6-mobile`. **The 18-minute corpus gate is structurally incapable of finding this** — a wrongly-taken branch emits nothing. Output-watching and state-comparison are two different searches |
+| **the per-TU persona join** — the corpus gate stopped preprocessing 1967 units as one compiler | one crate + one wave, 23 min to re-measure | **+26M tokens, 3.3% more of VPP visible**, 0 diagnosed throughout — and the yield was a *number*: 8 distinct target flag-sets where I had written 5 in four places. A `-march` value is not a flag-set (`-mtune`, `-mprefer-vector-width=512`, `-maes`, four units with none, one naming `-march` twice). One `ninja -t compdb` pipe would have said so at any point |
 | *not a widening* — **disbelieving a "blocked" label** (the gcov `Vec::contains` audit) | one generated `.gcno` | the block was false: gcc emits a `.gcno` of any size from generated C, so no VPP coverage build and no format writer were ever needed. Native ingest measured **quadratic**, then **~250x faster** (17.31 s → ~0.068 s at n=3200, two runs; ±20% at these times) across five fixes. ⚠️ **Six confident hypotheses were refuted by measurement**, four of them before anything worked; counters found every real site. The curve itself was blind twice — once holding blocks-per-line at 1, once measuring below its own noise floor — and a genuinely quadratic counter (327 808 014 cells) turned out to be 7% of the clock. **Counting stops you being confidently wrong; it does not by itself make you right** |
 
 The loop, and it is deliberately mechanical:
@@ -1583,25 +1584,26 @@ typing the paths ever would.
 > for months (*a green gate is evidence about the corpus, not about the tree*). Then §9.1 for
 > the next target.
 >
-> ### 🆕 Suggested first moves after 2026-08-08, in order
+> ### 🆕 Suggested first moves after 2026-08-08 (second session), in order
 >
-> 1. **Run the three gates below** (~19 min total, mostly one of them). They are the fastest way
->    to learn whether anything drifted, and two of them were built the same day so their
->    expectations have only one datapoint behind them.
-> 2. ✅ **Done 2026-08-08 — the persona work and `-march` both shipped** (§9.1 item 1). What is
->    left of that thread is small and *not* blocked: cache the `cc -dM` probe per flag-set (five
->    probes, not 1963), and join `BuildDb`'s per-TU `target_flags` to `Config::persona` in the
->    sweep, which is what makes 060 contract 2's multiarch 1:N real. §9.1 1d
->    (`__STDC_VERSION__`: the persona says C11, gcc's default is gnu17) is still the owner's call
->    on the *language level*, and 1e (the corpus gate inherits the baked persona rather than the
->    shipped configuration) is now a small fix rather than a design question.
-> 3. **The gcov enumeration's algorithmic half** (§9.1's audit entry). Diagnosed, measured, 3.08x
->    already banked, and `tests/growth.rs` will judge any attempt in 25 seconds. ⚠️ Read the three
->    failed hypotheses there *before* forming a fourth.
+> 1. **Run the three gates below.** The persona thread closed today and the corpus gate now
+>    preprocesses each TU under *its own* `-march`, so its two headline numbers have exactly one
+>    datapoint behind them. ⏱️ It is no longer ~20 min: **the persona join made it longer**, and the
+>    number in this file is the one to beat rather than to trust.
+> 2. ✅ **Done 2026-08-08 — the whole persona thread, including the join** (§9.1 item 1 and 1e).
+>    `chiero-probe` is the 24th crate: one place that runs `cc -dM -E`, memoized per flag-set, and
+>    `TranslationUnit::pp_config(&probe)` makes the join unskippable. 060 contract 2 is met.
+>    §9.1 1d (`__STDC_VERSION__`: the persona says C11, gcc's default is gnu17) is still the
+>    **owner's call on the language level** and is the only part of that thread left.
+> 3. **The gcov enumeration's algorithmic half** (§9.1's audit entry). Diagnosed, measured, ~250x
+>    already banked across five fixes, and `tests/growth.rs` judges any attempt in 7 seconds. Its
+>    failure message now names what the printed columns rule out. ⚠️ Scoreboard is **6 hypotheses
+>    refuted, 5 held** — read them before forming a seventh.
 >
-> ⚠️ **What not to do:** do not start the parked `-march` item, and do not "fix" a `Vec::contains`
-> because it looks quadratic — see §9.1, where two that looked it were not and one described in
-> passing was the whole cost.
+> ⚠️ **What not to do:** do not "fix" a `Vec::contains` because it looks quadratic — see §9.1,
+> where two that looked it were not and one described in passing was the whole cost. **Nothing is
+> parked right now**; the pause emoji appears nowhere in §9.1, which is what the heartbeat's
+> instruction resolves to.
 >
 > ✅ **The owner's close-the-gap ask is DONE — pp-gate reports 0 findings** (§7.11). Keep it as a
 > two-minute standing check.
@@ -1612,7 +1614,9 @@ typing the paths ever would.
 > a fresh session will not discover them by accident.
 >
 > ```sh
-> # what chiero SAYS: 1967 VPP TUs under VPP's own flags. ~20 min (1184 s measured). Metric: 0 diagnosed.
+> # what chiero SAYS: 1967 VPP TUs under VPP's own flags AND its own -march. 23 min (1358 s
+> # measured 2026-08-08, up from 1184 s — the persona join is what added the 15%).
+> # Metrics: 0 diagnosed, 818 380 190 tokens, 8 personas, 0 failed probes.
 > cargo test -p chiero-vpp --test preprocess_corpus -- --ignored --nocapture
 >
 > # what chiero BELIEVES vs gcc: predefine definedness AND value. ~0.1 s. Expect 0 gaps.
@@ -1626,11 +1630,15 @@ typing the paths ever would.
 > cargo test -p chiero-gcov --test growth -- --ignored --nocapture
 > ```
 >
-> ✅ **All three re-run and confirmed at `91d0260` (2026-08-08), so these are verified numbers and
-> not remembered ones:** `preprocess_corpus` 1967/1967, 0 panicked, **0 diagnosed**, 792 404 723
-> tokens — byte-identical to the run before it, which is how we know the `__SSE__`/`__SSE2__`
-> predefines were already in that one; `persona_gap` **0 gaps**, 15 values compared, 1 deliberate
-> difference; `growth` fails as intended at 14.0x / 31.4x.
+> ✅ **All three re-run at the end of the second 2026-08-08 session** — verified numbers, not
+> remembered ones: `preprocess_corpus` 1967/1967, 0 panicked, **0 diagnosed**, **818 380 190
+> tokens** (was 792 404 723 before the per-TU persona join), **8 personas, 0 failed probes**;
+> `persona_gap` **0 gaps**, 15 values compared, 1 deliberate difference; `growth` fails as intended.
+>
+> ⏱️ **`growth`'s ratio is noisy — take it as a band, not a figure.** Three runs the same afternoon
+> gave 15.2/14.7, 13.9/11.7 and (before the fixes) 14.0/31.4. The `onelin` 31.4 is stale; both
+> shapes now sit together, which is itself the result of the acyclic early-out. Judge it by the
+> 8.0x threshold it asserts, not by matching a past number.
 >
 > **They ask three different questions and each found something the others structurally could
 > not** — the corpus gate cannot see a wrongly-taken `#if` branch (it emits no diagnostic), and
@@ -1653,8 +1661,16 @@ typing the paths ever would.
 > **None of them was visible to the pp-gate**, which has reported 0 findings for weeks: none is
 > about preprocessing *syntax*. A gate that has been green for weeks is an untested surface.
 >
-> **State: 2026-08-08 — `./check.sh` GREEN at 2257 across 270 suites, fmt and clippy clean.**
-> Verified on all three CI legs and pushed.
+> **State: 2026-08-08, second session — see the run recorded at the end of §9.1 for the number.**
+> The first session left it GREEN at 2257 across 270 suites, fmt and clippy clean, on all three CI
+> legs and pushed.
+>
+> **This session's closes:** the whole persona thread — `chiero-probe` (the **24th** crate: one
+> place that runs `cc -dM -E`, memoized per flag-set), `TranslationUnit::pp_config(&probe)` so the
+> join cannot be skipped, **060 contract 2**, and §9.1 1e (the corpus gate stopped measuring a
+> configuration nobody ships). Three defects found along the way, each by measurement rather than
+> by review: a cache keyed on nothing, a failed probe answering "nothing predefined", and a
+> "5 probes" figure that is 8.
 >
 > **This session's closes:** 060 contract 1 (`chiero_vpp::builddb` — VPP's compile database;
 > 1967 C units → 423 configurations); 012 contract 17 (1967 TUs preprocessed under VPP's own
@@ -1773,6 +1789,24 @@ typing the paths ever would.
    they *select a persona* rather than configure the preprocessor — only the compiler knows what
    `-march=haswell` implies, so they go to a `cc -dM -E` probe uninterpreted.
 
+   📊 **Measured on the real corpus after the join, 2026-08-08 (1358 s, 22.6 min):**
+
+       012 c17: 1967/1967 C units | 0 panicked | 0 diagnosed | 0 unreadable | 818 380 190 tokens
+         personas: 8 distinct target flag-sets probed from cc
+
+   **+25 975 467 tokens against the run before it — 3.3% more of VPP visible**, and 0 diagnosed
+   throughout, which is the same pair of numbers the persona work has produced every time: the
+   count says *no unaddressed complaint*, the token delta says *this much more of the program is
+   now being read*. Only the second can see a branch taken correctly for the first time.
+
+   ⚠️ **8 distinct flag-sets, where I had written 5 — in the crate doc, the spec and two tests.**
+   The five distinct `-march` *values* are real; a flag-*set* is not a `-march`. VPP's carry
+   `-mtune=generic`, `-mprefer-vector-width=512` and `-maes` alongside it, four units carry none
+   at all, and **one names `-march` twice** (`x86-64-v2 … silvermont`, last wins). Every one of
+   those is a case an interpreter would get wrong, which is the argument for handing the flags to
+   a compiler verbatim. Enumerated with one `ninja -t compdb | python3` pipe — **the number was
+   one command away the whole time and I wrote it from memory instead.**
+
    ✅ **Both halves closed 2026-08-08 — `chiero-probe`, and the join.** The 24th crate exists for
    one reason: `chiero-cli` and `chiero-vpp` both need "what does *this* compiler predefine under
    *these* flags", and a second `cc -dM` probe in `chiero-vpp` would have been the **third**
@@ -1790,6 +1824,14 @@ typing the paths ever would.
      makes it mean something — one source, N units, N *different programs*.
    - Mutants confirm both: dropping the memoization, returning the cache's first entry whatever the
      key, and passing `&[]` in place of the unit's flags each fail a test that named them.
+   - **A defect in the new code, found by asking what a bad flag does rather than by review.**
+     `cc -march=nonsense` exits non-zero and prints no `#define`, and `Persona::from_defines` over
+     that text is a well-formed persona with **zero** entries — the worst answer available, since
+     `__GNUC__`/`__linux__`/`__x86_64__` all undefined sends every header down its `#else`. The
+     code asked whether the process *started*, not whether it *answered*. Now one rule, plus
+     `failed_probes()`: the baked fallback is right and being handed it unknowingly is not, so the
+     corpus gate prints each substitution and fails on any. (gcc 13.3 accepts all eight of VPP's
+     flag-sets, so this is a guard rather than a live failure — also measured, not assumed.)
 
 1z. **🗄️ Original entry, kept because its reasoning held up — closed, not parked.** It read:
    PARKED at the owner's request

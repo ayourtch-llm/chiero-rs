@@ -199,8 +199,13 @@ that silently skips 30% is not, and only measurement distinguishes them.
    every 32-byte vector type in vppinfra. A wrongly-taken `#if` branch emits no diagnostic, so
    nothing failed. `pp_config` now takes a [`chiero_probe::Probe`] and the join is
    unskippable; the test asserts two variants of one source preprocess to *different*
-   programs, and that the probe runs once per **distinct** flag-set (5 for VPP's 1967 units)
-   rather than once per unit.
+   programs, and that the probe runs once per **distinct** flag-set (**8** for VPP's 1967 units,
+   measured) rather than once per unit.
+
+   ⚠️ **Eight, where the five `-march` values in §1.1 would suggest five.** A flag-set is not a
+   `-march`: VPP's carry `-mtune=generic`, `-mprefer-vector-width=512` and `-maes` alongside it,
+   four units carry none, and one names `-march` **twice**. That is the argument for handing the
+   flags to a compiler uninterpreted rather than parsing a target out of them.
 3. A finding in a multiarch function names its variant.
 4. `clib_mem_alloc` produces exactly one state (no NULL branch); `malloc` in the same
    program produces two.

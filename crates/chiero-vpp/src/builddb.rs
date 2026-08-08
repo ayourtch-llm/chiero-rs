@@ -90,7 +90,7 @@ impl TranslationUnit {
     /// the wrong branch of an `#if` emits no diagnostic. Making the join unskippable is what
     /// stops that being one caller's mistake to repeat.
     ///
-    /// It costs one `cc -dM -E` per *distinct* flag-set — five for VPP's 1967 units — because
+    /// It costs one `cc -dM -E` per *distinct* flag-set — 8 for VPP's 1967 units, measured — because
     /// [`chiero_probe::Probe`] memoizes on the flags. A machine with no compiler gets the baked
     /// persona, which is what chiero has always impersonated.
     pub fn pp_config(&self, probe: &chiero_probe::Probe) -> chiero_pp::Config {

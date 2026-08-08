@@ -102,10 +102,12 @@ fn each_variant_preprocesses_under_the_persona_its_own_march_selects() {
 
 /// **The join costs one compiler run per distinct `-march`, not one per unit.**
 ///
-/// VPP has 1967 C units and five distinct `-march` values between them. A probe per unit would put
-/// 1967 subprocess spawns inside the corpus gate; this is the assertion that says it does not, and
-/// it is a count rather than a duration because a duration would pass on a fast machine with no
-/// cache at all.
+/// VPP has 1967 C units and **8** distinct target flag-sets between them — measured; the five
+/// `-march` *values* the build uses are not the same count, because a flag-set also carries
+/// `-mtune`, `-mprefer-vector-width`, `-maes`, or nothing. A probe per unit would put 1967
+/// subprocess spawns inside the corpus gate; this is the assertion that says it does not, and it
+/// is a count rather than a duration because a duration would pass on a fast machine with no cache
+/// at all.
 #[test]
 fn the_persona_is_probed_once_per_distinct_march_not_once_per_unit() {
     let d = BuildDb::parse(&format!(

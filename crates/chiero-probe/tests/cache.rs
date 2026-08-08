@@ -2,7 +2,7 @@
 //! answer for each.
 //!
 //! **The count is the contract, not the speed.** A sweep over VPP asks for a persona 1967 times
-//! and there are five distinct `-march` values in that build; "it is cached" is a claim about how
+//! and there are 8 distinct target flag-sets in that build; "it is cached" is a claim about how
 //! many times a subprocess ran, and only a counter can state it. A timing would pass on a fast
 //! machine with no cache at all.
 
@@ -33,8 +33,8 @@ fn flags(f: &[&str]) -> Vec<String> {
 /// **Six asks over three flag-sets run the compiler three times.**
 ///
 /// This is what makes the join affordable: 1967 VPP translation units carry 1963 target flag-sets
-/// between them, but only five distinct ones, so the sweep pays five `cc -dM -E` invocations
-/// rather than one per unit.
+/// between them, but only **8** distinct ones, so the sweep pays 8 `cc -dM -E` invocations rather
+/// than one per unit — measured on the real build, after this comment said five.
 #[test]
 fn the_compiler_runs_once_per_distinct_flag_set() {
     let p = Probe::new();

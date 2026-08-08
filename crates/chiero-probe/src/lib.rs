@@ -21,10 +21,16 @@
 //!
 //! # What it costs
 //!
-//! One `cc -dM -E` per distinct flag-set, not per translation unit. On VPP that is **5 probes for
-//! 1967 units** — the five distinct `-march` values its build uses. [`Probe::persona_probes`]
-//! counts the compiler invocations rather than the calls, because a cache that is asserted and not
-//! measured is a cache nobody can check.
+//! One `cc -dM -E` per distinct flag-set, not per translation unit. On VPP that is **8 probes for
+//! 1967 units**. [`Probe::persona_probes`] counts the compiler invocations rather than the calls,
+//! because a cache that is asserted and not measured is a cache nobody can check.
+//!
+//! ⚠️ **Eight, not the five its `-march` values would suggest** — measured, after this file said
+//! five. A flag-set is not a `-march`: VPP's carry `-mtune=generic`,
+//! `-mprefer-vector-width=512`, `-maes`, four units carry none at all, and **one names `-march`
+//! twice** (`-march=x86-64-v2 … -march=silvermont`, where the last wins). Which is the case for
+//! passing them verbatim: an interpreter would have to know that `-mprefer-vector-width` is not a
+//! target and that a repeated `-march` is not two.
 
 use chiero_pp::Persona;
 use std::collections::BTreeMap;
