@@ -1757,8 +1757,10 @@ typing the paths ever would.
    vlib/main.c               [clang, 1 target(s)]  {"status":"clean","ms":1670}
    ```
 
-   ⚠️ **A 1 ms "clean" is not a pass, it is an empty analysis** — the persona compiles almost none
-   of those files, so there is nothing to be clean about. Same class as `--verify-cir` dropping
+   ⚠️ **A 1 ms "clean" is not a pass, it is an empty analysis** — and that is measured, not
+   inferred. For `aes_cbc.c` under those flags **gcc itself preprocesses to 6 non-blank lines**,
+   and `chiero cir` lowers **0 functions**. The body is entirely behind a guard the configuration
+   does not satisfy, so chiero is correctly reporting a clean analysis of six lines of nothing. Same class as `--verify-cir` dropping
    all nine functions of `crc32_5tuple.c`, and the same class as the 8% of VPP the persona was
    hiding before today's predefine fixes. **So the intrinsics question cannot be asked yet:** the
    TUs that would answer it are not being analysed at all, and the failure is silent. Fix the
