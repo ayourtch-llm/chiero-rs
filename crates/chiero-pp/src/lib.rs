@@ -508,7 +508,11 @@ impl Engine {
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect::<Vec<_>>()
         {
-            engine.add_predefined_object(&name, &value);
+            // **Lexed, not wrapped in a synthetic number.** `add_predefined_object` makes the
+            // value one numeric token, which is fine for the baked set (all numerals) and wrong
+            // for a real `cc -dM` dump: `#define __PTRDIFF_TYPE__ long int` is two tokens, and
+            // as a bogus number it made `stddef.h` fail with "expected a type specifier".
+            engine.add_config_object(&name, &value);
         }
         for name in [
             "__has_include",
@@ -910,33 +914,6 @@ impl Engine {
             variadic_name: None,
             std_variadic: false,
             body: Vec::new(),
-        });
-        self.by_name.insert(name.into(), index);
-    }
-
-    fn add_predefined_object(&mut self, name: &str, value: &str) {
-        let name_symbol = self.lex_session.intern_symbol(name);
-        let id = self
-            .source_map
-            .add_macro_at(name, Span::DUMMY, Span::DUMMY, None, 0);
-        let index = self.macros.len();
-        let mut body = vec![synthetic_number(value, Span::DUMMY)];
-        mark_paste_operators(&mut body);
-        self.macros.push(StoredMacro {
-            query_only: false,
-            def: MacroDef {
-                id,
-                name: name_symbol,
-                kind: MacroKind::ObjectLike,
-                body: body.iter().map(|token| token.token.clone()).collect(),
-                def_span: Span::DUMMY,
-                undef_span: None,
-            },
-            name: name.into(),
-            params: Vec::new(),
-            variadic_name: None,
-            std_variadic: false,
-            body,
         });
         self.by_name.insert(name.into(), index);
     }

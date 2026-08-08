@@ -1422,3 +1422,72 @@ fn cir_prints_the_lowered_module_in_the_normative_format() {
         "printing the re-parsed module must reproduce the dump byte for byte"
     );
 }
+
+/// **`--march` changes which code exists** — HANDOFF §9.1's parked item, and the reason it
+/// mattered.
+///
+/// `frontend::persona` probed the compiler with **no flags** while VPP builds `-march=x86-64-v2`,
+/// so `__SSE4_2__` and `__AVX2__` were undefined and every guarded path was invisible. Measured
+/// consequence: every 32-byte type in VPP lives in `vppinfra/vector_avx2.h` under
+/// `#if defined(__AVX2__)`, so **every AVX2 and AVX512 path in vppinfra had never once been
+/// compiled by any chiero measurement** — silently, because absent code reports nothing.
+///
+/// The three levels are the assertion: a flag that only ever *added* macros could not produce the
+/// middle row, and one that ignored its argument could not produce the third.
+///
+/// ⚠️ The `always` function is in every row on purpose. The first version of this flag forgot to
+/// skip its own argument, so `--march x86-64-v2 file.c` parsed as **two** input files and the
+/// command failed outright — printing nothing at all, which a test asserting only the presence of
+/// `has_sse42` would have reported as a plain absence.
+#[test]
+fn march_selects_the_persona_and_therefore_which_functions_exist() {
+    // ⚠️ A *private* subdirectory. `scratch()` is shared per-process, and the first version of
+    // this test removed it at the end — deleting other tests' fixtures mid-run.
+    let dir = scratch().join("march");
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("march.c");
+    std::fs::write(
+        &src,
+        "#if defined(__SSE4_2__)\nint has_sse42(void) { return 1; }\n#endif\n\
+         #if defined(__AVX2__)\nint has_avx2(void) { return 1; }\n#endif\n\
+         int always(void) { return 0; }\n",
+    )
+    .unwrap();
+
+    let names = |args: &[&str]| -> Vec<String> {
+        let out = Command::new(bin())
+            .arg("cir")
+            .args(args)
+            .arg(&src)
+            .output()
+            .expect("chiero cir");
+        assert!(
+            out.status.success(),
+            "chiero failed with {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|l| l.strip_prefix("func @"))
+            .filter_map(|l| l.split('(').next())
+            .map(str::to_owned)
+            .collect()
+    };
+
+    assert_eq!(
+        names(&[]),
+        ["always"],
+        "no -march: neither guard is satisfied"
+    );
+    assert_eq!(
+        names(&["--march", "x86-64-v2"]),
+        ["has_sse42", "always"],
+        "v2 has SSE4.2 and not AVX2"
+    );
+    assert_eq!(
+        names(&["--march", "x86-64-v3"]),
+        ["has_sse42", "has_avx2", "always"],
+        "v3 adds AVX2 — the paths no chiero measurement had ever compiled"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

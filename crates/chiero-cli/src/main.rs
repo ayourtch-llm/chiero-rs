@@ -188,6 +188,13 @@ struct Options {
     defines: Vec<(String, String)>,
     json: bool,
     no_system_headers: bool,
+    /// Target flags for the compiler persona — `--march x86-64-v2`, or `-m<flag>` passed through.
+    ///
+    /// **Not decoration.** `__SSE4_2__` and `__AVX2__` exist only under the right `-march`, so
+    /// probing the compiler with none of them predefines a different compiler than the one the
+    /// code is built with. Every AVX2 path in VPP's vppinfra had never once been compiled by a
+    /// chiero measurement because of this.
+    target_flags: Vec<String>,
     replay: bool,
     allow_replay_exec: bool,
     entry_ptr_nonnull: bool,
@@ -223,6 +230,11 @@ impl Options {
             match a.as_str() {
                 "--json" => o.json = true,
                 "--no-system-headers" => o.no_system_headers = true,
+                "--march" => {
+                    o.target_flags
+                        .push(format!("-march={}", need(i, args, "--march")?));
+                    i += 1;
+                }
                 "--entry-ptr-nonnull" => o.entry_ptr_nonnull = true,
                 "--report-invented-bounds" => o.report_invented_bounds = true,
                 "--replay" => o.replay = true,
@@ -287,6 +299,9 @@ impl Options {
                 }
                 _ if a.starts_with("-I") && a.len() > 2 => o.includes.push(PathBuf::from(&a[2..])),
                 _ if a.starts_with("-D") && a.len() > 2 => o.defines.push(define(&a[2..])),
+                // `-march=…`, `-mavx2`, `-mtune=…`: handed to the persona probe verbatim, since
+                // the compiler is the only thing that knows what each implies.
+                _ if a.starts_with("-m") && a.len() > 2 => o.target_flags.push(a.clone()),
                 _ if a.starts_with('-') => {
                     return Err(Fault::Usage(format!("unknown option `{a}`")));
                 }
@@ -327,6 +342,7 @@ impl Options {
             includes: self.includes.clone(),
             defines: self.defines.clone(),
             system_headers: !self.no_system_headers,
+            target_flags: self.target_flags.clone(),
         }
     }
 }

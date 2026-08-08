@@ -37,14 +37,22 @@ pub(crate) struct Frontend {
     /// links no toolchain (010 §1), and a machine without one gets an empty answer rather than
     /// a build-time dependency.
     pub(crate) system_headers: bool,
+    /// **Target flags handed to the persona probe** — `-march=x86-64-v2`, `-mavx2`, and friends.
+    ///
+    /// These are not decoration: `__SSE4_2__` and `__AVX2__` exist only under the right `-march`,
+    /// and VPP compiles the same source repeatedly under different ones. Probing with no flags
+    /// while the build uses `-march=x86-64-v2` predefines a different compiler than the one that
+    /// ships — measured: every AVX2 path in vppinfra had never been compiled by any chiero
+    /// measurement. HANDOFF §9.1.
+    pub(crate) target_flags: Vec<String>,
 }
 
 impl Frontend {
     pub(crate) fn pp(&self) -> chiero_pp::Config {
-        let (system, predefined) = if self.system_headers {
-            system_environment()
+        let (system, persona) = if self.system_headers {
+            system_environment(&self.target_flags)
         } else {
-            (Vec::new(), Vec::new())
+            (Vec::new(), chiero_pp::Persona::baked())
         };
         chiero_pp::Config {
             // The preprocessor's pedantry has to match the parser's, or the two disagree about
@@ -52,20 +60,18 @@ impl Frontend {
             pedantic: false,
             include_paths: self.includes.clone(),
             system_paths: system,
-            // **The caller's `-D` last, so it wins.** A tree that redefines something the
-            // compiler predefines means it; taking the predefine instead would analyse a
-            // different program.
-            defines: predefined
-                .into_iter()
-                .chain(self.defines.iter().cloned())
-                .collect(),
+            // **The caller's `-D` wins**, and it is `Config::defines` that carries it: a tree
+            // redefining something the compiler predefines means it, and taking the predefine
+            // instead would analyse a different program. The persona is installed first.
+            defines: self.defines.clone(),
+            persona,
             ..chiero_pp::Config::default()
         }
     }
 }
 
 /// The compiler's include paths and its predefined macros — see [`system_environment`].
-type SystemEnvironment = (Vec<PathBuf>, Vec<(String, String)>);
+type SystemEnvironment = (Vec<PathBuf>, chiero_pp::Persona);
 
 /// Where the system compiler keeps its headers, and what it predefines.
 ///
@@ -75,12 +81,12 @@ type SystemEnvironment = (Vec<PathBuf>, Vec<(String, String)>);
 /// were entirely that.
 ///
 /// Probed once: the answer is a property of the machine.
-fn system_environment() -> SystemEnvironment {
+fn system_environment(target_flags: &[String]) -> SystemEnvironment {
     static PROBED: std::sync::OnceLock<SystemEnvironment> = std::sync::OnceLock::new();
     PROBED
         .get_or_init(|| {
             let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
-            (include_paths(&cc), predefines(&cc))
+            (include_paths(&cc), persona(&cc, target_flags))
         })
         .clone()
 }
@@ -107,33 +113,28 @@ fn include_paths(cc: &str) -> Vec<PathBuf> {
     paths
 }
 
-fn predefines(cc: &str) -> Vec<(String, String)> {
-    let Ok(out) = std::process::Command::new(cc)
-        .args(["-dM", "-E", "-std=gnu11", "-x", "c", "/dev/null"])
-        .output()
-    else {
-        return Vec::new();
+/// The compiler's own predefines, as a [`chiero_pp::Persona`].
+///
+/// **One mechanism, not two.** This used to hand-parse `-dM` output into a `Vec` while the
+/// library baked a separate 23-entry array, so a fix to either proved nothing about the other —
+/// which is exactly how an 8%-of-VPP defect got attributed to the wrong measurements. The parsing
+/// lives in `Persona::from_defines` now; this function only knows how to run a compiler.
+fn persona(cc: &str, target_flags: &[String]) -> chiero_pp::Persona {
+    let mut args: Vec<String> = vec!["-dM".into(), "-E".into(), "-std=gnu11".into()];
+    args.extend(target_flags.iter().cloned());
+    args.extend(["-x".into(), "c".into(), "/dev/null".into()]);
+    let Ok(out) = std::process::Command::new(cc).args(&args).output() else {
+        // No compiler is a fact about the machine, not about the code — fall back to the set
+        // chiero has always baked rather than to an empty persona, which would predefine nothing
+        // and send every real header down its `#else`.
+        return chiero_pp::Persona::baked();
     };
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|line| {
-            let mut it = line.splitn(3, ' ');
-            if it.next() != Some("#define") {
-                return None;
-            }
-            let name = it.next()?;
-            // Function-like macros, and the ones the preprocessor must own itself.
-            if name.contains('(')
-                || matches!(
-                    name,
-                    "__FILE__" | "__LINE__" | "__DATE__" | "__TIME__" | "__COUNTER__"
-                )
-            {
-                return None;
-            }
-            Some((name.to_owned(), it.next().unwrap_or("1").to_owned()))
-        })
-        .collect()
+    let name = if target_flags.is_empty() {
+        cc.to_string()
+    } else {
+        format!("{cc} {}", target_flags.join(" "))
+    };
+    chiero_pp::Persona::from_defines(name, &String::from_utf8_lossy(&out.stdout))
 }
 
 /// **Where a frontend diagnostic is**, as `path:line:col`, and where it came from when a macro
