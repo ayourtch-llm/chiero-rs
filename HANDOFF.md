@@ -1932,6 +1932,17 @@ typing the paths ever would.
    *is* still true: **none of the pinned 40 entries is compiled at v3/v4 at all**, so that corpus
    sees no vector code whatever the shape.
 
+   ✅ **And the shape that *does* exist is caught, pinned, and mutation-checked.** A 32-byte vector
+   store past a 16-byte object reports `out-of-bounds: 32-byte access at offset 0 of buf, which is
+   16 bytes`, fidelity **Exact**, while the 16-byte store into the same object is clean —
+   `crates/chiero-cli/tests/cli.rs`, end to end from C. Nothing covered it: `chiero-exec`'s
+   `a_width_limit_does_not_mask_a_use_after_free` calls `Memory::read_term(.., 32, ..)` directly,
+   which is the *wide-load* path, and C vector code does not take it. Two mutants die (`CopyMem`
+   reporting no faults; a bounds check flagging every access ≥16 bytes), and the second is killed
+   by the assertion that the message **names the width that overran** — a bare "a finding exists"
+   would have let it through. `find-bugs` over 8 vector-using VPP entries gave 1 finding, a known
+   class.
+
    🗄️ **Measured 2026-08-07, and it makes the item bigger than those seven entries.** Retaking the
    pinned 40 after `BadRange` left the defect list gave byte-identical numbers, and the kept
    envelopes say why: `unsupported-access-width` occurs **zero** times in all forty — the corpus
