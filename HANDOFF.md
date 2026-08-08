@@ -1607,7 +1607,7 @@ typing the paths ever would.
 > a fresh session will not discover them by accident.
 >
 > ```sh
-> # what chiero SAYS: 1967 VPP TUs under VPP's own flags. ~18 min. Metric: diagnosed count (0).
+> # what chiero SAYS: 1967 VPP TUs under VPP's own flags. ~20 min (1184 s measured). Metric: 0 diagnosed.
 > cargo test -p chiero-vpp --test preprocess_corpus -- --ignored --nocapture
 >
 > # what chiero BELIEVES vs gcc: predefine definedness AND value. ~0.1 s. Expect 0 gaps.
