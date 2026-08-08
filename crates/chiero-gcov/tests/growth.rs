@@ -18,7 +18,10 @@
 //! ⚠️ **The two sites the audit named above are not the cost.** They were converted to `IndexSet`
 //! and the ratio did not move; a third guess — hoisting `accumulate_line_info`'s arc scan into a
 //! predecessor map, the exact fix that took the CIR verifier from hours to 2.4 s — moved nothing
-//! either and was reverted. **Three confident readings, three misses.**
+//! either and was reverted. **Three confident readings, three misses** — and that was only the
+//! start: the session finished at **six hypotheses refuted by measurement against six that held**.
+//! Every one of the six wrong ones looked obvious in the source, and three of them predicted the
+//! observed *shape* correctly while being wrong about the cause.
 //!
 //! What worked was counting. [`chiero_gcov::native::circuit_starts`] showed the cycle
 //! enumeration's recursion running **5 128 004** times at n=3200 in the `onelin` shape against
