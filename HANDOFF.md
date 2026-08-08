@@ -2103,6 +2103,31 @@ typing the paths ever would.
    and the assumptions name `max_indirect` and the unresolvable callee. **This is noise a reader
    must filter, not a claim chiero got wrong**, which is a different and much smaller failure.
 
+5i. 🆕 **The other dominant `vnet/` class, `pointer-outside-object` (19 of 44), and a precise
+   open question.** They cluster on a very common C idiom: a **static array indexed by a value
+   from a lazily-materialised struct**, where the program *does* guard the index.
+
+   `vnet/dev/counters.c`:
+
+   ```c
+   char *units[] = { [VNET_DEV_CTR_UNIT_BYTES] = "bytes", … };   /* 5 pointers, 40 bytes */
+   if (c->unit < ARRAY_LEN (units) && units[c->unit])
+   ```
+
+   chiero: *"a pointer into units (40 bytes) can be computed at offset 48, which is outside it"*.
+   Offset 48 is index 6, and `c->unit < 5` excludes it.
+
+   ❓ **So the question is whether the guard's constraint reaches the check.** Two readings and
+   they want opposite fixes: either the offset is being tested without the path condition that
+   bounds it (a defect), or `PointerOutsideObject` deliberately reports the *unconstrained* range
+   of a symbolic offset — "can be computed" is the wording — in which case it is behaving as
+   designed and the design is noisy on guarded array indexing, which is everywhere in C.
+   **Settle which before touching anything**; the same sentence fits both.
+
+   Between this and 5h, **36 of the 44 `vnet/` findings are characterised**: one class traced to
+   an architectural cause, one to a precise open question. Neither is chiero claiming something
+   false — fidelity is `Approximated` throughout and the assumptions name the causes.
+
 6. **`InstKind::Call` carries no result type**, so an indirect call's result width is whatever
    candidate ran. The arity and parameter-type filters cut the wildest cases and cannot close it;
    the engine survives the rest by degrading. The real fix is a CIR change — **135 sites**
