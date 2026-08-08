@@ -27,10 +27,22 @@
 //! call count unchanged throughout — which is how you know they were cost-per-call changes and
 //! not accidental semantic ones.
 //!
-//! **This test still fails, on purpose.** The remaining superlinearity is the quadratic *call
-//! count* itself — one DFS per block on the attributed line — and cutting it needs an algorithmic
-//! change to the enumeration, not another data structure. It is queued in §9.1, and the numbers
-//! above are what any attempt should be judged against.
+//! Four more fixes followed, for **~208x in total** (17.31 s → 0.083 s at n=3200): an acyclic
+//! early-out that skips the enumeration entirely, the conservation fixpoint's incidence lists
+//! hoisted out of its loop, `cycles_count`'s scratch allocated once per function, and — on the
+//! third attempt, after the two costs hiding it were gone — the `accumulate_line_info` hoist that
+//! had been reverted twice for moving nothing.
+//!
+//! **This test still fails, on purpose, and the residual is UNLOCATED.** ⚠️ Do not read the
+//! paragraph above as pointing at it: `circuit` now runs **zero** times on this input, and the
+//! enumeration is not the cost. Everything measured is linear — both decodes, the structure
+//! build, the conservation fixpoint — and together they are under 3% of the clock at n=12800,
+//! while the whole grows ~13.5x per 4x arcs.
+//!
+//! The next counter belongs in the `ArcCoverage` index building, and it must measure a unit whose
+//! cost **tracks time**: a genuinely quadratic cell count (327 808 014) was fixed here and moved
+//! the clock by ~7%. See §9.1 — six hypotheses on this item have been refuted by measurement, and
+//! every one of them looked obvious in the source.
 //!
 //! # ⚠️ The input shape decides which defect is visible, and that is the real lesson here
 //!
