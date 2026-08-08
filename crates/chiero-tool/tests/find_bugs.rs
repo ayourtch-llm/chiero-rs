@@ -849,3 +849,71 @@ func @opaque(%0: ptr) -> void";
          different values: {msgs:?}"
     );
 }
+
+/// **An indirect call's width mismatch is reported, and never as a proof.**
+///
+/// The largest finding class in the `vnet/` sweep — 17 of 40 — is this shape:
+/// *"8-byte access at offset 0 of the 4-byte unnamed local"*. `vnet/crypto/node.c`'s
+/// `crypto_dequeue_frame` calls a function pointer with `&n_elts`, a `u32`, and chiero dispatches
+/// to a candidate declaring a wider pointee.
+///
+/// **It is not a false claim.** If the pointer can name `@wide`, the call really does write eight
+/// bytes into four — and it can, because 020 §4.13b makes CIR pointers **untyped**: the pointee
+/// type lives on `Load`/`Store`, so a call site does not record whether the argument was `u32 *`
+/// or `u64 *`, and the candidate filter's rule is `(CTy::Ptr, Value::Ptr(_)) => true`. The filter
+/// cannot be sharper without the type CIR discarded, which is §9.1's `InstKind::Call` item.
+///
+/// So this test does **not** assert the finding away — that would decide a design question by
+/// fixture. It pins the property that has to hold whatever is decided: **the envelope says what
+/// the finding rests on.** `Exact` here would be a lie; `max_indirect` and the unresolvable
+/// callee are the premise, and a reader who cannot see them cannot tell this from a real bug.
+#[test]
+fn an_indirect_call_width_mismatch_is_reported_but_never_proven() {
+    // A call through a function pointer, passing the address of a 4-byte local. One candidate
+    // takes `ptr` and stores 8 bytes through it — a signature the call site cannot have meant,
+    // but CIR pointers are untyped (020 §4.13b) so the filter cannot tell.
+    const M: &str = "\
+func @f(%0: ptr) -> i32 {
+  alloca %1 : i32 x 1 align 4 scope 0 lifetime scope \"n\"
+entry:
+  .line 1
+  %2 = addrlocal %1
+  %3 = load ptr, %0 align 8
+  call %3(%2)
+  ret 0i32
+}
+
+func @wide(%0: ptr) -> void {
+entry:
+  .line 2
+  store i64 1i64 -> %0 align 8
+  ret
+}";
+    let mut c = cfg("f");
+    c.entry_ptr_nonnull = true;
+    let env = find_bugs(&m(M), &c);
+    let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
+    let msgs: Vec<String> = v["result"]["findings"]
+        .as_array()
+        .map(|fs| {
+            fs.iter()
+                .map(|f| f["message"].as_str().unwrap_or("").to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        msgs.iter().any(|x| x.starts_with("out-of-bounds")),
+        "the fixture's candidate stores 8 bytes into a 4-byte local: {msgs:?}"
+    );
+    assert_ne!(
+        v["fidelity"], "Exact",
+        "a finding that rests on which candidate an untyped pointer named cannot be exact: {v}"
+    );
+    assert_eq!(v["proven"], false, "and it may never be proven: {v}");
+    let assumptions = v["assumptions"].to_string();
+    assert!(
+        assumptions.contains("indirect") || assumptions.contains("callee"),
+        "the premise has to be named — a reader cannot tell this from a real bug otherwise: \
+         {assumptions}"
+    );
+}

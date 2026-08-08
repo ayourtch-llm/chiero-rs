@@ -2097,6 +2097,19 @@ typing the paths ever would.
    pointers untyped**: the pointee type lives on `Load`/`Store`, so a call site does not record
    whether an argument was `u32 *` or `u64 *`.
 
+   ✅ **Reproduced minimally 2026-08-08**, and the reproduction settles what to assert.
+   `an_indirect_call_width_mismatch_is_reported_but_never_proven` in
+   `chiero-tool/tests/find_bugs.rs`: a call through a function pointer passing `&(i32)`, and a
+   candidate that stores 8 bytes through it. Same message as VPP's, exactly.
+
+   ⚠️ **It does not assert the finding away, and that is deliberate.** chiero's claim is *true* if
+   the pointer can name that candidate — and it can, because the type CIR discarded is the only
+   thing that would say otherwise. Asserting its absence would decide a design question by
+   fixture. What the test pins instead is the property that must hold whichever way the design
+   goes: **the envelope names the premise.** `Exact` here would be a lie, and a reader who cannot
+   see `max_indirect` and the unresolvable callee cannot tell this from a real bug. A mutant that
+   stops emitting assumptions kills it.
+
    📌 **A design that fits the evidence rather than reopening §4.13b:** an indirect-call candidate
    whose *own* access faults past the extent of an object the caller passed is, by that fact,
    the wrong candidate — a real program cannot have made that call. Using the fault to **reject
