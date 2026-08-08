@@ -1734,7 +1734,38 @@ typing the paths ever would.
 > **read the corpus first** (§8.3 step 1) — a wave was mis-scoped today by asserting an edge
 > without checking what was already covered.
 
-1. **⏸️ PARKED at the owner's request 2026-08-07 — `-march`.** Do not start without checking in;
+1. ✅ **UNPARKED AND CLOSED 2026-08-08 — the owner said "go ahead and design + execute the persona
+   work", then "feel free to tackle march".** Both shipped; the original entry is kept below
+   because its reasoning was right and is worth reading.
+
+   **What was built.** A [`chiero_pp::Persona`] is a *named* set of predefines, and its file format
+   **is `cc -dM -E` output** — so there is no new parser, no new dependency, and one is captured
+   with `gcc -dM -E -x c /dev/null > personas/name.h` from any real compiler on any target.
+   `Persona::baked()` names the set chiero always had; `Config::persona` replaces it. `--march` and
+   any `-m…` flag go to the probe verbatim, since only the compiler knows what each implies.
+
+       chiero cir <file>                    -> always
+       chiero cir --march x86-64-v2 <file>  -> has_sse42, always
+       chiero cir --march x86-64-v3 <file>  -> has_sse42, has_avx2, always
+
+   **The two mechanisms are one.** `frontend::predefines` hand-parsed `-dM` into a `Vec` while the
+   library baked 23 entries; both now go through `Persona::from_defines`, and the CLI only knows
+   how to run a compiler.
+
+   ⚠️ **Three bugs the gate caught and I would not have**: `add_predefined_object` wrapped values
+   in a single synthetic *number* token — fine for a baked set of numerals, fatal for a real dump
+   where `__PTRDIFF_TYPE__` is `long int` (now deleted, not left as a trap); `--march` did not skip
+   its own argument, so the command failed outright; and the new test deleted the shared scratch
+   directory out from under its neighbours.
+
+   **What is left, and it is now small: per-TU selection.** `BuildDb` already carries the real
+   `-march` for all 1967 VPP compilations in `TranslationUnit::args`. Choosing a `Persona` per TU
+   is a lookup over tested machinery, not a subsystem — and it is what makes 060 contract 2's
+   multiarch 1:N real. Also still open: `frontend` probes once per *invocation*, so a sweep over
+   many TUs would want the persona cached per flag-set.
+
+1z. **⏸️ Original entry, kept because its reasoning held up.** PARKED at the owner's request
+   2026-08-07 — `-march`. Do not start without checking in;
    the owner asked to discuss the design first. What was agreed: the *flag propagation* half is a
    bug regardless (chiero probes the compiler with no flags while the sweep replays real ninja
    lines, so it preprocesses a different configuration than the one that ships), and the
