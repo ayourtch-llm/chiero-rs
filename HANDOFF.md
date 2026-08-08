@@ -1908,7 +1908,27 @@ typing the paths ever would.
    `ptrace_scope=1` workaround. ⚠️ A `timeout` row is a run that measured **nothing** — it is a
    lead, not a statistic.
 
-5g. 🆕 **`pick_entries.py` picks functions the preprocessor removes.** Three `nofn` rows in the
+5g. ✅ **CLOSED 2026-08-08 — `pick_entries.py --verify-cir`.** It keeps only names that survive
+   into the lowered module, using `chiero cir` (built earlier the same day, which is what made
+   this tractable — before it there was no way to ask).
+
+   **A filter, not a replacement, and the split is the point.** The CIR for one VPP `.c` names
+   ~7000 functions, nearly all inlines from headers, and nothing in it says which file a
+   `func @name` came from. **The text knows "defined in this file"; the CIR knows "survives the
+   preprocessor".** Each is asked the question it can answer.
+
+   Verified on the two files that produced `nofn` rows: it drops
+   `clear_session_dbg_clock_cycles_fn` (inside `#if SESSION_DEBUG > 0`) and `compute_ethernet_key`
+   — and it names what it dropped, because a corpus that quietly shrinks is one nobody can check.
+   ⚠️ `crc32_5tuple.c` loses **all nine** of its functions: the file is behind an `__SSE4_2__`
+   guard, so chiero lowers none of it. That is correct and it is the parked `-march` item showing
+   through — the corpus now reflects chiero's *actual* configuration rather than the source text's.
+
+   Off by default: it costs a `chiero cir` run per file. `CHIERO_FLAGS` carries the include and
+   define flags, since lowering a VPP file needs them and the picker has no other way to know.
+
+   *(Original entry: three `nofn` rows in the `vnet/` sweep, none of them the known macro-name
+   problem — all three were real definitions the configuration removes.)* Three `nofn` rows in the
    `vnet/` sweep, and none is the known macro-name problem: all three are real definitions in the
    source. `clear_session_dbg_clock_cycles_fn` is inside `#if SESSION_DEBUG > 0` and
    `session_debug.h` defines `SESSION_DEBUG` as `0`, so it is absent from the *configured* TU.

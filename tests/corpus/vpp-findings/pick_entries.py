@@ -37,6 +37,10 @@ FILES = [
 PER_FILE = 6
 TOTAL = 40
 
+# `--verify-cir`: keep only names that survive into the lowered module. Off by default because it
+# costs a `chiero cir` run per file; on, every entry is a function that exists.
+VERIFY_CIR = False
+
 # VPP's style puts the return type on its own line and the function name at column 0, so a
 # definition is a line starting with an identifier followed by `(`. A declaration ends in `;`.
 DEFINITION = re.compile(r"^(\w+)\s*\(")
@@ -92,6 +96,42 @@ def compiled_sources():
     return seen
 
 
+def lowered_names(path):
+    """The functions `chiero cir` reports for `path`, or `None` if it could not lower it.
+
+    **The text picker cannot see the preprocessor.** `DEFINITION` is a regex over the source, so
+    it names functions the configuration removes: `clear_session_dbg_clock_cycles_fn` sits inside
+    `#if SESSION_DEBUG > 0` and `session_debug.h` defines that as `0`, so the entry does not exist
+    in the translation unit chiero builds. The sweep spent those rows on `nofn` — an honest status
+    reporting a corpus mistake.
+
+    Filtering rather than replacing is deliberate: the CIR for one VPP `.c` names ~7000 functions,
+    almost all of them inlines pulled in from headers, and nothing in the text says which file a
+    `func @name` came from. The *text* is what knows "defined in this file"; the *CIR* is what
+    knows "survives the preprocessor". Each is asked the question it can answer.
+
+    `None` on failure, not an empty set — a file chiero cannot lower must leave the text picker's
+    answer alone rather than silently emptying it, which is the same "absent is not zero" rule the
+    rest of this harness runs on.
+    """
+    flags = os.environ.get("CHIERO_FLAGS", "").split()
+    exe = os.environ.get(
+        "CHIERO", os.path.join(os.path.dirname(__file__), "../../../target/release/chiero")
+    )
+    try:
+        out = subprocess.run(
+            [exe, "cir", os.path.join(SRC, path)] + flags,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if out.returncode != 0:
+        return None
+    return set(re.findall(r"^func @([A-Za-z_]\w*)\(", out.stdout, re.M))
+
+
 def entries(files, per_file, total):
     out = []
     for f in files:
@@ -111,6 +151,19 @@ def entries(files, per_file, total):
                     names.add(m.group(1))
         # Sorted, not source order: the file's own order is not stable across VPP versions,
         # and a sample that reshuffles when upstream moves a function is not a fixed sample.
+        if VERIFY_CIR:
+            real = lowered_names(f)
+            if real is not None:
+                dropped = sorted(names - real)
+                if dropped:
+                    # Named, not silently filtered: a corpus that quietly shrinks is one nobody
+                    # can check, and these names are the interesting part — each is a function
+                    # the configuration removes.
+                    print(
+                        "%s: --verify-cir dropped %s" % (f, ", ".join(dropped)),
+                        file=sys.stderr,
+                    )
+                names = names & real
         for name in sorted(names)[:per_file]:
             out.append((f, name))
     return out if total is None else out[:total]
@@ -123,7 +176,9 @@ def main():
     files = []
     i = 0
     while i < len(args):
-        if args[i] == "--built-only":
+        if args[i] == "--verify-cir":
+            globals()["VERIFY_CIR"] = True
+        elif args[i] == "--built-only":
             built_only = True
         elif args[i] == "--per-file":
             per_file, i = int(args[i + 1]), i + 1
