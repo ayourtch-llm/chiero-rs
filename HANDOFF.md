@@ -1492,6 +1492,7 @@ This has now paid out three times in a row, each time on the first run after a w
 | *not a widening* — **re-measuring the pinned 40 and asking why nothing moved** | one retake + one `grep` | the corpus **cannot reach** a 32-byte access: `__AVX2__` is undefined in every configuration chiero compiles, so every AVX2/AVX512 path in vppinfra is invisible to every measurement this project has published. New evidence for the parked `-march` item, and it came from an *unchanged* number |
 | **a new *kind* of gate: the preprocessor under VPP's own flags** (012 c17, 1967 TUs, 18 min) | one ingest + one gate | **three defects the pp-gate could never see**, because none is about preprocessing *syntax*: `__linux__` unbaked (VPP's `pmalloc.c` reached `#error "Unsupported OS"`), `__has_attribute(error)` answered 0 where gcc says 1, and a diagnostic class chiero was *right* about and that was still noise. Diagnosed 25 → 0, and the token count 731M → **792M: 8% more of the program became visible** |
 | *not a widening* — **asking what chiero believes rather than what it says** (`persona_gap`, 0.1 s) | one differential instrument | the **endianness** defect: `__BYTE_ORDER__` undefined, so `#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__` read `0 == 0`, took the big-endian branch on x86-64, and reversed bit-field member order across `srv6-mobile`. **The 18-minute corpus gate is structurally incapable of finding this** — a wrongly-taken branch emits nothing. Output-watching and state-comparison are two different searches |
+| **following the vector surface into the memory model** — does an OOB 32-byte store get caught, and is a misaligned one recorded? | one wave | **the overwrite is caught, `Exact`, and now pinned end to end from C** (a path no test reached: everything else tests the *wide-load* route, which C vector code does not take). The alignment half diagnosed a real gap — `CopyMem`'s `align` operand is discarded — **via a RED that was itself wrong**: `write_bytewise` strips `Misaligned` deliberately, with no comment. *An undocumented deliberate behaviour is indistinguishable from a defect* |
 | **the AVX2/AVX-512 half of vppinfra — 384 units, never parsed by anything** | one wave, minutes | **an honest zero on parsing: 24 sampled units, 0 diagnosed** — and the widening is real, **+292 to +528 definitions per TU** that no chiero measurement had lowered. `find-bugs` on 8 vector-using entries: 1 finding, a known class. **The yield was a corrected belief**: `unsupported-access-width` is zero not because the corpus cannot make a 32-byte access but because a vector access lowers to `copymem` — 7779 of them ≥32 bytes in one TU. ⚠️ **Two false zeros from ad-hoc greps in one wave**, both reading "nothing changed": `^func` counts declarations, and copymem sizes are `32i64` not "32 bytes". **When a probe reports zero, check that it can report non-zero** |
 | *not a widening* — **measuring a "stale environment" before acting on it** | 10 min | the tree had moved by **165 files in one checkout**, but only **4 `.api`** could matter: chiero reads `src/` directly, so only *generated* artifacts can be stale. Fixed with the generator command rather than `ninja`, whose target would have re-run cmake and rewritten the `build.ninja` every VPP measurement reads. **A blocker described in prose was a one-second check** |
 | **reproducing a defect at the layer it lives in** — the witness reporting item, after four waves of engine fixtures | one wave | **950 KB → 11.9 KB on the real VPP entry**, and two defects inside the fix: "show the first *k*" would have dropped every pinned binding, and a bounded rendering would have become a bounded *proof condition* in `check_reachable`. The four earlier dead ends all tried to *produce* a huge witness by execution; it was a reporting defect, and three of the six tests build a `Witness` directly |
@@ -3094,6 +3095,30 @@ typing the paths ever would.
    Between this and 5h, **36 of the 44 `vnet/` findings are characterised**: one class traced to
    an architectural cause, one to a precise open question. Neither is chiero claiming something
    false — fidelity is `Approximated` throughout and the assumptions name the causes.
+
+5j. 🆕 **`CopyMem` discards the alignment the CIR hands it, so a memcpy and a vector move are the
+   same access.** Diagnosed 2026-08-08, not fixed, and the diagnosis cost a wrong RED that is worth
+   reading before anyone starts.
+
+   The chain, all measured: a `u8x32` access lowers to `copymem …, 32i64 **align 16**`;
+   `chiero-exec` drops it (`let _ = align;`); `Memory::copy` writes through `write_bytewise`, which
+   **strips `Misaligned` deliberately** because a copy is defined byte by byte as `memcpy` is; and
+   `align_fault` derives its requirement from the access *size* and gives up above **16 bytes**, so
+   it could not express a 32-byte requirement even if it were asked.
+
+   ⚠️ **The strip is right and had no comment, and I nearly "fixed" it.** A RED was written and
+   committed asserting a misaligned copy must record the misalignment — false: a byte write has no
+   alignment requirement. **An undocumented deliberate behaviour is indistinguishable from a
+   defect.** It is documented at its source now and `chiero-mem/tests/copy_alignment.rs` keeps the
+   reasoning rather than the wrong assertion.
+
+   What is actually wrong: C *does* distinguish these accesses — vppinfra has `u8x32` and `u8x32u`
+   precisely because an aligned 32-byte move requires 32-byte alignment — and the CIR carries the
+   distinction the model then throws away. Nothing changes in a report today, since the engine
+   filters `Misaligned` until a `ub-strict` mode exists (021 §5 step 3). **It decides what that
+   mode will see, and a mode built on a blind path is worse than no mode.** Fixing it means
+   threading `align` through `Memory::copy` and lifting `align_fault`'s 16-byte bound — an API
+   change across two crates, worth doing when `ub-strict` is.
 
 6. **`InstKind::Call` carries no result type**, so an indirect call's result width is whatever
    candidate ran. The arity and parameter-type filters cut the wildest cases and cannot close it;
