@@ -18,6 +18,7 @@ too and relativised here.
 
 import os
 import re
+import subprocess
 import sys
 
 VPP = os.environ.get("VPP", "/home/ubuntu/vpp")
@@ -49,6 +50,48 @@ DEFINITION = re.compile(r"^(\w+)\s*\(")
 MACRO_NAME = re.compile(r"^[A-Z0-9_]+$")
 
 
+def compiled_sources():
+    """The files VPP's build actually compiles, relative to `$VPP/src`.
+
+    **`failed` means two different things without this.** A sweep list built by globbing the
+    tree includes source the build never touches, and some of it does not compile at all:
+    `vnet/fib/fib_entry_src_default.c` defines one function twice, `vnet/unix/pcap2pg.c` calls
+    another with no declaration in scope, and gcc rejects both. Rows like those are
+    indistinguishable, in the output, from a construct chiero cannot read — so the residue
+    blends "chiero cannot read this" with "nothing can", and neither number means anything.
+
+    `ninja -t commands all` is the authoritative answer and takes about 63 ms for VPP's 2945
+    commands. The compiler is told `-c <source>`, so that is what is read here rather than any
+    path this script could construct: object paths cannot be derived from source paths under
+    CMake object libraries, which is a trap `probe.sh` documents at length.
+    """
+    build = os.environ.get(
+        "VPPBUILD", os.path.join(VPP, "build-root", "build-vpp-native")
+    )
+    ninja_dir = os.path.join(build, "vpp")
+    try:
+        out = subprocess.run(
+            ["ninja", "-C", ninja_dir, "-t", "commands", "all"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as e:
+        # **Refuse rather than silently keep everything.** Falling back to "no filter" would
+        # turn a missing build directory into a sweep that quietly measures the wrong corpus,
+        # which is the failure this option exists to end.
+        sys.exit(f"pick_entries: --built-only needs a ninja build at {ninja_dir}: {e}")
+    seen = set()
+    for line in out.splitlines():
+        parts = line.split()
+        for i, tok in enumerate(parts):
+            if tok == "-c" and i + 1 < len(parts):
+                src = parts[i + 1]
+                if src.startswith(SRC + os.sep):
+                    seen.add(os.path.relpath(src, SRC))
+    return seen
+
+
 def entries(files, per_file, total):
     out = []
     for f in files:
@@ -76,10 +119,13 @@ def entries(files, per_file, total):
 def main():
     args = sys.argv[1:]
     per_file, total = PER_FILE, TOTAL
+    built_only = False
     files = []
     i = 0
     while i < len(args):
-        if args[i] == "--per-file":
+        if args[i] == "--built-only":
+            built_only = True
+        elif args[i] == "--per-file":
             per_file, i = int(args[i + 1]), i + 1
         elif args[i] == "--total":
             total, i = int(args[i + 1]), i + 1
@@ -93,7 +139,20 @@ def main():
     # thing the caller chose.
     if files:
         total = None if total == TOTAL else total
-    for f, name in entries(files or FILES, per_file, total):
+    chosen = files or FILES
+    if built_only:
+        compiled = compiled_sources()
+        kept = [f for f in chosen if f in compiled]
+        # **Say what was dropped.** A filter that silently shrinks the corpus turns "we swept
+        # the tree" into a claim nobody can check, and the count is the whole point of the
+        # option: it is the number of files in the tree that VPP does not build.
+        print(
+            f"pick_entries: --built-only kept {len(kept)} of {len(chosen)} file(s); "
+            f"{len(chosen) - len(kept)} are not compiled by this build",
+            file=sys.stderr,
+        )
+        chosen = kept
+    for f, name in entries(chosen, per_file, total):
         print(f"{f}\t{name}")
 
 
