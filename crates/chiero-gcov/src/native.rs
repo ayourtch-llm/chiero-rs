@@ -1251,6 +1251,17 @@ pub fn circuit_starts() -> u64 {
 pub fn reset_circuit_starts() {
     CIRCUIT_STARTS.with(|c| c.set(0));
     CONSERVATION_ARC_VISITS.with(|c| c.set(0));
+    CYCLES_CELLS.with(|c| c.set(0));
+}
+
+thread_local! {
+    /// Cells allocated+zeroed by `cycles_count` across a run — see the call site.
+    static CYCLES_CELLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Cells `cycles_count` allocated since [`reset_circuit_starts`].
+pub fn cycles_cells() -> u64 {
+    CYCLES_CELLS.with(std::cell::Cell::get)
 }
 
 /// The counts of the elementary cycles lying entirely within `bs`, by Hawick and James'
@@ -1271,6 +1282,11 @@ fn cycles_count(f: &NoteFunction, succ: &[Vec<usize>], bs: &[u32], arc_counts: &
     // innermost recursion, so it multiplied an already-quadratic call count — measured at
     // 5 128 004 calls for n=3200 when every block lands on one line (`tests/growth.rs`).
     let mut in_bs = vec![false; bs.iter().map(|&b| b as usize + 1).max().unwrap_or(0)];
+    // Cells allocated and zeroed across every `cycles_count` call. This is invoked once per
+    // *line*, and each call sizes by the **max block index**, so a quadratic reading here is the
+    // whole hypothesis. Counted rather than argued — an earlier test of this stubbed `circuit`'s
+    // argument and was not clean.
+    CYCLES_CELLS.with(|c| c.set(c.get() + (in_bs.len() + in_bs.len()) as u64));
     for &b in bs {
         in_bs[b as usize] = true;
     }

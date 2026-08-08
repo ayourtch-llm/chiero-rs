@@ -145,7 +145,8 @@ fn native_arc_ingest_does_not_grow_quadratically_in_arcs_per_function() {
             let cov = chiero_gcov::native::arc_coverage(&dir, &stem).expect("ingest");
             let secs = start.elapsed().as_secs_f64();
             let starts = chiero_gcov::native::circuit_starts();
-            let visits = chiero_gcov::native::conservation_arc_visits();
+            let visits = chiero_gcov::native::conservation_arc_visits()
+                + chiero_gcov::native::cycles_cells();
             assert!(
                 !cov.functions().is_empty(),
                 "n={n} ingested no functions, so the curve would time nothing"
