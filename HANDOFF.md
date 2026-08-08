@@ -2433,10 +2433,28 @@ typing the paths ever would.
    Conflating those two is what sent the elimination astray: "the parse" was one name for two
    different amounts of work, and both turned out innocent.
 
-   **So every component measured is linear and the whole is still 14x.** What has *never* been
-   timed is the **`.gcda` read** and the `ArcCoverage` index building after it — `line_blocks`,
-   `counts`, `tests`, `order`, each keyed by a `FuncKey` holding two `String`s and cloned per
-   insert. That is the next place to instrument, and `arc_coverage_read` is where to split it.
+   **So every component measured is linear and the whole is still ~13.5x.** The `.gcda` decode was
+   split out too (linear, 3.5–4.8x); at n=12800 **all decode plus structure build is under 3% of
+   the clock**, leaving ~97% in the post-decode pipeline.
+
+   ✅ **One genuine quadratic found there and fixed:** `cycles_count` is invoked once per *line*
+   and sized `in_bs`/`indegree` by the **max block index** — 327 808 014 cells at n=12800, 16.0x
+   per 4x arcs. Scratch is now allocated once per function and reset over `bs`; the counter reads
+   **4.0x, linear**.
+
+   ⚠️ **And the wall clock did not follow — 1.39 s → 1.32 s, ratio 13.5x either way.** That is the
+   more useful result: **a quadratic counter is not automatically the bottleneck.** 328M bool
+   writes is real, really was quadratic, and is also just a memset — perhaps 7% of the run. Kept
+   for the asymptotics; it would dominate at larger inputs.
+
+   ⚠️ **It had also been "ruled out" earlier the same day** by an experiment that stubbed
+   `circuit`'s argument. Flagged as unclean at the time, re-tested, and the hypothesis was right.
+
+   **Still unlocated: the time residual.** The next counter must measure something whose unit
+   tracks *time* — allocations, hash lookups, `IndexMap` probes — in the `ArcCoverage` index
+   building (`line_blocks`, `counts`, `tests`, `order`, each keyed by a `FuncKey` holding two
+   `String`s and cloned per insert). That is the largest block still measured only as part of a
+   whole.
 
    *Method note, and it is the cheap thing to copy:* every hypothesis here cost about a minute —
    change it or time it, run the 25-second curve, revert regardless of the result. **Scoreboard:
@@ -3159,6 +3177,13 @@ doubles the wake-ups.
 
 ### 11.3 About the design, and the distinction this project keeps re-deriving
 
+- 🆕 **Counting beats reading — but a counter measures what you chose to count, and a quadratic
+  count is not automatically the bottleneck.** `cycles_count`'s scratch really was quadratic
+  (327 808 014 cells at n=12800, 16.0x per 4x arcs) and fixing it really did make the counter
+  linear — and moved the wall clock by ~7%, because bool writes are a memset. **Pick a unit whose
+  cost tracks time** (allocations, hash lookups, solver queries), or the number will be correct
+  about the wrong thing. The companion rule to the six hypotheses this project refuted by
+  counting: counting stops you being confidently wrong, it does not by itself make you right.
 - 🆕 **A null result is scoped to the conditions it was taken under.** One change was reverted
   *twice* on 2026-08-08 for moving no number, both measurements honest and both correct at the
   time — and it landed on the third try, once the two costs hiding it were fixed. So "we tried
