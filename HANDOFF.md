@@ -1581,6 +1581,23 @@ typing the paths ever would.
 > for months (*a green gate is evidence about the corpus, not about the tree*). Then §9.1 for
 > the next target.
 >
+> ### 🆕 Suggested first moves after 2026-08-08, in order
+>
+> 1. **Run the three gates below** (~19 min total, mostly one of them). They are the fastest way
+>    to learn whether anything drifted, and two of them were built the same day so their
+>    expectations have only one datapoint behind them.
+> 2. **Raise §9.1's 1b + 1d + 1e with the owner as one conversation.** All three are the same
+>    question — *where does the compiler persona live?* — and each has a wrong cheap answer that
+>    would make it worse (a third `cc -dM` capture; a language level nobody chose; a gate
+>    measuring a configuration nobody ships). This is the highest-value blocked item.
+> 3. **The gcov enumeration's algorithmic half** (§9.1's audit entry). Diagnosed, measured, 3.08x
+>    already banked, and `tests/growth.rs` will judge any attempt in 25 seconds. ⚠️ Read the three
+>    failed hypotheses there *before* forming a fourth.
+>
+> ⚠️ **What not to do:** do not start the parked `-march` item, and do not "fix" a `Vec::contains`
+> because it looks quadratic — see §9.1, where two that looked it were not and one described in
+> passing was the whole cost.
+>
 > ✅ **The owner's close-the-gap ask is DONE — pp-gate reports 0 findings** (§7.11). Keep it as a
 > two-minute standing check.
 >
