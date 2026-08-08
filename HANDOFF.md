@@ -1661,9 +1661,8 @@ typing the paths ever would.
 > **None of them was visible to the pp-gate**, which has reported 0 findings for weeks: none is
 > about preprocessing *syntax*. A gate that has been green for weeks is an untested surface.
 >
-> **State: 2026-08-08, second session — see the run recorded at the end of §9.1 for the number.**
-> The first session left it GREEN at 2257 across 270 suites, fmt and clippy clean, on all three CI
-> legs and pushed.
+> **State: 2026-08-08, second session — `./check.sh` GREEN at 2265 across 274 suites**, fmt and
+> clippy clean. Up from 2257/270 at the first session's end.
 >
 > **This session's closes:** the whole persona thread — `chiero-probe` (the **24th** crate: one
 > place that runs `cc -dM -E`, memoized per flag-set), `TranslationUnit::pp_config(&probe)` so the
@@ -1806,6 +1805,14 @@ typing the paths ever would.
    those is a case an interpreter would get wrong, which is the argument for handing the flags to
    a compiler verbatim. Enumerated with one `ninja -t compdb | python3` pipe — **the number was
    one command away the whole time and I wrote it from memory instead.**
+
+   📌 **And it answers the standing "AVX2 has never been compiled" note.** All eight flag-sets
+   probe cleanly on gcc 13.3 (401–432 predefines each), and **388 of VPP's 1967 C units now carry
+   a persona that defines `__AVX2__`** — 192 at `x86-64-v3`, 192 at `x86-64-v4`, 4 at `haswell`.
+   Four sets define `__AES__`. The duplicate-`-march` unit resolves to **silvermont's** 416
+   defines rather than v2's, i.e. last-flag-wins is a compiler fact chiero correctly declines to
+   model. That vector half of vppinfra is inside the corpus gate now; it is still outside every
+   *findings* sweep, which drives its own configuration through the CLI.
 
    ✅ **Both halves closed 2026-08-08 — `chiero-probe`, and the join.** The 24th crate exists for
    one reason: `chiero-cli` and `chiero-vpp` both need "what does *this* compiler predefine under
