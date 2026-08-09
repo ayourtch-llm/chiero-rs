@@ -3590,6 +3590,19 @@ typing the paths ever would.
    | production matches to update | `text.rs:1889` (printer), `verify.rs:341/726/800`, `chiero-exec` 3, `chiero-opt` 5 |
    | test fixtures | ~110, of which **82 are in `chiero-exec/tests/step.rs`** — mechanical, and the bulk of the work |
 
+   ✅ **HALF CLOSED 2026-08-09, with no CIR change and no fixture touched.** The item reads as
+   one architectural change gated on a new field; it is two, and nobody had separated them.
+   **Direct calls never needed the field** — `Callee::Direct` names a `FuncId` and `Function`
+   carries `ret`, so `defined_by` returns the callee's declared type now. The only work was
+   threading the module down two signatures, which `verify_function` already had. Direct call
+   results are checked by `require_ptr`/`require_ty` like any other value, verified reaching
+   real lowered C (`char *g(void)` → `Ptr`, `int f(void)` → `Int(32)`), and `./check.sh` stayed
+   green — no latent defect surfaced and no false positive.
+
+   **What is left is genuinely the indirect half**, which is also where §7.6's finding class
+   lives: `Callee::Indirect` carries an operand rather than a signature, so it needs the field,
+   the text-format syntax, and the ~110 fixtures.
+
    📌 **And the payoff is one line.** `verify.rs:726` reads
    `InstKind::Call { dst: Some(d), .. } => vec![(*d, CTy::Void)]` — the verifier types every
    call's result as `Void` because there is nothing else to say. That line becoming the declared
