@@ -4199,6 +4199,19 @@ not an anecdote.*
   always would have** — this is the claim-shaped half of drift, and re-reading is the only
   instrument for it.
 
+- ⚠️ **Check a deferral's stated reason like any other claim.** §9.1 item 6 was deferred five
+  times in one session. The reasons decayed as each was tested: *"135 sites"* (a count of
+  mentions — really 3 constructions), then *"~110 fixtures"* (the field belonged on
+  `Callee::Indirect`, so ~25), then *"the text format is a spec change"* (true, and 020 had
+  already been amended that day with precedent), and finally **"no review budget"** — which was
+  simply false: §8.1 authorises fable subagents and a subagent has its **own** context. The last
+  reason was the only one that would have justified stopping, and it took thirty seconds to
+  refute.
+  The change then landed in one sitting and matched the scope estimate exactly. **A deferral
+  compounds: each restatement makes the next one feel established**, and none of the five was
+  re-examined until the fifth. Ask of any "I can't do this yet" what you would ask of a
+  measurement — how do I know, and when did I last check.
+
 - **The record drifts wherever nothing mechanically compares it to the tree — and this project
   documents obsessively, which did not help.** Five such checks were run on 2026-08-09 and
   **all five found something**: 020 declared a `conv: CallConv` field whose type exists nowhere;
