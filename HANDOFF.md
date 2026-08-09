@@ -3609,7 +3609,23 @@ typing the paths ever would.
    The last row is what `pick_entries.py --built-only` exists for: a sweep that globs the tree
    reports "chiero cannot read this" for files **nothing** builds.
 
-9. **`:0` bit-fields in `layout`, deliberately left open** (§7.9). A record declaring a
+9. **`:0` bit-fields in `layout`, deliberately left open** (§7.9). ✅ **Priority settled
+   2026-08-09 — leave it open, and now on evidence rather than on a 69-header sample.**
+   Two measurements, both cheap:
+
+   - **The cost, from `fixed_diff.py`** (which was verified working the same day and is exactly
+     this gap's instrument): on its four fixed cases chiero proposes nothing for three, and for
+     **two of those gcc's best permutation is 4 bytes smaller** — `Q_two_zero_width_runs` 12 vs
+     8, `trailing_zero_width` 16 vs 12. The fourth, `no_zero_width`, gets a correct floor of 8.
+     So the gap is real and its size is 4 bytes on the shapes that have it.
+   - **The reach: VPP contains no zero-width bit-field at all.** Not "none in 69 headers" —
+     `grep -rE '^[[:space:]]*[a-z_0-9 ]+:[[:space:]]*0[[:space:]]*;'` over all of `src/` returns
+     **zero** files (measured while explaining why the pinned-40 retake could not move, §7.21).
+
+   **So the only consumer that would benefit cannot reach the construct**, and the instrument
+   that would grade a fix already exists and already passes on the non-`:0` case. Reopen it if a
+   *different* corpus starts producing `:0` — the generated layout gate emits 56 of them per 400
+   seeds, so that corpus could grade a fix tomorrow if anyone wanted one. A record declaring a
    zero-width bit-field still gets no padding number, because a `:0`-terminated run's cost depends
    on where the run is placed and this arithmetic sums constants. Closing it needs the run's
    allocation unit in the field description — `Field` would carry `unit_bits`, and the ideal
