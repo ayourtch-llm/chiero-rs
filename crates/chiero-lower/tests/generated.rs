@@ -2701,11 +2701,101 @@ const DECLARED_FIDELITY: &[(&str, &str)] = &[
 
 /// Whether a ledger entry is one the suite has been told about — a declared gap, or a
 /// fidelity class 023 §7 permits.
-fn is_known_gap(text: &str) -> bool {
-    KNOWN_GAPS
+///
+/// ⚠️ **The two lists are consulted on different rows, and by different rules**, because
+/// the first version was enforced by prose alone and an adversarial review found the hole.
+/// `DECLARED_FIDELITY` was matched by *substring* against *every* refusal, and its patterns
+/// are the ordinary English words `Unknown`, `Bounded` and `Approximated` — so any future
+/// parse or sema diagnostic whose `{:?}` happened to contain one would have been excused
+/// silently and forever, exempt from the liveness rule below. Nothing in today's pipeline
+/// prints them, which made it latent rather than live, which is the worst kind to leave.
+///
+/// So a fidelity class is only consulted for the row a [`Verdict::Gap`] produced (`stage ==
+/// "engine"`), and matched **exactly** — there are three of them and they are enum-shaped
+/// strings, not prose. That also closes the escape hatch the same review named: filing a
+/// real gap under `DECLARED_FIDELITY` to dodge the liveness rule no longer works, because a
+/// refusal from any other stage never reaches that list. **The split is enforced by the
+/// verdict type now, not by which `const` somebody put the entry in.**
+fn is_known_gap(stage: &str, text: &str) -> bool {
+    if stage == "engine" {
+        return DECLARED_FIDELITY.iter().any(|(pat, _)| *pat == text);
+    }
+    KNOWN_GAPS.iter().any(|(pat, _)| text.contains(pat))
+}
+
+/// [`is_known_gap`] on inputs the live suite cannot produce, because it produces no refusals
+/// at all — so without this the whole function is dead code that reads as enforcement.
+///
+/// The case that matters is the third: `"Unknown"` is an ordinary English word, and until
+/// the stage scoping went in, a `sema` diagnostic whose `{:?}` merely *contained* it was
+/// excused as a fidelity class and thereby exempted from the liveness rule. Nothing in the
+/// pipeline prints one today, which is why a review found it by reading rather than the
+/// suite by running.
+#[test]
+fn a_fidelity_class_excuses_only_the_engine_row_that_declared_it() {
+    // The engine's own row, matched exactly: this is what `Verdict::Gap` produces.
+    assert!(is_known_gap("engine", "Bounded"));
+    assert!(is_known_gap("engine", "Unknown"));
+    // Exact, not substring. A fidelity string is enum-shaped; prose that merely contains
+    // one is not the engine declaring a limit.
+    assert!(!is_known_gap("engine", "Bounded by something else"));
+    // **The hole this closes.** A refusal from any other stage never reaches the fidelity
+    // list, however its message reads.
+    assert!(!is_known_gap("sema", "Unknown"));
+    assert!(!is_known_gap(
+        "lower",
+        "an Unknown attribute on this declaration"
+    ));
+    // And an unfiled refusal is unknown whatever the stage — today's real behaviour, since
+    // `KNOWN_GAPS` is empty.
+    assert!(!is_known_gap("parse", "anything at all"));
+}
+
+/// **Ledger entries that matched no refusal**, split out so it can be tested on inputs this
+/// suite cannot currently produce.
+///
+/// Extracted after the same review pointed out that the assertion using it was *unreachable
+/// logic*, not merely a vacuous assertion: with `KNOWN_GAPS` empty the closure iterates zero
+/// entries, so flipping its polarity or swapping `m.contains(p)` for `p.contains(m)` survives
+/// the whole suite. Mutating the *data* — adding a bogus entry — proved the assertion fires,
+/// but that evidence lived in a commit message and expires the moment somebody edits the
+/// block. A function taking a synthetic ledger and a synthetic refusal list can be mutated
+/// where it is read, which is the pattern this file already uses for the shrinker.
+fn dead_entries<'a>(ledger: &[(&'a str, &str)], refused: &[(&str, String)]) -> Vec<&'a str> {
+    ledger
         .iter()
-        .chain(DECLARED_FIDELITY)
-        .any(|(pat, _)| text.contains(pat))
+        .map(|(p, _)| *p)
+        .filter(|p| !refused.iter().any(|(_, m)| m.contains(p)))
+        .collect()
+}
+
+/// [`dead_entries`] on inputs the live suite cannot produce, because today it produces none.
+///
+/// Each assertion below fails under a specific mutation of the function: dropping the `!`,
+/// reversing the `contains`, or returning the matched entries instead of the unmatched ones.
+#[test]
+fn a_ledger_entry_is_dead_exactly_when_nothing_matches_it() {
+    let ledger = &[("alpha", "why alpha stays"), ("beta", "why beta stays")][..];
+    let refusal = |m: &str| ("lower", m.to_string());
+
+    // Nothing refused: every entry is dead.
+    assert_eq!(dead_entries(ledger, &[]), vec!["alpha", "beta"]);
+    // One matched, one not — the case that separates "dead" from "live" at all.
+    assert_eq!(
+        dead_entries(ledger, &[refusal("the operand is alpha-shaped")]),
+        vec!["beta"]
+    );
+    // Both matched: nothing is dead. Fails if the polarity is flipped.
+    assert!(dead_entries(ledger, &[refusal("alpha"), refusal("beta")]).is_empty());
+    // The entry is the **needle**, the message the haystack. `p.contains(m)` would call
+    // `alpha` live here, and this is the only case that can tell the two apart.
+    assert_eq!(
+        dead_entries(ledger, &[refusal("alph")]),
+        vec!["alpha", "beta"]
+    );
+    // An empty ledger has no dead entries — which is today's real input, so it is pinned
+    // rather than left to be inferred.
+    assert!(dead_entries(&[], &[refusal("anything")]).is_empty());
 }
 
 /// **Fixed seeds, so this is a test and not a slot machine.**
@@ -2789,10 +2879,29 @@ fn generated_programs_agree_with_gcc() {
          almost everything is green while testing almost nothing"
     );
 
+    // **The disagreement with gcc comes first, and that ordering is load-bearing.**
+    //
+    // The two ledger assertions below are bookkeeping about *gaps*; this one is chiero
+    // computing a different number from the compiler. They ran the other way round until an
+    // adversarial review pointed out the consequence: a stale ledger entry would abort the
+    // run before the defect list was even printed, so the cheapest possible failure would
+    // hide the most expensive one. Bookkeeping never pre-empts a wrong answer.
+    assert!(
+        defects.is_empty(),
+        "{} generated program(s) disagree with gcc. First:\nseed {}\n{}\n{:#?}",
+        defects.len(),
+        defects[0].0,
+        defects[0].1,
+        defects[0].2
+    );
+
     // **The ratchet.** Every ledger entry must be one the suite was told about; an entry
     // matching nothing is a gap that appeared without a decision being made, which is
     // exactly the moment to make one.
-    let unknown: Vec<&(&str, String)> = refused.iter().filter(|(_, m)| !is_known_gap(m)).collect();
+    let unknown: Vec<&(&str, String)> = refused
+        .iter()
+        .filter(|(s, m)| !is_known_gap(s, m))
+        .collect();
     assert!(
         unknown.is_empty(),
         "{} refusal(s) the suite has no entry for. Each is a gap that appeared without a \
@@ -2814,16 +2923,12 @@ fn generated_programs_agree_with_gcc() {
     //
     // The first entry predicted its own removal in so many words — *"this entry is what will
     // fail when they land"* — and float comparisons landed, and it did not fail: an entry
-    // that matches nothing is never consulted. Measured before this assertion was written:
-    // **57 of the 200 programs contain a float comparison and 0 refuse.**
+    // that matches nothing is never consulted. `the_corpus_reaches_float_comparisons` keeps
+    // the measurement that justified deleting it from decaying into a commit message.
     //
     // So a gap entry has to still be happening. If it is not, the gap closed and the entry
     // is a claim about chiero that is no longer true.
-    let dead: Vec<&str> = KNOWN_GAPS
-        .iter()
-        .map(|(p, _)| *p)
-        .filter(|p| !refused.iter().any(|(_, m)| m.contains(p)))
-        .collect();
+    let dead = dead_entries(KNOWN_GAPS, &refused);
     assert!(
         dead.is_empty(),
         "{} KNOWN_GAPS entr(ies) matched no refusal in this batch. An entry that fires \
@@ -2835,13 +2940,63 @@ fn generated_programs_agree_with_gcc() {
             .collect::<Vec<_>>()
             .join("\n")
     );
+}
+
+/// **The corpus reaches a float comparison**, which is what made deleting the ledger's
+/// float entry a measurement rather than an assumption.
+///
+/// The entry was deleted because 57 of the 200 programs compare floats and none refuses.
+/// The second half of that is asserted by the batch above; the first half lived only in a
+/// commit message, and the reviewer who checked the work could not reproduce it — which is
+/// the same decay the liveness ratchet exists to stop, one wave later and in a different
+/// medium. If a grammar change stops the corpus reaching float comparisons, the batch goes
+/// on reporting `refused 0` and it would mean nothing at all.
+///
+/// ⚠️ **A floor, not the exact count.** 57 is what this grammar and these seeds produce
+/// today; pinning it would fail on any harmless change to the arm probabilities. What must
+/// not silently become true is *zero*.
+#[test]
+fn the_corpus_reaches_float_comparisons() {
+    let mut with_cmp = 0usize;
+    for seed in 0..200u64 {
+        let (prelude, body) = program(seed);
+        let all = format!("{prelude}{body}");
+
+        // The float locals this program declared, by name. ⚠️ An earlier version of this
+        // census keyed on a `d_`/`f_` naming convention the generator does not have and
+        // reported **0** — a false zero that read exactly like "the corpus cannot do this".
+        let mut floats: Vec<&str> = Vec::new();
+        for line in all.lines() {
+            let t = line.trim();
+            for kw in ["long double ", "double ", "float "] {
+                if let Some(rest) = t.strip_prefix(kw) {
+                    let name = rest
+                        .split(|c: char| !c.is_alphanumeric() && c != '_')
+                        .next()
+                        .unwrap_or("");
+                    if !name.is_empty() {
+                        floats.push(name);
+                    }
+                }
+            }
+        }
+        let compares = all.lines().any(|l| {
+            (l.contains('<') || l.contains('>') || l.contains("==") || l.contains("!="))
+                && floats.iter().any(|n| {
+                    l.split(|c: char| !c.is_alphanumeric() && c != '_')
+                        .any(|w| w == *n)
+                })
+        });
+        if compares {
+            with_cmp += 1;
+        }
+    }
+    eprintln!("float comparisons: {with_cmp} of 200 programs");
     assert!(
-        defects.is_empty(),
-        "{} generated program(s) disagree with gcc. First:\nseed {}\n{}\n{:#?}",
-        defects.len(),
-        defects[0].0,
-        defects[0].1,
-        defects[0].2
+        with_cmp >= 20,
+        "only {with_cmp} of 200 programs compare floats. The batch's `refused 0` is then \
+         evidence about the grammar rather than about the engine, and the float entry was \
+         deleted from KNOWN_GAPS on the strength of it"
     );
 }
 
