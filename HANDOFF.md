@@ -3704,6 +3704,28 @@ typing the paths ever would.
    off. So the over-report needs a signed-overflowing *constant expression* — rare in VPP, and
    the reason this is a correctness point about the taxonomy rather than an urgent number.
 
+5p. 🆕 **`chiero-diff`'s `parsed_cleanly` ignores sema — a *question*, not a demonstrated
+   defect, and the distinction is deliberate.** Found by completing the consumer audit rather
+   than stumbling on it: there are exactly **four** production readers of sema diagnostics
+   (`chiero-cli/frontend.rs` twice, `chiero-diff`, `xtask/sweep.rs`, plus sema's own internals),
+   and this is the only one that never looks.
+
+   `parsed_cleanly = tu.diagnostics.is_empty() && parsed.diagnostics.is_empty()` — pp and parse
+   only. The flag is **conservative by design**: 031 §4 puts every entity of an unreadable file
+   into the impact set, so it widens the answer rather than refusing it. That design is right.
+
+   The question is whether *sema* belongs in it. `chiero-diff` uses **layouts** to decide impact
+   — `RecordShape { size, align, packed }` is the thing tokens cannot supply — and a TU where
+   sema errored can still hand over records. A record resting on a mis-resolved typedef would
+   then produce a confident wrong `size`, and the flag that exists to widen the set would not
+   fire, because the parser was silent.
+
+   ⚠️ **Not reproduced, and that is why it is a question.** `records()` skips `!complete`
+   records, which may already exclude the reachable cases — establishing it needs a fixture with
+   a sema error and a still-`complete` record whose layout is wrong. **5o was reproduced on a
+   two-file tree before being written down; this was not, and the two should not be read the
+   same way.**
+
 6. **`InstKind::Call` carries no result type**, so an indirect call's result width is whatever
    candidate ran. The arity and parameter-type filters cut the wildest cases and cannot close it;
    the engine survives the rest by degrading. The real fix is a CIR change.
