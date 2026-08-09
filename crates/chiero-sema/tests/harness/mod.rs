@@ -80,8 +80,28 @@ pub fn parse(src: &str, target: TargetConfig) -> Parsed {
     Parsed { parsed, analysis }
 }
 
+/// Parse and analyse in a chosen dialect, without requiring sema to be clean.
+///
+/// **The pairing matters and cost a construct once.** [`parse`] judges a fixture in
+/// `Dialect::gnu()` because the fixtures are GNU C; [`parse_allowing_diagnostics`] stays
+/// strict because its callers' *subject* is a diagnostic. A caller that wants neither — one
+/// that writes GNU C and wants to see whatever sema says about it — had no helper, so
+/// `generated_layout.rs` used the strict one and 57 of its 120 seeds "refused" on
+/// `"ISO C does not support `__int128` types"`. That sentence is correct, and it is a
+/// statement about ISO C rather than about the record being laid out. The construct was
+/// dropped from that generator before anyone read the helper being called.
+pub fn parse_in_dialect(src: &str, target: TargetConfig, dialect: chiero_ast::Dialect) -> Parsed {
+    let tu = preprocess_str("t.c", src, Config::default());
+    assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
+    let mut oracle = ScopedTypedefs::new();
+    let parsed = parse_tu(&tu, &mut oracle);
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let analysis = analyze_with(&parsed.ast, &target, &Names(&parsed), dialect);
+    Parsed { parsed, analysis }
+}
+
 /// Parse and analyse without requiring sema to be clean — for the tests whose subject
-/// *is* a diagnostic.
+/// *is* a diagnostic. **Strict dialect**; see [`parse_in_dialect`].
 pub fn parse_allowing_diagnostics(src: &str, target: TargetConfig) -> Parsed {
     let tu = preprocess_str("t.c", src, Config::default());
     assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);

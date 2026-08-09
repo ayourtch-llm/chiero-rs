@@ -34,7 +34,7 @@
 mod harness;
 
 use chiero_sema::TargetConfig;
-use harness::{Parsed, gcc_available, parse_allowing_diagnostics};
+use harness::{Parsed, gcc_available, parse_in_dialect};
 
 // ---------------------------------------------------------------------------------------
 // A PRNG, written out rather than depended on
@@ -174,13 +174,22 @@ const SCALARS: &[Scalar] = &[
         bits: 128,
         bitfieldable: false,
     },
-    // ⚠️ **`__int128` is deliberately absent, and the omission is a cost, not a tidy-up.**
-    // chiero diagnoses it — *"ISO C does not support `__int128` types"* — which is correct
-    // pedantry under 013 and matches `gcc -pedantic`. But this gate treats any diagnostic as
-    // a refusal, and `SemaDiagnostic` carries no severity, so there is nothing to filter on:
-    // 57 of 120 seeds refused and the gate stopped measuring layout at all. What is lost is
-    // the 128-bit *bit-field allocation unit*, which nothing now reaches. `long double` above
-    // still supplies the 16-byte alignment this widening was for.
+    // **`__int128` is back**, and the note it replaces is worth keeping as a correction: it
+    // said the omission was forced because "`SemaDiagnostic` carries no severity, so there is
+    // nothing to filter on". There was nothing to filter *because the wrong helper was
+    // called* — chiero has had a dialect switch since wave 314, `__int128`'s diagnostic is
+    // gated on it, and `judge` now analyses in `Dialect::gnu()`. It brings the **128-bit
+    // bit-field allocation unit**, which no other corpus reaches.
+    Scalar {
+        c: "__int128",
+        bits: 128,
+        bitfieldable: true,
+    },
+    Scalar {
+        c: "unsigned __int128",
+        bits: 128,
+        bitfieldable: true,
+    },
 ];
 
 /// Where a record's attributes were written.
@@ -441,7 +450,14 @@ enum Outcome {
 }
 
 fn judge(u: &Unit) -> Vec<(String, Outcome)> {
-    let p: Parsed = parse_allowing_diagnostics(&u.src, TargetConfig::x86_64_linux());
+    // **gnu11, which is what these records are written in and what VPP builds with.** The
+    // strict dialect reports the GNU extensions it still supports — a statement about ISO C,
+    // not about the layout — and using it made 57 of 120 seeds "refuse" on `__int128`.
+    let p: Parsed = parse_in_dialect(
+        &u.src,
+        TargetConfig::x86_64_linux(),
+        chiero_ast::Dialect::gnu(),
+    );
     if let Some(d) = p.analysis.diagnostics.first() {
         return vec![(
             u.tags.last().map(|(t, _)| t.clone()).unwrap_or_default(),
@@ -522,7 +538,7 @@ fn generated_record_layouts_agree_with_gcc() {
     let mut matched_one: Vec<(u64, String)> = Vec::new();
     let mut records = 0usize;
 
-    for seed in 0..120u64 {
+    for seed in 0..300u64 {
         let u = unit(seed);
         for (tag, outcome) in judge(&u) {
             records += 1;
@@ -537,7 +553,7 @@ fn generated_record_layouts_agree_with_gcc() {
     }
 
     eprintln!(
-        "generated layouts: {records} records over 120 seeds, {agreed} agree with gcc, \
+        "generated layouts: {records} records over 300 seeds, {agreed} agree with gcc, \
          {} DISAGREE, {} matched clang where gcc differs, {} refused, {} without a layout",
         disagree.len(),
         matched_one.len(),
@@ -575,9 +591,12 @@ fn generated_record_layouts_agree_with_gcc() {
     // **A floor, not `> 0`.** One lucky record is green under `> 0`, and the whole point is
     // volume across shapes.
     assert!(
-        agreed >= 150,
+        agreed >= 400,
         "only {agreed} records agreed; a channel that grades almost nothing is green while \
-         testing almost nothing"
+         testing almost nothing. ⚠️ The seed range is 300 rather than 120 because the \
+         reach test measures over 400 and found shapes the gate could not see — the \
+         gcc/clang divergence went to zero for a run purely because a scalar-table change \
+         reshuffled every pick"
     );
 }
 
@@ -596,6 +615,8 @@ fn the_generator_reaches_what_the_vpp_and_hand_corpora_cannot() {
     let mut bitfield_after_zero = 0usize;
     let (mut prefix, mut middle, mut postfix) = (0usize, 0usize, 0usize);
     let mut wide_align = 0usize;
+    let mut int128_bitfield = 0usize;
+    let mut aligned_member_in_packed = 0usize;
 
     for seed in 0..400u64 {
         let u = unit(seed);
@@ -617,6 +638,27 @@ fn the_generator_reaches_what_the_vpp_and_hand_corpora_cannot() {
         }
         if u.src.contains("long double") || u.src.contains("__int128") {
             wide_align += 1;
+        }
+        // A 128-bit *bit-field allocation unit* — the shape `__int128` was restored for, and
+        // the thing "the corpus contains `__int128`" does not imply.
+        if u.src
+            .lines()
+            .any(|l| l.contains("__int128") && l.contains(':'))
+        {
+            int128_bitfield += 1;
+        }
+        // The shape that makes gcc and clang disagree: an explicit member `aligned` inside an
+        // alignment-lowering context. ⚠️ It went to **zero** for one run purely because the
+        // scalar table changed length and reshuffled every `pick` — and "0 matched clang"
+        // reads exactly like "the two compilers agree about everything". A divergence the
+        // corpus stops reaching is not a divergence that stopped.
+        if u.src.contains("__attribute__((packed))") && u.src.contains(") m") {
+            for l in u.src.lines() {
+                if l.contains("__attribute__((aligned(") && l.trim().ends_with(';') {
+                    aligned_member_in_packed += 1;
+                    break;
+                }
+            }
         }
         if u.src.contains("__attribute__((packed))") {
             packed += 1;
@@ -658,13 +700,24 @@ fn the_generator_reaches_what_the_vpp_and_hand_corpora_cannot() {
         wide_align >= 40,
         "records with a 16-byte-aligned member: {wide_align}"
     );
+    assert!(
+        int128_bitfield >= 10,
+        "a 128-bit bit-field allocation unit, which no other corpus reaches: {int128_bitfield}"
+    );
+    assert!(
+        aligned_member_in_packed >= 10,
+        "the gcc/clang divergence shape — a member `aligned` beside a `packed`: \
+         {aligned_member_in_packed}"
+    );
     // ⚠️ **The counts that matter are the two positions where an attribute does something.**
     // `packed >= 40` above went on passing after the prefix fix while every one of those
     // attributes had become inert — chiero ignored it, gcc ignored it, and the gate scored an
     // agreement about nothing. Counting a construct is not counting a *test* of it.
     eprintln!(
         "attribute positions: {prefix} prefix (ignored), {middle} middle, {postfix} postfix; \
-         {wide_align} records with a 16-byte-aligned member"
+         {wide_align} records with a 16-byte-aligned member, {int128_bitfield} with a \
+         128-bit bit-field unit, {aligned_member_in_packed} with a member `aligned` beside \
+         a `packed`"
     );
     assert!(
         middle >= 30,
