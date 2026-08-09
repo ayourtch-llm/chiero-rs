@@ -1927,7 +1927,14 @@ typing the paths ever would.
 > - **Read the last one.** At eight of eleven samples the shape looked universal; the eleventh was
 >   a different cause.
 > - **Check the file, not the exit status, when an edit is scripted.** Twice a commit message
->   described a change the tree did not contain.
+>   described a change the tree did not contain — and it happened **three more times on
+>   2026-08-09**, always the same way: a `python3` replace keyed on a comment or a multi-line
+>   expression that `cargo fmt` had since **reflowed**, so the pattern matched nothing and the
+>   script exited 0. The suite passed each time, which proves nothing about an edit that did not
+>   happen. **The three habits that actually settle it**, in order of how often they paid:
+>   `assert old in s` before writing, so a no-op is loud rather than silent; key on a **line
+>   number** or a short unique token rather than on prose, because prose is what `fmt` rewrites;
+>   and **grep for the text you removed** afterwards, not for the test result.
 > - **Ask whether a green test can fail.** Three tests could not, each caught only by mutating.
 >
 > **Open leads, none blocking:** the remaining `pointer-outside-object` policy question; the VPP
