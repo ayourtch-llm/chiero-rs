@@ -1594,29 +1594,43 @@ typing the paths ever would.
 > ### 🆕 Suggested first moves after the second 2026-08-08 session, in order
 >
 > 1. **Run the two fast gates** (`persona_gap` 0.1 s, `growth` ~5 s). The 23-minute corpus gate is
->    worth it only when something touched the frontend or the persona — it was run at the end of
->    this session and its numbers are below.
+>    worth it only when something touched the frontend or the persona.
 > 2. **Pick a widening (§8.3), or take a concrete item from §9.1.** The live ones, roughly by
->    value: **032 contract 18's replay corpus**, still with no `observed` entry (§7.1 carries the
->    method — revert a historical fix onto HEAD and run the suite); the two `vnet/` finding
->    classes, which are policy questions rather than defects; and `InstKind::Call` carrying no
->    result type, which is a CIR change across 135 sites.
-> 3. ⚠️ **Three closed today, do not re-open:** the witness reporting defect (§9.1 5e — and read
->    its three corrected claims before trusting a truncated witness), the whole persona thread (`chiero-probe`, the join,
->    060 contract 2, and the corpus gate's own configuration gap) and the gcov growth gate, which
->    passes for the first time. §9.1 1d (`__STDC_VERSION__`) is the **owner's call on the language
->    level** and is the only part of the persona thread left.
+>    value: **032 contract 18's replay corpus**, still with no `observed` entry — the probe is
+>    built and committed (`tests/corpus/replay/replay_probe.sh`) and §9.1 item 8 says what firing
+>    it costs; **5j**, `CopyMem` discarding the alignment the CIR hands it, which is what a
+>    `ub-strict` mode will rest on; the two `vnet/` finding classes, which are policy questions
+>    rather than defects; and `InstKind::Call` carrying no result type, a CIR change across 135
+>    sites.
+> 3. ⚠️ **Closed in that session, do not re-open:** the whole persona thread (`chiero-probe`, the
+>    per-TU join, 060 contract 2, the corpus gate's configuration); the gcov growth gate, which
+>    passes for the first time; the witness reporting defect (5e — read its three corrected claims
+>    before trusting a truncated witness); the stale VPP build directory (5d, four files rather
+>    than a rebuild); the AVX2/AVX-512 half of vppinfra, parsed and analysed for the first time;
+>    and an enum's declared underlying type, which had been making `layout` wrong on 22 VPP sites
+>    and saying `proven` (5k). §9.1 1d (`__STDC_VERSION__`) is the **owner's call on the language
+>    level**.
 >
 > ⚠️ **What not to do:** do not "fix" a `Vec::contains` because it looks quadratic — see §9.1,
 > where two that looked it were not and one described in passing was the whole cost. Do not
 > tighten `growth.rs`'s 8.0x threshold. **Nothing is parked right now**; the pause emoji appears
 > nowhere in §9.1, which is what the heartbeat's instruction resolves to.
 >
-> 📌 **The method that paid twice today, both times against a recorded guess:** *instrument the
-> boundary between two things before counting inside either.* The persona defect was a cache
-> keyed on nothing, found by asking what two different flag-sets do in one process; the gcov
-> residual was found by splitting one clock into a line half and an arc half, which put 90% of the
-> cost on the opposite side from the suspect this file had written down.
+> 📌 **The four methods that paid in that session, each against something this file had already
+> written down:**
+>
+> | method | what it beat |
+> |---|---|
+> | **instrument the boundary between two things** before counting inside either | the persona cache keyed on nothing; the gcov residual, found by splitting one clock into two halves — 90% of the cost sat on the opposite side from the recorded suspect |
+> | **reproduce a defect at the layer it lives in** | four waves had tried to *produce* a 10 000-binding witness by execution; it was a reporting defect, testable with no engine run |
+> | **audit a class, not a site** | `let _ = <named parameter>;` across the sources: 8 hits, 4 unexplained, 1 a wrong `proven` layout on 22 VPP sites |
+> | **when a probe reports zero, check it can report non-zero** | two false zeros from ad-hoc greps in one wave, both reading "nothing changed" — `^func` counts declarations, copymem sizes render as `32i64` |
+>
+> ⚠️ **And the one that cost a wrong RED:** an *undocumented deliberate* behaviour is
+> indistinguishable from a defect. `write_bytewise` strips `Misaligned` on purpose — a copy is
+> byte-wise, as `memcpy` is — and nothing said so, so a measured anomaly became a committed RED
+> asserting the wrong contract. The fix was a comment. **The audit it provoked found the enum
+> defect the next wave**, so the cheapest response to being wrong was to generalise it.
 >
 > ✅ **The owner's close-the-gap ask is DONE — pp-gate reports 0 findings** (§7.11). Keep it as a
 > two-minute standing check.
