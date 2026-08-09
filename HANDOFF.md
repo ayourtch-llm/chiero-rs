@@ -2011,10 +2011,18 @@ typing the paths ever would.
 > unchanged when part of it is not in git** — the same shape as a grep that matched the wrong
 > thing, one level up.
 >
-> 📌 **The rule for anyone comparing VPP numbers across sessions:** VPP's `HEAD` does not pin the
-> corpus. The generated half is pinned by whenever `vppapigen` last ran, which `api_staleness.py`
-> can report — record that beside any published figure, or two runs of the "same" corpus will
-> differ by ten thousand tokens and look like a chiero change.
+> 📌 **The rule for anyone comparing VPP numbers across sessions, and the one command that
+> follows it:** VPP's `HEAD` does not pin the corpus — the generated half is not in git.
+>
+> ```sh
+> python3 tests/corpus/vpp-findings/api_staleness.py --fingerprint
+> #   generated corpus: 1506 files, sha256:5447e4661663b86c     (0.16 s, 2026-08-09)
+> ```
+>
+> **Record that digest beside any published VPP figure.** Two runs of the "same" corpus are
+> comparable iff it matches; otherwise a ten-thousand-token difference looks like a chiero
+> change and is not. It hashes content and path, not mtimes — verified: a `touch` leaves it
+> unchanged, an edit moves it, a restore returns it.
 >
 > ✅ **Answered: the count is deterministic.** A second run at an unchanged tree gave
 > **818 391 162 again, byte-identical**, in 1459 s. So the metric *is* a measurement and the
@@ -3934,7 +3942,7 @@ they lived only in scratch") and it happened again anyway.
 | `xtask/src/replay_gate.rs` | ✅ committed — `cargo run -p xtask -- replay-gate`, corpus `tests/corpus/replay/corpus.tsv` |
 | `xtask/src/pp_gate.rs` | ✅ committed — `cargo run -p xtask -- pp-gate`, ~2 min. Reads `$SIMPLECPP` (default `/home/ubuntu/simplecpp`, pinned `74a5a63`); gcc and clang are the oracle. §7.11 |
 | `tests/corpus/vpp-findings/march_probe.sh` | ✅ committed 2026-08-08 — lowers VPP's 384 `-march=x86-64-v3/v4` units with and without their own `-march`, reporting the definition delta, any diagnostic, and **`EMPTY` for a unit that lowered nothing** (a clean run over six lines of nothing is not a pass). `STRIDE=1` for all 384 |
-| `tests/corpus/vpp-findings/api_staleness.py` | ✅ committed 2026-08-08 — which of VPP's 1049 generated API headers are older than the `.api` they come from. Exits 1 on drift; `--fix` regenerates with `vppapigen` rather than `ninja`, whose target re-runs cmake and rewrites the `build.ninja` every VPP measurement reads |
+| `tests/corpus/vpp-findings/api_staleness.py` | ✅ committed 2026-08-08, **`--fingerprint` added 2026-08-09** — a content digest of the 1506 generated files, 0.16 s, to pin the half of the corpus `git status` cannot see. Verified stable under `touch` and sensitive to an edit. — which of VPP's 1049 generated API headers are older than the `.api` they come from. Exits 1 on drift; `--fix` regenerates with `vppapigen` rather than `ninja`, whose target re-runs cmake and rewrites the `build.ninja` every VPP measurement reads |
 | `tests/corpus/vpp-findings/probe.sh` | ✅ **REBUILT and committed 2026-08-07.** The 7-second five-TU probe that replaces 2-hour sweeps — measured 7.3 s, all five `clean`. `REALCC=true` by default, so it asks what *chiero* makes of the build's flags without compiling. ⚠️ Its rebuild note: the object path **cannot** be constructed from the source path (CMake names an object after its position in the object library, so `src/vlib/main.c` is `…/vlib_objs.dir/main.c.o`) — match `-c <source>` in one `ninja -t commands all` dump, 63 ms for all 2945 |
 | `crates/chiero-sema/tests/generated_const_eval.rs` | ✅ committed 2026-08-09 — the fifth standing gate. Generated integer constant expressions graded by `_Static_assert`, so there is no output to parse. `#[ignore]`d, ~2 s. **An honest zero on chiero (300/300)** — its value is that `const_evaluator_reuse.rs` asks gcc *nothing*, and constant folding decides array bounds, bit-field widths, enumerators and case labels |
 | `crates/chiero-sema/tests/generated_layout.rs` | ✅ committed 2026-08-09 — the fourth standing gate. Generated record shapes vs gcc, **clang as tiebreak**, `#[ignore]`d, ~1 min. Found the prefix-attribute `layout` defect on its first run (§7.20). Writes no oracle: it reuses `harness::assert_agrees_with_cc` |
