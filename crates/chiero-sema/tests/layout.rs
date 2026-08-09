@@ -502,3 +502,46 @@ fn an_attribute_after_a_typedef_declarator_belongs_to_the_name_not_the_struct() 
         &[],
     );
 }
+
+/// **An enum with a declared underlying type is that type's size** — and chiero said it was an
+/// `int`'s.
+///
+/// `chiero-parse` parses the `: T` after an enum tag and then discards it, with a comment saying
+/// the representation "is what 014 owns, and inventing that here would be a layout claim this
+/// crate cannot make". That is the right instinct and 014 never received the type, so sema fell
+/// back to the implied representation and `chiero layout` reported `struct S` as **8 bytes,
+/// align 4** where gcc says **2 and 1** — as `proven — this holds for all inputs (Exact)`.
+///
+/// **VPP uses it: 22 sites across 6 files**, all in the `typedef enum name_ : u8` form —
+/// `quic/quic.h`, `http/http_buffer.h`, `vperf/builtin/vperf_builtin.h` among them. Every struct
+/// holding one of those had the wrong size, silently.
+///
+/// The construct is C23 and a long-standing GNU extension; 013's dialect accepts it, which is why
+/// it parses rather than being refused.
+///
+/// ⚠️ Found by auditing a *class* rather than a site: `let _ = <named parameter>;` in the
+/// workspace's sources, looking for information dropped at a boundary. Four were unexplained; this
+/// was the one with a consequence.
+#[test]
+fn an_enum_with_a_declared_underlying_type_is_that_size() {
+    check(
+        "enum small : unsigned char { A = 1, B = 2 };\nstruct S { enum small s; char c; };\n",
+        "S",
+        2,
+        1,
+        &[("s", 0), ("c", 1)],
+    );
+}
+
+/// The same enum without the declaration keeps the implied representation, so the fix cannot be
+/// "make every enum one byte".
+#[test]
+fn an_enum_without_one_keeps_its_implied_representation() {
+    check(
+        "enum plain { P = 1, Q = 2 };\nstruct T { enum plain e; char c; };\n",
+        "T",
+        8,
+        4,
+        &[("e", 0), ("c", 4)],
+    );
+}
