@@ -2936,6 +2936,25 @@ typing the paths ever would.
    still 8–9.5x, in three `IndexMap`s keyed by `(String, u32)` plus the per-object merge. Do not
    tighten the 8.0x threshold: the run-to-run band is ±0.8x.
 
+   🆕 **Narrowed 2026-08-09, and the narrowing is free: the residual is a function of distinct
+   source lines *at fixed arc count*.** The two curve shapes reach n=12800 with the **same**
+   arcs — `conservation 665734` for both — and differ only in how many lines those arcs sit on:
+
+   | at n=12800 | distinct lines | line-half | its growth |
+   |---|---|---|---|
+   | `line` | ~12800 | 0.1684 s | **8.8x** |
+   | `onelin` | ~1 | 0.0320 s | 3.4x |
+
+   **5.3x more time for identical arc work, and the superlinearity is entirely on the `line`
+   side.** That rules out everything scaling with arcs, blocks, or blocks-per-line — which is
+   most of what the earlier waves chased — and leaves only what is done *per distinct line*.
+   ⚠️ Note it also rules out the obvious reading of the suspect already recorded here: an
+   `IndexMap<(String, u32), _>` over one filename hashes and clones a string per operation,
+   which is **linear** in the line count, not 8.8x. So the recorded suspect is at best the
+   constant, and something per-line is O(lines²)-ish. **Next step is a counter on the per-line
+   operations, not a reading** — the curve makes each hypothesis a 25-second question, and this
+   entry's own scoreboard is 6 refuted / 5 held.
+
    ⚠️ **The middle fix is the one to remember: it had been measured and honestly ruled out earlier
    the same day**, and that null result was *true* — while `block_counts` was 90% of the clock,
    nothing else could move the ratio. **Re-test reverted optimisations after the dominant cost
