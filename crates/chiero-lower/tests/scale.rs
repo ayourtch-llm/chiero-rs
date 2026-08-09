@@ -113,12 +113,13 @@ fn one_big_function(n: usize) -> String {
 /// |---|---|---|
 /// | parse | 3.8x | 4.0x — linear throughout |
 /// | sema | 6.3x | 7.0x |
-/// | verify | 6.7x | 7.3x |
+/// | verify | 6.7x | 6.9x |
 /// | lower | **11.2x** | **7.7x** |
 ///
 /// Two O(n²) scans came out of lowering the day this gate was built: `emit` scanned every
 /// block to find the current one on **every instruction**, and `reachable_from` used a `Vec`
-/// with `contains` plus a per-block `find`. A 32 768-statement function went **22.7 s → 7.9 s**. That is a real limit and it is
+/// with `contains` plus a per-block `find`. A third came out of the verifier the same day. A 32 768-statement function went
+/// **22.7 s → 5.9 s**. That is a real limit and it is
 /// §9.1's open item; this gate exists so it cannot quietly get worse first. The ceilings are
 /// the measured value with room for a loaded machine, and every one is *below* 16x, so a stage
 /// that becomes outright quadratic at these sizes fails here.
@@ -130,7 +131,8 @@ fn max_ratio_per_4x(stage: &str) -> f64 {
         // The one stage that is genuinely linear, so it is held to it.
         "parse" => 6.0,
         "sema" => 10.0,
-        "verify" => 10.0,
+        // 6.9x measured after `check_structural_identity`'s two scans became sets.
+        "verify" => 9.0,
         // **7.7x measured after the 2026-08-09 fixes**, down from 11.2x. The ceiling moves with
         // it: a ratchet that keeps yesterday's slack cannot see tomorrow's regression.
         _ => 10.0,
@@ -144,7 +146,12 @@ fn assert_subquadratic(tag: &str, sizes: &[usize], make: fn(usize) -> String) {
     // estimator here: scheduling noise only ever *adds* time, so the smallest of k samples is
     // the closest to the work actually done. Loosening the ceilings until nothing failed would
     // have produced a gate that cannot fail, which is the thing this project keeps refusing.
-    const REPEATS: usize = 3;
+    // **Five, not three, and the reason is on the record.** Three repeats were stable while
+    // `verify`'s ceiling sat at 10.0 and went flaky (1 failure in 3) the moment the ceiling
+    // followed the measurement down to 9.0. The choice was to raise the ceiling back or to
+    // measure better; raising it would have parked permanent slack in the gate to buy quiet,
+    // which is the failure mode every note here warns about. Five repeats: 5/5 green, ~2.9 s.
+    const REPEATS: usize = 5;
     let mut rows: Vec<(usize, Stages)> = Vec::new();
     for &n in sizes {
         let src = make(n);

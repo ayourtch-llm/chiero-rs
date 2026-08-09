@@ -289,14 +289,27 @@ fn check_structural_identity(f: &Function, out: &mut Vec<VerifyError>) {
             );
         }
     }
+    // **Both rules below need a membership test, so both get a set built in one pass.**
+    // They were `iter().any(..)` *inside* a loop — `allocas x instructions` for the first and
+    // `instructions x allocas` for the second, and both grow with the function. Found by the
+    // scale gate (§7.27): `check_structural_identity` was 2 of 7 samples on a 32 768-statement
+    // function. Same class as `emit`'s scan and the two the verifier already carried; note
+    // that `.any(..)` is why item 5b's `.contains(&` audit cannot see any of them.
+    let supplied_dyn: IndexSet<crate::AllocaId> = f
+        .blocks
+        .iter()
+        .flat_map(|b| &b.insts)
+        .filter_map(|i| match &i.kind {
+            InstKind::AllocaDyn { alloca, .. } => Some(*alloca),
+            _ => None,
+        })
+        .collect();
+    let declared: IndexSet<crate::AllocaId> = f.allocas.iter().map(|a| a.id).collect();
     // Rule 13's second half: a declaration claiming a runtime extent needs an
     // `AllocaDyn` to supply it, or nothing ever sizes the object.
     for a in &f.allocas {
         if a.count == crate::DYNAMIC_EXTENT {
-            let supplied =
-                f.blocks.iter().flat_map(|b| &b.insts).any(
-                    |i| matches!(&i.kind, InstKind::AllocaDyn { alloca, .. } if *alloca == a.id),
-                );
+            let supplied = supplied_dyn.contains(&a.id);
             if !supplied {
                 err(
                     out,
@@ -315,7 +328,7 @@ fn check_structural_identity(f: &Function, out: &mut Vec<VerifyError>) {
                 rv: RValue::AddrOfLocal { alloca },
                 ..
             } = &i.kind
-                && !f.allocas.iter().any(|a| a.id == *alloca)
+                && !declared.contains(alloca)
             {
                 err(
                     out,
