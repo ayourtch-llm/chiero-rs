@@ -1364,6 +1364,22 @@ replaced. Three independent checks:
 
 📌 **`find-bugs` pays this twice** (§7.28), so the saving lands twice on that path.
 
+📌 **Where the whole day landed**, one 32 768-statement function and the 96 000-block engine
+probe. Eight quadratic scans and one O(B²) representation, none of which any VPP measurement
+could see:
+
+| | start of 2026-08-09 | end |
+|---|---|---|
+| `big.c` frontend | 22 671 ms | **1 693 ms** (13.4x) |
+| `eng32000` frontend | 27 940 ms | **2 881 ms** (9.7x) |
+| `eng32000` full `find-bugs` | 53 279 ms | **3 264 ms** (16.3x) |
+| peak RSS, 96k blocks | 35 628 MB | **494 MB** |
+
+`full − frontend` is now **383 ms**, which settles §7.28's correction from the other side: the
+"engine residual" subtraction kept reporting really was the second verify. The scale gate's
+ceilings moved with every fix — parse 4.3x, sema 4.7x, verify 5.3x, lower 5.7x measured, held
+at 6.0/6.5/7.0/7.5.
+
 ### 7.28 An engine size axis without z3 — and the scan it found was not the suspected one
 
 Five `blocks.iter().find(|b| b.id == …)` sites were recorded as an unmeasured shape, three of
@@ -1522,7 +1538,7 @@ at from the analysis side.
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
 three xtask gates were red: a crate whose test *binary* fails to build emits no `test result`
 line at all, so counting successes cannot detect a missing success. `./check.sh` keys on
-cargo's exit status and prints the failing suites first. Current: **2316 passed, 281 suites** (2026-08-09).
+cargo's exit status and prints the failing suites first. Current: **2317 passed, 282 suites** (2026-08-09).
 
 ⏱️ **It now takes over an hour per leg**, and that is the session's dominant cost — see §9's
 note on the corpus. `conversions` and `semantics` are ~55 s each, the two VPP gates ~60 s, and
