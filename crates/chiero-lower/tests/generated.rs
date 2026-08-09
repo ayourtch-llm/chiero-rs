@@ -3172,6 +3172,96 @@ fn the_focused_channel_reaches_the_shapes_the_others_cannot() {
     );
 }
 
+/// **How a channel must file one verdict.**
+///
+/// The three channels classify independently, and they drifted: the focused channel filed a
+/// [`Verdict::Gap`] as a `Discarded`, so *"the engine declared it could not model this"* and
+/// *"the program was undefined, so nothing was asked of chiero"* were one number. The
+/// control-flow channel separates them and its comment says why — a grammar that drifted
+/// into hitting a bound on every seed would be grading nothing while every assertion still
+/// passed. This is the same defect wave 270 fixed for `Refused`, one channel away, and it
+/// survived because nothing said what the filing had to be.
+///
+/// So the filing is a function now, and the rule lives in one place rather than in three
+/// `match` arms nobody compares. Policy stays per channel: what a channel *does* about a
+/// declared gap is its own business, and the three genuinely differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Bucket {
+    /// The two answers matched.
+    Compared,
+    /// Nothing was asked of chiero — the program was undefined, or the compilers disagreed.
+    Discarded,
+    /// chiero was asked and **declared a limit**. 023 §7's honest outcome, and a different
+    /// fact from `Discarded` in the one way that matters: the program was fine and chiero
+    /// still produced nothing trustworthy.
+    DeclaredGap,
+    /// A stage pushed a diagnostic.
+    Refused,
+    /// A wrong answer, a panic, invalid CIR, or silence at `Exact` fidelity.
+    Defect,
+}
+
+fn bucket(v: &Verdict) -> Bucket {
+    match v {
+        Verdict::Agree => Bucket::Compared,
+        Verdict::Discarded => Bucket::Discarded,
+        Verdict::Gap { .. } => Bucket::DeclaredGap,
+        Verdict::Refused { .. } => Bucket::Refused,
+        Verdict::Mismatch { .. }
+        | Verdict::Panic(_)
+        | Verdict::SilentNoState { .. }
+        | Verdict::InvalidCir { .. } => Bucket::Defect,
+    }
+}
+
+/// **A declared gap is not a discard**, pinned per variant so the arms cannot be re-merged.
+///
+/// Written because the live channels cannot currently produce a `Gap` at all — nothing in
+/// any grammar degrades — so the distinction was unenforceable by running anything. That is
+/// the same trap the `KNOWN_GAPS` liveness check fell into a wave earlier: mutating the data
+/// proves nothing about logic that never executes.
+#[test]
+fn a_declared_gap_is_filed_apart_from_a_discard() {
+    assert_eq!(
+        bucket(&Verdict::Gap {
+            fidelity: "Unknown".into()
+        }),
+        Bucket::DeclaredGap
+    );
+    assert_eq!(bucket(&Verdict::Discarded), Bucket::Discarded);
+    assert_ne!(
+        bucket(&Verdict::Gap {
+            fidelity: "Bounded".into()
+        }),
+        bucket(&Verdict::Discarded),
+        "a declared limit and an unasked question are different facts, and merging them is \
+         how `x && <float>` hid for six waves"
+    );
+    // The rest of the mapping, so a re-shuffle of the arms cannot quietly downgrade a defect.
+    assert_eq!(bucket(&Verdict::Agree), Bucket::Compared);
+    assert_eq!(
+        bucket(&Verdict::Refused {
+            stage: "lower",
+            message: "x".into()
+        }),
+        Bucket::Refused
+    );
+    for defect in [
+        Verdict::Mismatch {
+            chiero: Some(1),
+            gcc: 2,
+        },
+        Verdict::Panic("boom".into()),
+        Verdict::SilentNoState { gcc: 0 },
+        Verdict::InvalidCir {
+            errors: vec!["e".into()],
+            gcc: 0,
+        },
+    ] {
+        assert_eq!(bucket(&defect), Bucket::Defect, "{defect:?}");
+    }
+}
+
 /// **The focused channel computes what gcc computes.**
 ///
 /// The channel waves 284 and 287 concluded was needed: one construct per program, its own
@@ -3182,21 +3272,34 @@ fn the_focused_channel_reaches_the_shapes_the_others_cannot() {
 fn focused_programs_agree_with_gcc() {
     let mut compared = 0usize;
     let mut discarded = 0usize;
+    let mut gaps = 0usize;
     let mut refused: Vec<(u64, String)> = Vec::new();
     let mut defects: Vec<(u64, String, Verdict)> = Vec::new();
     for seed in 0..200u64 {
         let (prelude, body) = program_focused(seed);
-        match judge(&prelude, &body) {
-            Verdict::Agree => compared += 1,
-            Verdict::Discarded | Verdict::Gap { .. } => discarded += 1,
-            Verdict::Refused { stage, message } => {
+        let v = judge(&prelude, &body);
+        // **Filed by [`bucket`], not by an arm written here.** This channel had `Gap` sharing
+        // an arm with `Discarded`, so a declared modelling limit was reported as a program
+        // nobody asked about — and `compared >= 180` was its only symptom, which tolerates
+        // twenty of them in silence.
+        match bucket(&v) {
+            Bucket::Compared => compared += 1,
+            Bucket::Discarded => discarded += 1,
+            Bucket::DeclaredGap => gaps += 1,
+            Bucket::Refused => {
+                let Verdict::Refused { stage, message } = &v else {
+                    unreachable!("bucket says Refused")
+                };
                 refused.push((seed, format!("{stage}: {message}")));
             }
-            v => defects.push((seed, format!("{prelude}\nint probe(void) {{\n{body}}}"), v)),
+            Bucket::Defect => {
+                defects.push((seed, format!("{prelude}\nint probe(void) {{\n{body}}}"), v))
+            }
         }
     }
     eprintln!(
-        "focused channel: {compared} compared, {discarded} discarded, {} refused",
+        "focused channel: {compared} compared, {discarded} discarded, {gaps} declared gaps, \
+         {} refused",
         refused.len()
     );
     assert!(
@@ -3551,17 +3654,25 @@ fn control_flow_programs_agree_with_gcc() {
     let mut defects: Vec<(u64, String, Verdict)> = Vec::new();
     for seed in 0..200u64 {
         let (prelude, body) = program_control_flow(seed);
-        match judge(&prelude, &body) {
-            Verdict::Agree => compared += 1,
-            Verdict::Discarded => discarded += 1,
-            // A **declared** limit. 023 §7 calls this the honest outcome, so it is tolerated —
-            // but counted, because a grammar that drifted into hitting a bound on every seed
-            // would be grading nothing while every assertion here still passed.
-            Verdict::Gap { .. } => gaps += 1,
-            Verdict::Refused { stage, message } => {
+        let v = judge(&prelude, &body);
+        // This channel already filed a **declared** limit apart from a discard — 023 §7 calls
+        // it the honest outcome, so it is tolerated, but counted, because a grammar that
+        // drifted into hitting a bound on every seed would be grading nothing while every
+        // assertion here still passed. That reasoning was right and lived only here, which is
+        // why the focused channel could get it wrong. It is [`bucket`]'s now.
+        match bucket(&v) {
+            Bucket::Compared => compared += 1,
+            Bucket::Discarded => discarded += 1,
+            Bucket::DeclaredGap => gaps += 1,
+            Bucket::Refused => {
+                let Verdict::Refused { stage, message } = &v else {
+                    unreachable!("bucket says Refused")
+                };
                 refused.push((seed, format!("{stage}: {message}")))
             }
-            v => defects.push((seed, format!("{prelude}\nint probe(void) {{\n{body}}}"), v)),
+            Bucket::Defect => {
+                defects.push((seed, format!("{prelude}\nint probe(void) {{\n{body}}}"), v))
+            }
         }
     }
     eprintln!(
