@@ -3000,7 +3000,19 @@ typing the paths ever would.
    4.1–5.8 over six — not a claim of linearity. **Five samples were not enough to bound a
    quantity whose band is ±1x**, which is the same over-reading as concluding from one run, at a
    larger sample. Both shapes still pass 8.0x with room, and `line` is still transformed from
-   8.8x; that part holds. ⚠️ So
+   8.8x; that part holds.
+
+   ✅ **And the gate is measuring the right thing — checked, because the wide band suggested it
+   might not be.** The worry was that "worst per 4x" might be coming from the noisy small-*n*
+   steps, which would make the headline a measure of jitter rather than of growth. Every step,
+   one run:
+
+       line     3.0 -> 3.5 -> 3.9 -> 4.4      onelin   2.9 -> 3.6 -> 4.8 -> 3.9
+
+   **The small steps are consistently the tamest**, and the worst comes from one of the two
+   largest — where it should. So the band is wide because the *large-n* measurement is noisy on
+   a loaded machine, not because the gate is reading the wrong end of the curve. An honest zero
+   on the hypothesis, recorded so the next reader does not re-suspect it. ⚠️ So
    **"do not tighten the 8.0x threshold" still holds, for a completely different reason than
    when it was written**: it was `line`'s superlinearity, and it is now `onelin`'s run-to-run
    noise, which touches 6.4x. Tightening to 7.0x would sit 0.6x from an observed value. **A
