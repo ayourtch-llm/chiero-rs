@@ -1643,6 +1643,9 @@ Ratio per 4x step on one growing function — linear is 4x, quadratic 16x:
 rather than one CFG — is far better behaved, so the cost is per-function, which is where the
 verifier's earlier dominator quadratic also lived.
 
+✅ **And it closed item 8c the same day** (22.7 s → 7.9 s; see the item). The table above is
+the *first* run; the curve after the fixes is in the gate's own doc comment.
+
 ⚠️ **Committed as a ratchet, and the test names say so** (`…stays_at_todays_curve`, not
 `…is_subquadratic`). Three of four stages are superlinear now; the gate stops them getting
 worse while the fix is queued. Every ceiling sits below 16x, so a stage turning outright
@@ -4166,20 +4169,30 @@ typing the paths ever would.
    when it succeeds**. That is a trade worth making — but knowingly, and with the numbers re-taken
    afterwards, not as a side effect of a wave that was about something else.
 
-8c. 🆕 **Lowering is superlinear in the size of one function — 5.2 s for 16 384 statements.**
-   Measured by the new scale gate (§7.27) the day it was built. `lower` costs 18.6x for a 4x
-   input at the top of the curve, *worse* than quadratic; `sema` 11.1x and `verify` 13.2x are
-   superlinear too, and only `parse` is linear. Growing the **module** instead (many small
-   functions) is well behaved, so the cost is per-function.
+8c. ✅ **CLOSED 2026-08-09, the same day the gate that found it was built — 22.7 s → 7.9 s.**
+   Two O(n²) scans in lowering, both item 5b's shape:
 
-   ⚠️ **No VPP measurement can see this** — a TU's size there is its header closure and the
-   corpus spans 1.7x (§7.26), so every published frontend number sits at one point on this
-   curve. That also means fixing it moves no published number, and the evidence is the gate.
+   | | |
+   |---|---|
+   | `emit` | ran **once per instruction** and did `blocks.iter_mut().find(\|b\| b.id == cur)` to locate the current block — O(instructions × blocks), both growing with the function. **The dominant cost: 4 of 7 samples.** Now an `IndexMap<BlockId, usize>` kept in step at the only two places `blocks` changes shape |
+   | `reachable_from` | `Vec` + `contains` for `seen`, a per-block `find` for the lookup, and the caller's `retain(\|b\| keep.contains(…))` — quadratic three ways. Sets and an index now |
 
-   The gate is a **ratchet at today's numbers**, so this cannot silently get worse first. Start
-   by sampling `one_big_function(16384)` under `gdb` — that is what named the last two
-   quadratics, and §11.0 carries the invocation and the two traps (take more than one sample;
-   extract the right thread).
+   | | before | after |
+   |---|---|---|
+   | one 32 768-statement function | 22.671 s | **7.876 s** |
+   | `lower`, ratio per 4x step | 11.2x | **7.7x** |
+
+   ⚠️ **`reachable_from` alone was 5%, and it was fixed first on one stack sample.** A single
+   sample is a share of unknown size; the seven-sample profile is what named `emit`. Second time
+   in one day that one sample pointed at a real but minor cost — the lesson was already written.
+
+   📌 **5b's audit would not have found the dominant one.** `emit`'s scan is `.find(…)`, not
+   `.contains(&)`, and 5b's per-crate census **omits `chiero-lower` entirely** — the crate has
+   four `.contains(&` sites nobody counted. The audit is narrower than its own class *and* its
+   census is incomplete; the working method remains sampling.
+
+   ⏭️ **Still superlinear and now visible**: `sema` 7.0x and `verify` 7.3x per 4x step, and
+   `lower`'s own 7.7x is not linear either. The gate is a ratchet at these numbers.
 
 8b. 🆕 **The build graph is four `CMakeLists.txt` behind `src/`, and that qualifies every VPP
    number in this file.** Measured 2026-08-08: `build.ninja` was generated at 23:31:38 on
@@ -4633,6 +4646,17 @@ not an anecdote.*
   header closure, 167 source lines becoming 185 000 CIR lines, and the corpus spans 1.7x. Not
   "the corpus lacks this construct" (§7.21) but "the corpus cannot vary this **dimension**" —
   and the first gate built with the dimension found a worse-than-quadratic stage in one run.
+
+- **One stack sample is a share of unknown size.** Twice on 2026-08-09 a single sample named a
+  real cost that turned out to be minor: `read_form` (which was z3, not the defect) and
+  `reachable_from` (a genuine O(n²), worth **5%**). Fixing the second on one sample's evidence
+  was a wasted round-trip — a seven-sample profile then named `emit`, which was 4 of 7 and gave
+  **2.9x**. **Count the samples before believing the frame**; the lesson had been written hours
+  earlier and was still not applied.
+
+- **A ratchet must move with the fix.** `lower`'s ceiling went 14.0 → 10.0 the moment the curve
+  improved. A gate left at yesterday's slack cannot see tomorrow's regression, and it will look
+  green the whole way back.
 
 ### 11.1 About tests and what they can see
 
