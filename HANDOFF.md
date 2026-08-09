@@ -2974,7 +2974,7 @@ typing the paths ever would.
    O(V × (V+E))** — what changed is that straight-line code no longer funds a search that cannot
    succeed. The cycle path stays covered by the `cyc.gcno` fixture.
 
-   **Still open:** ~14x per 4x arcs against a linear 4x, so `tests/growth.rs` still fails on
+   **Still open:** ~14x per 4x arcs against a linear 4x, so `crates/chiero-gcov/tests/growth.rs` still fails on
    purpose, and **the remaining cost is unlocated**.
 
    ⚠️ **Tested and ruled out after the early-out landed:** the `accumulate_line_info` predecessor
@@ -3757,7 +3757,8 @@ typing the paths ever would.
 5p. ✅ **CLOSED 2026-08-09 — `chiero-diff`'s `parsed_cleanly` ignores sema, and that is
    correct.** Filed as a question, answered by measurement within the hour. Found by completing the consumer audit rather
    than stumbling on it: there are exactly **four** production readers of sema diagnostics
-   (`chiero-cli/frontend.rs` twice, `chiero-diff`, `xtask/sweep.rs`, plus sema's own internals),
+   (`chiero-cli/src/frontend.rs` twice, `chiero-diff/src/lib.rs`, `xtask/src/sweep.rs`, plus sema's
+   own internals),
    and this is the only one that never looks.
 
    `parsed_cleanly = tu.diagnostics.is_empty() && parsed.diagnostics.is_empty()` — pp and parse
