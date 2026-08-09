@@ -3599,6 +3599,14 @@ typing the paths ever would.
    real lowered C (`char *g(void)` → `Ptr`, `int f(void)` → `Int(32)`), and `./check.sh` stayed
    green — no latent defect surfaced and no false positive.
 
+   📌 **And the audit that followed it is the reassuring kind.** Applying §11.0's top lesson to
+   this exact fact — *who else decides a call result's type?* — `chiero-exec` was **already**
+   reading `f.ret` from the module (`lib.rs:4136`), and has been. So the verifier was the one
+   reader that did not ask, and the fix aligned it with the existing source of truth rather than
+   inventing a second one. **An honest zero on "who else disagrees", and it is evidence the fix
+   was the right shape**: the alternative — a side table, or a field the verifier maintains
+   itself — would have created the divergence that was not there.
+
    **What is left is genuinely the indirect half**, which is also where §7.6's finding class
    lives: `Callee::Indirect` carries an operand rather than a signature, so it needs the field,
    the text-format syntax, and the ~110 fixtures.
