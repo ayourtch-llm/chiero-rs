@@ -4066,6 +4066,16 @@ not an anecdote.*
   diagnostics — necessarily, since VPP contains zero instances of every shape that changed. That
   run was a control, not a check, and reading it as confirmation would have been the whole error.
 
+- 📌 **Read the site before assuming a gap — five times in one day the guard already existed
+  and the code said so.** `chiero-exec` was already reading the callee's `ret`; 011 c13's test
+  already used a counter instead of the clock its contract names; `vpp_leak.rs` already had a
+  real-tree test under a name my grep missed; `check-proof-surface` already requires each probe
+  to fail *for the right reason*, with a comment recording the vacuous pass that taught it. Each
+  check cost under a minute; each "fix" would have been redundant work, and one of them
+  (a second `check.sh` leg) I was a command away from committing. **The comments at a site
+  carry its history, and this project writes them — the answer to "surely nobody checked this"
+  is usually in the file.**
+
 - ⚠️ **Mechanical: piping a chiero command to `head` makes it exit 101, which reads as a panic.**
   Rust's `println!` panics on `EPIPE`, so `chiero cir … | head -3` reports exit 101 while
   `chiero cir … > file` reports 0. This matters here because the project *asserts exit codes* —
