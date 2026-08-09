@@ -2646,6 +2646,17 @@ impl Lowerer<'_> {
                 let bits = self.raw_width_of(e).max(1);
                 let want_align =
                     matches!(self.ast.expr(e).kind, chiero_ast::ExprKind::AlignofType(_));
+                // ⚠️ **For `_Alignof`, sema's fold is asked *first*, and the order is the
+                // whole fix.** `ty_of_syntactic` resolves to the underlying `TyId`, so a
+                // typedef's own `aligned` attribute is gone by then — `_Alignof(A_t)` for
+                // `typedef __attribute__((aligned(16))) struct A {char a;} A_t;` came out 1
+                // where gcc says 16. `align_of` never returns `None` for a complete type, so
+                // the `or_else` fallback to the fold could not run.
+                //
+                // Sizeof keeps the original order: the comment above records why resolving
+                // here matters (`sizeof(__typeof__(x))` for a local has nothing else to
+                // answer it), and a typedef cannot change a size.
+                let folded = want_align.then(|| self.const_of(e)).flatten();
                 let n = self.analysis.ty_of_syntactic(*t).and_then(|ty| {
                     if want_align {
                         self.analysis.align_of(ty)
@@ -2653,7 +2664,7 @@ impl Lowerer<'_> {
                         self.analysis.size_of(ty)
                     }
                 });
-                match n.map(|v| v as i128).or_else(|| self.const_of(e)) {
+                match folded.or_else(|| n.map(|v| v as i128).or_else(|| self.const_of(e))) {
                     Some(v) => Operand::Const(Const::Int { bits, val: v }),
                     None => Operand::Const(Const::Undef(CTy::Int(bits))),
                 }

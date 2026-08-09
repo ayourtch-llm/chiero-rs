@@ -4410,6 +4410,19 @@ impl Cx<'_> {
             ExprKind::AlignofType(ty) => {
                 let t = self.ty_of(ty);
                 let n = align_of_ty(&self.out, &self.target, t)?;
+                // **The typedef's own alignment, which `align_of_ty` cannot see.** `ty_of`
+                // resolves to the *underlying* type, so by here the name — and the
+                // `aligned` attribute attached to it — is gone. `declared_align` is the walk
+                // that keeps it, and it already existed for declarations: `typedef int A
+                // __attribute__((aligned(16))); A x;` places `x` at 16 because the declarator
+                // asks it. Nothing asked it here, so the alignment was right wherever a
+                // declaration *used* the typedef and wrong wherever a program *asked* about
+                // it. The map had one of its two readers.
+                //
+                // `max`, not replace: `_Alignof(struct A)` must stay the record's own (gcc
+                // says 1 for a record whose typedef is `aligned(16)`), and an array of
+                // over-aligned elements is itself over-aligned.
+                let n = self.declared_align(ty).map_or(n, |d| d.max(n));
                 Some(self.size_t(n as i128))
             }
             // **`sizeof` and `_Alignof` of an *expression* are constant expressions too**

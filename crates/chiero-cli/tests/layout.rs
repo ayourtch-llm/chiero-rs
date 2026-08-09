@@ -514,3 +514,54 @@ fn layout_refuses_a_translation_unit_sema_could_not_analyse() {
         String::from_utf8_lossy(&good.stdout)
     );
 }
+
+/// **The typedef's alignment reaches the CIR, not just sema's folder.**
+///
+/// ⚠️ This test exists because the sema-level fix passed its own unit test while `chiero cir`
+/// went on emitting the old numbers. There were **three** readers of "what is this type's
+/// alignment" and the fix reached one: `Cx::eval`'s `AlignofType` arm (fixed), lowering's
+/// `AlignofType` arm (not, and it is the one the tool uses), and the typing pass that only
+/// records a width.
+///
+/// Lowering asked `align_of` on the resolved `TyId` — where the typedef name is already gone —
+/// and fell back to sema's fold only if that returned `None`, which it never does for a
+/// complete type. So the fallback that would have been right was unreachable.
+///
+/// **Checking the original reproduction rather than the new test is what caught it**, and
+/// pinning it here is what stops the next fix from reaching one reader again.
+#[test]
+fn a_typedefs_alignment_reaches_the_lowered_constant() {
+    let dir = std::env::temp_dir().join(format!("chiero-tdalign-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let c = dir.join("td.c");
+    std::fs::write(
+        &c,
+        "typedef __attribute__((aligned(16))) struct A { char a; } A_t;\n\
+         typedef int I_t __attribute__((aligned(16)));\n\
+         int probe(void) { return _Alignof(A_t) * 100 + _Alignof(I_t); }\n",
+    )
+    .expect("write");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_chiero"))
+        .arg("cir")
+        .arg(&c)
+        .output()
+        .expect("run chiero");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // gcc gives 16 for both, so the folded constants must be 16 — and 1 or 4 is the old wrong
+    // answer for each, which is what makes the substring check meaningful rather than lucky.
+    assert!(
+        stdout.contains("16i64"),
+        "the typedef's alignment must reach the CIR as 16; gcc says 16 for both:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("mul i64 1i64") && !stdout.contains("mul i64 4i64"),
+        "1 and 4 are the underlying alignments — the typedef's attribute was dropped:\n{stdout}"
+    );
+}
