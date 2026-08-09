@@ -1852,8 +1852,9 @@ typing the paths ever would.
 > cargo test -p chiero-vpp --test persona_gap -- --ignored --nocapture
 >
 > # whether cost SCALES: gcov native ingest, two input shapes, n up to 12800. ~5 s.
-> # 2026-08-09, five runs: `line` 4.1-4.7x (linear), `onelin` 4.1-6.4x, against 8.0x.
-> # ⚠️ `onelin` is the binding constraint now, not `line`; 6.4x is noise, not a regression.
+> # 2026-08-09, six runs: `line` 4.1-5.8x, `onelin` 4.1-6.4x, against 8.0x. 4x is linear.
+> # ⚠️ Neither shape is reliably the worse one and the band is ±1x — anything under 8.0x is
+> # noise, not a regression. A five-run band called `line` 4.1-4.7 and run six gave 5.8.
 > cargo test -p chiero-gcov --test growth -- --ignored --nocapture
 >
 > # 🆕 whether LAYOUT is right on shapes VPP does not contain: generated records vs gcc, with
@@ -2988,13 +2989,18 @@ typing the paths ever would.
    threshold.** A single run is not a band, and this curve's band is the whole reason §9 says
    not to tighten:
 
-   | shape | worst per 4x, five runs | was |
+   | shape | worst per 4x, **six** runs | was |
    |---|---|---|
-   | `line` | **4.1 4.7 4.1 4.5 4.5** — max 4.7, and 4.0 *is* linear | the bad one, 8.8x |
-   | `onelin` | 4.3 4.7 5.4 **6.4** 4.1 — max 6.4, band ±1.2x | the good one, 3.4x |
+   | `line` | 4.1 4.7 4.1 4.5 4.5 **5.8** — max **5.8** | the bad one, 8.8x |
+   | `onelin` | 4.3 4.7 5.4 **6.4** 4.1 4.8 — max 6.4 | the good one, 3.4x |
 
-   **`line` is now essentially linear across five runs** — much stronger evidence than the single
-   run the fix was committed on — **and `onelin` is now the binding constraint.** ⚠️ So
+   ⚠️ **The sixth run fell outside the band the first five established, and the correction is the
+   point.** After five runs this entry said `line` was *"essentially linear, 4.1–4.7"*; run six
+   gave **5.8x**. So the honest statement is a range with its sample size attached — `line`
+   4.1–5.8 over six — not a claim of linearity. **Five samples were not enough to bound a
+   quantity whose band is ±1x**, which is the same over-reading as concluding from one run, at a
+   larger sample. Both shapes still pass 8.0x with room, and `line` is still transformed from
+   8.8x; that part holds. ⚠️ So
    **"do not tighten the 8.0x threshold" still holds, for a completely different reason than
    when it was written**: it was `line`'s superlinearity, and it is now `onelin`'s run-to-run
    noise, which touches 6.4x. Tightening to 7.0x would sit 0.6x from an observed value. **A
