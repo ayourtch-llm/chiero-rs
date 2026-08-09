@@ -19,15 +19,23 @@
 # round. `--skip-lints` is there for the case that motivated the split — re-running the tests
 # while a fix for one of the fast legs is still being written.
 #
-# ⚠️ Not covered here, and deliberately: CI's **second solver leg**
+# ⚠️ Not covered **by default**, and deliberately: CI's **second solver leg**
 # (`CHIERO_SMT_SOLVER=/nonexistent cargo test --workspace --no-fail-fast`). It doubles the
 # runtime, and HANDOFF §10 asks for it by name at the points where it matters. Naming the gap
 # is the whole difference between a gate and a reassurance.
+#
+# `--both-legs` runs it. The default stays one leg — the runtime argument is unchanged and
+# still right — but a gap that is only *named* has to be reconstructed from this comment by
+# whoever needs it, and the invocation is exactly the kind of thing that gets mistyped or
+# half-remembered. Naming it was the difference between a gate and a reassurance; making it
+# reachable is the difference between a note and a tool.
 set -o pipefail
 
 lints=1
+both_legs=0
 case "${1:-}" in
 --skip-lints) lints=0 ;;
+--both-legs) both_legs=1 ;;
 esac
 
 if [ $lints -eq 1 ]; then
@@ -65,6 +73,20 @@ fi
 passed=$(echo "$out" | grep -E "^test result: ok" | awk -F'[ ;]' '{p+=$4} END {print p+0}')
 failed=$(echo "$out" | grep -E "^test result: FAILED" | awk -F'[ ;]' '{f+=$6} END {print f+0}')
 suites=$(echo "$out" | grep -cE "^test result:")
+if [ $rc -eq 0 ] && [ $both_legs -eq 1 ]; then
+  # **The no-solver leg.** `discover()` consults `$CHIERO_SMT_SOLVER` first, so a path that
+  # does not exist is what CI uses to prove the tree works with no solver at all.
+  echo "second leg: no solver (CHIERO_SMT_SOLVER=/nonexistent)"
+  out2=$(CHIERO_SMT_SOLVER=/nonexistent/no-solver-here cargo test --workspace --no-fail-fast 2>&1)
+  rc=$?
+  echo "$out2" | grep -E "^test result: FAILED|^error(\[|:)" | head -20
+  if [ $rc -ne 0 ]; then
+    echo "$out2" | sed -n '/^failures:$/,$p' | head -40 | sed 's/^/  /'
+  fi
+  p2=$(echo "$out2" | grep -E "^test result: ok" | awk -F'[ ;]' '{p+=$4} END {print p+0}')
+  echo "second leg: $p2 passed, exit $rc"
+fi
+
 if [ $rc -eq 0 ]; then
   if [ $lints -eq 1 ]; then
     echo "GREEN: $passed passed across $suites suites, fmt and clippy clean"
