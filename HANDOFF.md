@@ -1359,8 +1359,22 @@ fork, so a second container is paid for on every branch. `entries` is sorted by 
 because an allocator that reused ids would not fail loudly: lookups would quietly miss objects
 that are present.
 
-⚠️ **Still 18.2x on the last 4x step**, so something else remains in the engine. One cause, not
-the cause — and there is now an instrument to find the next one.
+⚠️ **"Still 18.2x on the last step, so something else remains in the engine" — that was wrong,
+and the instrument caught it within the hour.** At n=32 000 the residual was profiled: **4 of 4
+samples land in `verify::dominators`**, not in the engine at all.
+
+📌 **`find-bugs` verifies the module twice.** Lowering does it (`refuse_unverifiable`) and
+`Engine::run` does it again (`chiero-exec/src/lib.rs:2212`). The second is **deliberate and must
+stay** — 020 §8, quoted at the site: *"always, including on hand-written fixtures. A module that
+fails verification is never executed"*, which is what protects text-parsed CIR and hand-built
+fixtures. So `dominators` is paid **twice** on this path, and fixing it is worth about double
+what it looked like.
+
+⚠️ **The reusable lesson: `engine = find-bugs − chiero cir` is not a phase split.** Subtracting
+two whole-program timings attributes the difference to a phase only if the shared part costs the
+same in both — here it does not, because one run verifies once and the other twice. The number
+was real; the label on it was invented. ✅ *One alternative checked and cleared:* gdb was not
+distorting the timeline — a full run under it takes **53.5 s** against **53.3 s** native.
 
 ### 7.26 Why a growth curve over VPP files cannot find 5b's class in the frontend
 
@@ -2365,9 +2379,13 @@ longer sits between a fresh context and the live work.
    program of §7.28 for the engine. Every one of the nine was found that way; **none** was found
    by the grep. §11.0 carries the sampling recipe and its two traps.
 
-   ⏭️ Live leads with evidence: `verify::dominators` (~half the frontend's remaining time, and
-   an algorithm change rather than a scan swap), and the engine's residual **18.2x** per 4x step
-   with one cause already fixed.
+   ⏭️ **The live lead, and it is now the biggest single cost in the pipeline:
+   `verify::dominators`.** 4 of 8 samples at 98 304 statements, **4 of 4** at n=32 000 on the
+   engine axis, and `find-bugs` pays it **twice** (§7.28). Iterative dataflow with explicit
+   dominator *sets*: `sorted_ids.clone()` per block is O(B²) in memory alone — ~24 576 blocks at
+   98k statements, ~600M entries. ⚠️ **Not a scan-to-set swap**: the fix is Cooper–Harvey–Kennedy
+   immediate dominators, a real algorithm change inside the component whose job is catching
+   wrong CIR. Full history in [HANDOFF-ARCHIVE.md](HANDOFF-ARCHIVE.md) under `8c`.
 
 
 5h. 🆕 **The dominant finding class on `vnet/` is a false positive, and its cause is
@@ -3221,6 +3239,18 @@ not an anecdote.*
   no results at all. §7.5 has the same rule for cargo (*a crate whose test binary fails to build
   emits no `test result` line*), learned again from the other end: **check that the thing ran
   before reading what it said.**
+
+- **Subtracting two whole-program timings is not a phase split.** `engine = find-bugs − chiero
+  cir` gave a real number with an invented label: the two runs do not share a cost, because
+  `find-bugs` verifies the module **twice** (lowering, then `Engine::run` by design). The
+  residual attributed to "the engine" was mostly re-verification, and one profile of the window
+  said so — **4 of 4 samples in `dominators`**. Profile the window you are about to name;
+  arithmetic on totals cannot tell you what ran in it.
+
+- **Check the instrument before blaming it.** When those samples disagreed with the subtraction,
+  the tempting explanation was "gdb stretches the timeline, so the offsets are wrong". Measured
+  instead: **53.5 s under gdb against 53.3 s native.** The instrument was fine and the
+  arithmetic was wrong — the opposite of the comfortable answer, and one timing settled it.
 
 ### 11.1 About tests and what they can see
 
