@@ -4191,8 +4191,20 @@ typing the paths ever would.
    four `.contains(&` sites nobody counted. The audit is narrower than its own class *and* its
    census is incomplete; the working method remains sampling.
 
-   ⏭️ **Still superlinear and now visible**: `sema` 7.0x and `verify` 7.3x per 4x step, and
-   `lower`'s own 7.7x is not linear either. The gate is a ratchet at these numbers.
+   ✅ **Then the verifier, profiled properly rather than sampled once.** Seven samples after the
+   lowering fix put verify at **4 of 7**, `check_structural_identity` the largest single frame.
+   Two more `iter().any(..)`-inside-a-loop scans there: the `AddrOfLocal` check ran over every
+   alloca for **every instruction** (the hot one), and rule 13's half scanned every instruction
+   per dynamic-extent alloca (latent, same shape, fixed together). **7.876 s → 5.872 s**, so
+   **22.671 → 5.872 overall, 3.9x**; `verify`'s ratio 7.3x → 6.9x.
+
+   ⏭️ **Still superlinear**: `sema` 7.0x (`ScopedTypes::get`, `ScopedMeanings::declare` were
+   2 of 7), `verify` 6.9x, `lower` 7.7x. None is linear; the gate is a ratchet at these numbers
+   and `sema` is the untouched one.
+
+   📌 **Five instances of this class in one day** — `emit`, `reachable_from`, the verifier's two,
+   and `parse_model` (5c). **Four of the five are `.find(..)`/`.any(..)`, which item 5b's
+   `.contains(&` audit cannot see.**
 
 8b. 🆕 **The build graph is four `CMakeLists.txt` behind `src/`, and that qualifies every VPP
    number in this file.** Measured 2026-08-08: `build.ninja` was generated at 23:31:38 on
