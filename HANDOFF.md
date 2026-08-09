@@ -3356,6 +3356,13 @@ not an anecdote.*
   that counted was a property test against the *definition* of dominance — with an oracle too
   slow to ship, which is exactly what a property test's oracle should be.
 
+- **A missing input is exposure, not breakage — measure the consequence.** "198 plugin units
+  lack include paths the harness passes" is a fact; "those cannot preprocess" is a guess wearing
+  its clothes, and it was **wrong by an order of magnitude**: 32 sampled, 5 actually fail because
+  of it. Twice on 2026-08-09 an inference was published as a measurement — the other understated
+  a defect by 60x (§7.29). **The tell is the same both times: a sentence about consequences
+  written from a count of causes.**
+
 ### 11.1 About tests and what they can see
 
 - **A test can pass for the wrong reason, and it happens in a recognisable shape.** Diagnosing
