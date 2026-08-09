@@ -455,6 +455,16 @@ pub enum TypeKind {
         /// `None` for a reference (`struct S *p`), `Some` for a definition — including
         /// `Some(vec![])` for `struct S {};`, which is not the same thing as a reference.
         members: Option<Vec<DeclId>>,
+        /// The type after the colon in `enum E : unsigned char { … }` — C23, and a GNU
+        /// extension long before it. `None` for every other tag and for an enum that
+        /// declares none.
+        ///
+        /// **It is here because dropping it is a silent layout error.** The parser used to
+        /// parse and discard it, reasoning that the enumeration's representation "is what 014
+        /// owns" — which was right about the ownership and left 014 with nothing to own, so
+        /// sema fell back to the implied type and `layout` reported `proven` sizes that gcc
+        /// disagreed with. VPP declares 22 of these, all `: u8`.
+        underlying: Option<TypeId>,
     },
     Ptr(TypeId),
     Array {

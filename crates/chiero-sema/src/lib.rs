@@ -3064,7 +3064,9 @@ impl Cx<'_> {
                     prototyped,
                 })
             }
-            TypeKind::Tag { tag, name, members } => self.tag(ty, tag, name, members),
+            TypeKind::Tag {
+                tag, name, members, ..
+            } => self.tag(ty, tag, name, members),
             // **`typeof` is the operand's type, and the operand is not evaluated.** The arm
             // used to return `Ty::Error` with a note that it "needs expression typing, which
             // is contract 11's half of 014 and is not this slice" — a declared gap from
@@ -3574,6 +3576,24 @@ impl Cx<'_> {
         // definition and not per tag name: two anonymous enumerations are two types and have no
         // name to be numbered by. A *reference* to an existing tag never reaches here — it
         // returns the cached id from `enums` above — so `enum E a; enum E b;` is one number.
+        // **A declared underlying type wins over the fitted one** — `enum E : unsigned char`
+        // is one byte whatever its enumerators would have fitted in. The fitting above still
+        // runs: it is what produces the pedantic diagnostics, and silencing those because a
+        // base type was written would hide a real ISO complaint about the enumerators.
+        //
+        // Read off the AST node rather than threaded through the signature, because a
+        // *reference* to the tag returns from `enums` long before here and never has one.
+        let declared = match &self.ast.ty(node).kind {
+            chiero_ast::TypeKind::Tag { underlying, .. } => *underlying,
+            _ => None,
+        };
+        let t = match declared {
+            Some(u) => {
+                let id = self.ty_of(u);
+                self.out.ty(id).clone()
+            }
+            None => t,
+        };
         self.next_enum_tag += 1;
         let id = self.intern_tagged(t, Qual::NONE, self.next_enum_tag);
         // **On the output**, so a consumer that outlives this context can ask — lowering

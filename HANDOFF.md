@@ -1492,6 +1492,7 @@ This has now paid out three times in a row, each time on the first run after a w
 | *not a widening* — **re-measuring the pinned 40 and asking why nothing moved** | one retake + one `grep` | the corpus **cannot reach** a 32-byte access: `__AVX2__` is undefined in every configuration chiero compiles, so every AVX2/AVX512 path in vppinfra is invisible to every measurement this project has published. New evidence for the parked `-march` item, and it came from an *unchanged* number |
 | **a new *kind* of gate: the preprocessor under VPP's own flags** (012 c17, 1967 TUs, 18 min) | one ingest + one gate | **three defects the pp-gate could never see**, because none is about preprocessing *syntax*: `__linux__` unbaked (VPP's `pmalloc.c` reached `#error "Unsupported OS"`), `__has_attribute(error)` answered 0 where gcc says 1, and a diagnostic class chiero was *right* about and that was still noise. Diagnosed 25 → 0, and the token count 731M → **792M: 8% more of the program became visible** |
 | *not a widening* — **asking what chiero believes rather than what it says** (`persona_gap`, 0.1 s) | one differential instrument | the **endianness** defect: `__BYTE_ORDER__` undefined, so `#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__` read `0 == 0`, took the big-endian branch on x86-64, and reversed bit-field member order across `srv6-mobile`. **The 18-minute corpus gate is structurally incapable of finding this** — a wrongly-taken branch emits nothing. Output-watching and state-comparison are two different searches |
+| **auditing a *class* the previous wave named** — `let _ = <named parameter>;`, information dropped at a boundary | one wave | **a wrong `proven` layout on 22 VPP sites.** An enum's declared underlying type (`typedef enum … : u8`) was parsed and discarded, so `struct { enum e; char c; }` was 8 bytes where gcc says 2. 8 hits, 4 unexplained, 1 with a consequence — and the audit existed only because the previous wave's undocumented discard had cost a wrong RED |
 | **following the vector surface into the memory model** — does an OOB 32-byte store get caught, and is a misaligned one recorded? | one wave | **the overwrite is caught, `Exact`, and now pinned end to end from C** (a path no test reached: everything else tests the *wide-load* route, which C vector code does not take). The alignment half diagnosed a real gap — `CopyMem`'s `align` operand is discarded — **via a RED that was itself wrong**: `write_bytewise` strips `Misaligned` deliberately, with no comment. *An undocumented deliberate behaviour is indistinguishable from a defect* |
 | **the AVX2/AVX-512 half of vppinfra — 384 units, never parsed by anything** | one wave, minutes | **an honest zero on parsing: 24 sampled units, 0 diagnosed** — and the widening is real, **+292 to +528 definitions per TU** that no chiero measurement had lowered. `find-bugs` on 8 vector-using entries: 1 finding, a known class. **The yield was a corrected belief**: `unsupported-access-width` is zero not because the corpus cannot make a 32-byte access but because a vector access lowers to `copymem` — 7779 of them ≥32 bytes in one TU. ⚠️ **Two false zeros from ad-hoc greps in one wave**, both reading "nothing changed": `^func` counts declarations, and copymem sizes are `32i64` not "32 bytes". **When a probe reports zero, check that it can report non-zero** |
 | *not a widening* — **measuring a "stale environment" before acting on it** | 10 min | the tree had moved by **165 files in one checkout**, but only **4 `.api`** could matter: chiero reads `src/` directly, so only *generated* artifacts can be stale. Fixed with the generator command rather than `ninja`, whose target would have re-run cmake and rewritten the `build.ninja` every VPP measurement reads. **A blocker described in prose was a one-second check** |
@@ -3095,6 +3096,29 @@ typing the paths ever would.
    Between this and 5h, **36 of the 44 `vnet/` findings are characterised**: one class traced to
    an architectural cause, one to a precise open question. Neither is chiero claiming something
    false — fidelity is `Approximated` throughout and the assumptions name the causes.
+
+5k. ✅ **CLOSED 2026-08-08 — an enum's declared underlying type was parsed and thrown away, and
+   `layout` reported the wrong size as `proven`.** `struct S { enum small s; char c; }` with
+   `enum small : unsigned char` came out **8 bytes, align 4**; gcc says **2 and 1**. The envelope
+   said *"proven — this holds for all inputs (Exact)"*.
+
+   **VPP declares 22 of these across 6 files**, all `typedef enum name_ : u8` — `quic/quic.h`,
+   `http/http_buffer.h`, `vperf/builtin/vperf_builtin.h` — so every struct holding one had the
+   wrong size, silently. Verified on VPP's own form after the fix: `2`/`1`, matching gcc.
+
+   The chain was three correct decisions and one missing link: the parser parsed the `: T` and
+   discarded it *with a comment saying the representation "is what 014 owns"* — right about the
+   ownership — and 014 was never given it, so sema fell back to the implied type. Sema already had
+   the machinery (`enums: Symbol → TyId`, 014 contract 10). The fix is one AST field
+   (`TypeKind::Tag::underlying`, 7 sites), the parser keeping what it already parsed, and
+   `enum_ty` preferring it. The enumerator fitting still runs, because that is what produces the
+   pedantic diagnostics and silencing those would hide a real ISO complaint.
+
+   📌 **Found by auditing a class, not a site.** `let _ = <named parameter>;` across the
+   workspace's sources: 8 hits, 4 unexplained, and this was the one with a consequence. The audit
+   itself came out of 5j, where an *undocumented* deliberate discard cost a wrong RED — so the
+   lesson paid for the next wave immediately. The other three unexplained discards are noise
+   (`chiero-diff`'s loop index, `chiero-pp`'s matched `(` token, `chiero-cir`'s explained-below `t`).
 
 5j. 🆕 **`CopyMem` discards the alignment the CIR hands it, so a memcpy and a vector move are the
    same access.** Diagnosed 2026-08-08, not fixed, and the diagnosis cost a wrong RED that is worth

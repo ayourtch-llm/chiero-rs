@@ -1409,6 +1409,7 @@ impl<'a> Parser<'a> {
         // bit-field in the tree. The type is parsed and discarded for now: it decides the
         // enumeration's representation, which 014 owns, and inventing that here would be a
         // layout claim this crate cannot make.
+        let mut underlying = None;
         if tag == TagKind::Enum && self.is_punct(0, Punct::Colon) && !self.in_generic_assoc {
             self.pos += 1;
             let start = self.pos;
@@ -1416,8 +1417,14 @@ impl<'a> Parser<'a> {
             if self.pos == start {
                 let here = self.here();
                 self.error(here, "expected a type after `:` in an enum specifier");
+            } else {
+                // **Carried, not interpreted.** What the type *means* for the enumeration's
+                // size is still 014's, and this crate still makes no layout claim — it only
+                // stops throwing away the answer. Discarding it made sema fall back to the
+                // implied representation, so `struct { enum e : unsigned char; char c; }`
+                // came out 8 bytes where gcc says 2, reported as `proven`.
+                underlying = Some(specs.ty);
             }
-            let _ = specs;
         }
         let members = if self.eat_punct(Punct::LBrace) {
             let mut out = Vec::new();
@@ -1449,9 +1456,15 @@ impl<'a> Parser<'a> {
             self.error(here, "expected a tag name or a `{`");
         }
         let span = self.span_from(start);
-        let ty = self
-            .ast
-            .add_type(TypeKind::Tag { tag, name, members }, span);
+        let ty = self.ast.add_type(
+            TypeKind::Tag {
+                tag,
+                name,
+                members,
+                underlying,
+            },
+            span,
+        );
         // `struct S {...} __attribute__((packed))` — after the closing brace.
         self.attribute_specifiers(&mut attrs);
         self.ast.ty_mut(ty).attrs = attrs;
