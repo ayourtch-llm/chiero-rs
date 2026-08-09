@@ -2290,9 +2290,13 @@ enum Verdict {
     },
     /// **The engine declared a modelling limit.**
     ///
-    /// **Currently unexercised, and that is recorded rather than hidden.** Since
-    /// `refuse_floating` stops every float program at lowering, nothing in this grammar
-    /// reaches the engine and degrades — a mutation deleting this arm survives. It is kept
+    /// **Currently unexercised, and that is recorded rather than hidden.** ⚠️ The reason
+    /// recorded here was *"`refuse_floating` stops every float program at lowering"*, and
+    /// that function no longer exists anywhere in the workspace — floats lower and run. The
+    /// arm is still unexercised, for a different reason: nothing in this grammar reaches a
+    /// budget or a modelling limit, so the whole batch produces **zero** refusals of any
+    /// kind. Same observation, obsolete cause — which is the identical failure the
+    /// [`KNOWN_GAPS`] liveness ratchet exists to stop, one comment away from it. It is kept
     /// because the contract is 023 §7's and the next thing to degrade (a budget, an
     /// unmodeled extern, an engine `lowering_gap`) needs it, and because deleting it would
     /// mean rediscovering the distinction the next time a gap appears. Unlike wave 143's
@@ -2629,25 +2633,56 @@ fn same_class(a: &Verdict, b: &Verdict) -> bool {
 
 /// **The gaps this suite knows about**, each with the reason it is tolerated.
 ///
-/// A refusal or a declared limit is not a defect — it is chiero saying so out loud, which
-/// is what 015 §7 and 023 §7 ask for. But a ledger nobody has to look at becomes a
-/// suppression file within a month: the first unexplained entry is noticed, the tenth is
-/// scrolled past. So the list is *closed*. A refusal whose text matches nothing here fails
-/// the run, and closing it means either fixing the gap or writing down why it stays.
+/// A refusal is not a defect — it is chiero saying so out loud, which is what 015 §7 asks
+/// for. But a ledger nobody has to look at becomes a suppression file within a month: the
+/// first unexplained entry is noticed, the tenth is scrolled past. So the list is *closed*
+/// **in both directions**:
+///
+/// - a refusal whose text matches nothing here fails the run — a gap appeared without a
+///   decision being made;
+/// - an entry that matches **no** refusal fails the run too — the gap it describes closed,
+///   and the entry is now a claim about chiero that nothing checks.
+///
+/// The second half is the one that was missing, and it cost this list its accuracy. It held
+/// an entry for float comparisons reading *"this entry is what will fail when they land"*;
+/// they landed, 57 of the 200 programs compare floats, none refuses, and the entry sat here
+/// describing chiero as it was two hundred waves ago. **A one-directional ratchet on a
+/// ledger only stops it growing. It does nothing about it going stale**, and a stale entry
+/// reads exactly like a live one.
+///
+/// So the list is empty today, and that is the honest state: this grammar produces no
+/// refusals at all. An empty ledger makes the first assertion strict — *any* refusal fails
+/// — which is what the focused and control-flow channels already assert.
+///
+/// ⚠️ Fidelity classes do **not** belong here; see [`DECLARED_FIDELITY`] for why they are a
+/// different kind of claim and are held to a different rule.
 ///
 /// Matched by substring against the diagnostic, because the messages carry spans and
 /// operand types that vary per program while the *reason* does not.
-const KNOWN_GAPS: &[(&str, &str)] = &[
-    (
-        "compares floating values or converts one to `_Bool`",
-        "**this entry replaced `uses floating point` in wave 168**, which is what the old \
-         one predicted would happen: floats now lower and run, and what is left is the two \
-         operations the engine has no arms for. A float *comparison* would produce no \
-         value, and `(_Bool)f` is worse than missing — C11 6.3.1.2 makes it \
-         \"compares unequal to 0\", so truncating with `FpToSi` answers 0 for 0.5, which is \
-         a wrong answer rather than an absent one. Refusing is 015 §7's rule; the fix is \
-         float arms in the engine's `cmp`, and this entry is what will fail when they land.",
-    ),
+const KNOWN_GAPS: &[(&str, &str)] = &[];
+
+/// **The engine's declared-degradation classes** — tolerated whenever they occur, and *not*
+/// required to occur.
+///
+/// These were in [`KNOWN_GAPS`] and had to come out, because they are a different kind of
+/// claim and the liveness rule is wrong for them. A `KNOWN_GAPS` entry says *"chiero has
+/// this gap today"*, which stops being true the day it is fixed. These say *"023 §7 lets
+/// the engine degrade and announce it, so a degraded run is not a defect"* — a policy about
+/// how any future gap is graded, true whether or not one occurs in a given batch.
+///
+/// Requiring these to fire would demand the batch contain a program that exhausts a budget
+/// or reaches a modelling limit, which is a property of the grammar rather than of the
+/// contract, and would go red on any change that made the corpus tamer.
+///
+/// ⚠️ **And that exemption has a price, measured rather than assumed: this list is
+/// unexercised today.** Deleting the `.chain(DECLARED_FIDELITY)` from [`is_known_gap`]
+/// passes the whole suite, because nothing in any channel degrades — the same mutation that
+/// [`Verdict::Gap`] records surviving, one function away. So these three entries are
+/// *policy that nothing currently tests*, which is a weaker thing than the [`KNOWN_GAPS`]
+/// entries above and is written down here so the next reader does not have to rediscover
+/// it. The rule this whole change exists to enforce cannot be applied to them; saying so is
+/// the alternative to pretending otherwise.
+const DECLARED_FIDELITY: &[(&str, &str)] = &[
     (
         "Unknown",
         "the engine reached a modelling limit and degraded, which 023 §7 requires it to \
@@ -2664,9 +2699,13 @@ const KNOWN_GAPS: &[(&str, &str)] = &[
     ),
 ];
 
-/// Whether a ledger entry is one the suite has been told about.
+/// Whether a ledger entry is one the suite has been told about — a declared gap, or a
+/// fidelity class 023 §7 permits.
 fn is_known_gap(text: &str) -> bool {
-    KNOWN_GAPS.iter().any(|(pat, _)| text.contains(pat))
+    KNOWN_GAPS
+        .iter()
+        .chain(DECLARED_FIDELITY)
+        .any(|(pat, _)| text.contains(pat))
 }
 
 /// **Fixed seeds, so this is a test and not a slot machine.**
