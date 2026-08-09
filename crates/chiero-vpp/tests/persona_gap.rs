@@ -146,10 +146,18 @@ fn persona_expansion(name: &str) -> String {
         .collect()
 }
 
-/// **Divergences that are deliberate, each with the reason it is deliberate.**
+/// **Divergences that are deliberate, each with the reason it is deliberate — and each of
+/// which must still be happening.**
 ///
-/// Unlike the allowlist removed above, this one *fires* — every entry is a difference the gate
-/// really sees on every run, kept visible rather than filtered by a pattern.
+/// ⚠️ This doc used to read *"unlike the allowlist removed above, this one fires — every
+/// entry is a difference the gate really sees on every run"*. That was false for five of its
+/// six entries, and nothing checked it: the five below have moved to [`NEVER_COMPARABLE`].
+/// The gate now asserts the claim instead of making it, so the sentence cannot go stale
+/// again without a red run.
+///
+/// The rule is the one the generated differential suite's `KNOWN_GAPS` arrived at the same
+/// day, from the opposite direction: an excuse with no divergence behind it is not inert. It
+/// excuses that divergence silently if it ever appears, and by then nobody is deciding.
 const DELIBERATE: &[(&str, &str)] = &[
     // 013 makes the parser C11 + GNU extensions. gcc's default here is gnu17, so it reports
     // `201710L`. Claiming C17 in the persona while the parser implements C11 would be a *worse*
@@ -159,6 +167,25 @@ const DELIBERATE: &[(&str, &str)] = &[
         "__STDC_VERSION__",
         "the parser is C11 (013); gcc's default -std here is gnu17",
     ),
+];
+
+/// **Names that cannot agree by construction**, exempt from the liveness rule above.
+///
+/// These are a different kind of claim, and holding them to `DELIBERATE`'s rule would be
+/// wrong rather than merely strict. `DELIBERATE` says *"chiero differs from gcc here today"*,
+/// which stops being true the day it is fixed. These say *"this name could never match, so
+/// excuse it if it ever shows up"* — and whether it shows up depends on whether **VPP**
+/// happens to write `#if __DATE__`, which is a property of VPP and not of chiero.
+///
+/// That is why none of them fires: the comparison loop only visits names VPP tests in an
+/// `#if`/`#elif`, and VPP tests none of these. Requiring them to fire would be requiring
+/// somebody to write nonsense C in VPP.
+///
+/// ⚠️ **The exemption is the same one `DECLARED_FIDELITY` gets in the generated differential
+/// suite, and it has the same cost: nothing exercises this list.** Two lists reaching the
+/// same split independently is some evidence the distinction is real; it is not evidence
+/// that either list is right.
+const NEVER_COMPARABLE: &[(&str, &str)] = &[
     // Deliberately not constant across runs, by 012 contract 15.
     (
         "__DATE__",
@@ -256,15 +283,21 @@ fn every_gcc_predefine_vpp_tests_is_one_the_persona_has_an_answer_for() {
         "only {compared} values compared; the value half of this gate is not running"
     );
 
-    let (excused, live): (Vec<_>, Vec<_>) = differing
-        .iter()
-        .partition(|(n, ..)| DELIBERATE.iter().any(|(d, _)| d == n));
+    let excuse = |n: &String| {
+        DELIBERATE
+            .iter()
+            .chain(NEVER_COMPARABLE)
+            .find(|(d, _)| d == n)
+            .map(|(_, why)| *why)
+    };
+    let (excused, live): (Vec<_>, Vec<_>) =
+        differing.iter().partition(|(n, ..)| excuse(n).is_some());
     eprintln!(
         "persona values: {compared} compared, {} differ",
         differing.len()
     );
     for (name, ours, theirs) in &excused {
-        let why = DELIBERATE.iter().find(|(d, _)| d == name).unwrap().1;
+        let why = excuse(name).unwrap_or("");
         eprintln!("  deliberate  {name}: chiero {ours:?} vs gcc {theirs:?} — {why}");
     }
     for (name, ours, theirs) in &live {
@@ -291,5 +324,31 @@ fn every_gcc_predefine_vpp_tests_is_one_the_persona_has_an_answer_for() {
          a claim about chiero that nothing checks, and it silently excuses the divergence if \
          it ever appears: {unfired:?}",
         unfired.len()
+    );
+
+    // **And the exemption from that rule is not a place to file things.**
+    //
+    // Without this, the liveness rule above is dodged by moving an entry one list down — a
+    // mutant that did exactly that with `__STDC_VERSION__` survived, which is how this
+    // assertion came to exist. So `NEVER_COMPARABLE` gets the structural property that is
+    // the *actual* reason none of its entries fires: VPP does not test any of these names
+    // in an `#if`/`#elif`. That is checkable right here, from the same `tested` map the
+    // definedness half is built on.
+    //
+    // If VPP ever does `#if __DATE__`, the name stops qualifying and has to move up to
+    // `DELIBERATE`, where it must justify itself as a live divergence. That is the right
+    // outcome rather than a nuisance: a name VPP actually branches on is one whose value
+    // decides which code gets compiled.
+    let misfiled: Vec<&str> = NEVER_COMPARABLE
+        .iter()
+        .map(|(n, _)| *n)
+        .filter(|n| tested.contains_key(*n))
+        .collect();
+    assert!(
+        misfiled.is_empty(),
+        "{} NEVER_COMPARABLE entr(ies) name a macro VPP *does* test in an `#if`, so \"cannot \
+         agree by construction\" is not why they are exempt. Move them to DELIBERATE, where \
+         an excuse has to correspond to a divergence the gate really sees: {misfiled:?}",
+        misfiled.len()
     );
 }
