@@ -2174,3 +2174,55 @@ fn a_direct_calls_result_is_typed_from_the_callees_signature() {
     m.funcs.push(g);
     assert_rejects(&m, VerifyErrorKind::BadPointerOperand);
 }
+
+/// **An indirect call's result type is declared at the call site, because nothing else knows it.**
+///
+/// The direct half of §9.1 item 6 needed no CIR change: `Callee::Direct` names a `FuncId` and
+/// `Function` carries `ret`, so the verifier looks it up. `Callee::Indirect` carries an
+/// *operand* — CIR pointers are untyped by 020 §4.13b — so there is genuinely nothing to look
+/// up, and the type has to be written where the call is.
+///
+/// This is the case `require_ptr`'s `CTy::Void` exemption has been hiding since the verifier
+/// was written: an indirect call returning `i32` whose result is used as a store address.
+#[test]
+fn an_indirect_calls_declared_result_type_is_checked() {
+    let mut m = valid_module();
+    let g = Function {
+        id: FuncId(1),
+        name: "g".into(),
+        params: vec![],
+        ret: CTy::Void,
+        variadic: false,
+        allocas: vec![],
+        blocks: vec![block(
+            0,
+            vec![
+                // A function pointer, however obtained; `undef` is enough for a type check.
+                inst(InstKind::Call {
+                    dst: Some(ValueId(9)),
+                    callee: Callee::Indirect {
+                        target: Operand::Const(Const::Undef(CTy::Ptr)),
+                        ret: CTy::Int(32),
+                    },
+                    args: vec![],
+                }),
+                inst(InstKind::Store {
+                    addr: Operand::Value(ValueId(9)),
+                    val: Operand::Const(Const::Int { bits: 32, val: 0 }),
+                    ty: CTy::Int(32),
+                    align: 4,
+                    vol: Volatility::Normal,
+                }),
+            ],
+            Terminator::Return(None),
+        )],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        access_paths: Default::default(),
+        body: Body::Defined,
+        span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
+    };
+    m.funcs.push(g);
+    assert_rejects(&m, VerifyErrorKind::BadPointerOperand);
+}
