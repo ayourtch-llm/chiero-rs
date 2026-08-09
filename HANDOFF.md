@@ -3834,6 +3834,15 @@ typing the paths ever would.
 
        Callee::Indirect { target: Operand, ret: CTy }
 
+   🆕 **Scope refined 2026-08-09 by reading every site, not just counting them** — "~25 sites"
+   is right but hides which ones think:
+
+   | | |
+   |---|---|
+   | **~22 mechanical** | `chiero-opt`'s three are pure pattern updates (checked: `Indirect(o) => v.push(o)`, `Indirect(_) => None`, `Indirect(_) => Some("makes an indirect call")`); likewise the verifier's other arms, the printer, and ~11 fixtures. A struct-variant change is **compiler-driven** — cargo names every one, so none can be missed silently |
+   | **3 that think** | `verify::defined_by`'s `Indirect` arm (return the declared `ret` instead of `Void`); **`exec::indirect`'s candidate filter — this is the payoff**, and its comment already names the defect: *"entered a candidate returning `unsigned char`"*, which a declared `ret` would exclude; and the text format, needing syntax plus a round-trip test |
+   | **1 spec edit** | 020's type sketch declares `Callee { Direct(FuncId), Indirect(Operand) }`, so the variant change is a spec change — legitimate, with precedent in the `conv: CallConv` retraction the same day |
+
    What it still needs, and none of it is architectural: the variant change and its ~25 sites,
    text-format syntax for the annotation (parser at `text.rs`, printer at `:1889`) with a
    round-trip test, and `defined_by`'s `Indirect` arm returning `ret` instead of `Void`. **The
