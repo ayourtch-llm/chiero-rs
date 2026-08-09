@@ -213,6 +213,18 @@ pub(crate) fn records(path: &Path, src: &str, f: Frontend) -> Result<Vec<Record>
         &names,
         dialect,
     );
+    // **The same rule `lower` applies, and this path did not apply any.** It looked at no sema
+    // diagnostic at all, so a TU with an undeclared name still produced a padding proposal
+    // stamped `proven — this holds for all inputs (Exact)`. 041 §3's proposal is arithmetic
+    // over a record's members, and a record whose type resolution failed still lays out — so
+    // the arithmetic held, for a struct the program does not have. `proven` is the word that
+    // makes that worse than saying nothing.
+    for d in analysis.diagnostics.iter().filter(|d| !d.is_error()) {
+        eprintln!("chiero: {}", at(&tu.source_map, d.span, &d.message));
+    }
+    if let Some(d) = analysis.diagnostics.iter().find(|d| d.is_error()) {
+        return Err(at(&tu.source_map, d.span, &d.message));
+    }
     let mut out = Vec::new();
     for (i, l) in analysis.records().iter().enumerate() {
         if !l.complete || l.is_union {
