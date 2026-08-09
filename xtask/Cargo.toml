@@ -21,6 +21,8 @@ chiero-ast.workspace = true
 chiero-sema.workspace = true
 chiero-lower.workspace = true
 chiero-recipe.workspace = true
+# 8d: the harness must read the compile database rather than keep a second copy of it.
+chiero-vpp.workspace = true
 chiero-span.workspace = true
 chiero-gcov.workspace = true
 chiero-diff.workspace = true

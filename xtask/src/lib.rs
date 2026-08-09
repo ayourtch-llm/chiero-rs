@@ -2,6 +2,7 @@
 //! `docs/specs/070-testing-and-tdd-protocol.md` §4.
 
 pub mod cc;
+pub mod compile_flags;
 pub mod contracts;
 pub mod deps;
 pub mod mutation_gate;

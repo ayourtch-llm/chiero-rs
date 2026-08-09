@@ -21,6 +21,7 @@ fn main() -> ExitCode {
                 ExitCode::from(u8::try_from(code).unwrap_or(1))
             }
         }
+        Some("compile-flags") => compile_flags_cmd(),
         Some("replay-gate") => match xtask::replay_gate::replay_gate() {
             Ok(r) => {
                 println!("{}", r.render());
@@ -99,6 +100,7 @@ fn usage() {
          contract-coverage    report M1 exit coverage over 020-024 (080)\n  \
          mutation-gate    032 contract 19: selection recall over injected mutations,\n                   \
          beside a coverage-only baseline computed the same way\n  \
+         compile-flags    a source file's real -I/-D from a compile database (8d)\n  \
          replay-gate      032 contract 18: recall over historical commits. Exits 1 while\n                   \
          the corpus has no observed entry — an unmeasured recall is not a pass\n  \
          pp-gate          preprocessor conformance over a simplecpp checkout ($SIMPLECPP),\n                   \
@@ -440,4 +442,37 @@ fn cc_report() -> ExitCode {
         println!("  … {} more distinct kinds", s.kinds.len() - 25);
     }
     ExitCode::SUCCESS
+}
+
+/// `compile-flags [--db <path>] <source>` — what the build actually passes for that file.
+///
+/// Exists because the measurement harness kept its own copy of these flags and the two drifted
+/// (§7.30). Prints one line per matching unit: VPP compiles 208 sources more than once, and a
+/// caller asking about a multiarch file should see that rather than get the first arbitrarily.
+fn compile_flags_cmd() -> ExitCode {
+    let mut args = std::env::args().skip(2);
+    let (mut db, mut src) = (None, None);
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--db" => db = args.next(),
+            other => src = Some(other.to_string()),
+        }
+    }
+    let (Some(db), Some(src)) = (db, src) else {
+        eprintln!("usage: compile-flags --db <compile_commands.json> <source>");
+        return ExitCode::FAILURE;
+    };
+    match xtask::compile_flags::compile_flags(std::path::Path::new(&db), std::path::Path::new(&src))
+    {
+        Ok(lines) => {
+            for l in lines {
+                println!("{l}");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("compile-flags: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
