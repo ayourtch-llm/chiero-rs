@@ -2077,7 +2077,12 @@ typing the paths ever would.
 > **None of them was visible to the pp-gate**, which has reported 0 findings for weeks: none is
 > about preprocessing *syntax*. A gate that has been green for weeks is an untested surface.
 >
-> **State: 2026-08-09 — `./check.sh` GREEN at 2296 across 279 suites**, fmt and clippy clean.
+> **State at the end of the 2026-08-09 session — `./check.sh` GREEN at 2303 across 279 suites**,
+> fmt and clippy clean, both solver legs, ~110 commits from `c495118`. The gate now also covers
+> CI's `--no-default-features` build and `check-proof-surface`, and this file's own numbering.
+> ⚠️ This line read **2296** until the session's last wave, seven tests after it stopped being
+> true — the headline number drifting is the same class as everything §7.19–7.21 records, in the
+> line a fresh context reads first.
 > Up from 2281/277 at the previous session's end. Both fast gates re-run and unchanged
 > (`persona_gap` 0 gaps; `growth` `line` 6.3x / `onelin` 4.8x against the 8.0x threshold);
 > the VPP layout gate re-run after the sema change and unchanged at 2238 records / 10248
