@@ -118,7 +118,7 @@ fn declaration(rng: &mut Rng, n: usize) -> String {
 /// `extern` after `static` (313), `_Bool b = p` and an array parameter (315), the two `const`s
 /// (316), an inferred array length (321) and a `static` local (322). Those are where the rules
 /// are dense enough to catch a legal program by mistake.
-fn historically_awkward(rng: &mut Rng, n: usize) -> String {
+fn historically_awkward(rng: &mut Rng, n: usize, gnu_only: bool) -> String {
     // **28 → 34: six shapes gcc accepts under `gnu11` and refuses under `-pedantic-errors`.**
     //
     // They exist for `every_program_gnu11_gcc_accepts_silently_is_silent`, and adding them was
@@ -130,7 +130,16 @@ fn historically_awkward(rng: &mut Rng, n: usize) -> String {
     // ⚠️ Every one of these is *skipped* by `every_program_gcc_accepts_is_silent`, which runs
     // `-pedantic-errors` and therefore discards them as invalid C. The two channels partition
     // the corpus rather than sharing it, which is the whole reason both exist.
-    match rng.below(34) {
+    // ⚠️ **The two channels draw from different corpora, and the flag is why.** Adding the six
+    // gnu-only shapes to the shared pool cost the strict channel a quarter of its coverage —
+    // 300 checked became 221, because every one of them is invalid under `-pedantic-errors`
+    // and therefore skipped. Its floor (`checked * 2 > count`) still passed, which is exactly
+    // how a silent cap survives: the assertion that would have complained was satisfied.
+    //
+    // The draw is over the same range either way, so a seed produces the *same* program in the
+    // shared shapes and only the gnu-only rows differ. That keeps every census taken against
+    // the old corpus comparable.
+    match rng.below(if gnu_only { 34 } else { 28 }) {
         // A record whose members are all unnamed. Silent under `gcc -std=gnu11` and clang,
         // `-Wpedantic` under gcc, an error under `-pedantic-errors`. This is the shape whose
         // absence let the gating defect survive.
@@ -263,6 +272,15 @@ fn historically_awkward(rng: &mut Rng, n: usize) -> String {
 
 /// One generated translation unit: a few declarations, an awkward shape or two, then a function.
 fn program(seed: u64) -> String {
+    program_with(seed, false)
+}
+
+/// The same grammar plus the shapes only `gnu11` accepts, for the gnu11 silence channel.
+fn program_gnu(seed: u64) -> String {
+    program_with(seed, true)
+}
+
+fn program_with(seed: u64, gnu_only: bool) -> String {
     let rng = &mut Rng::new(seed);
     let mut src = String::new();
     for n in 0..rng.below(4) {
@@ -270,7 +288,7 @@ fn program(seed: u64) -> String {
         src.push('\n');
     }
     for n in 0..1 + rng.below(3) {
-        src.push_str(&historically_awkward(rng, 100 + n));
+        src.push_str(&historically_awkward(rng, 100 + n, gnu_only));
         src.push('\n');
     }
     src.push_str("int probe(int p) {\n");
@@ -414,7 +432,7 @@ fn every_program_gnu11_gcc_accepts_silently_is_silent() {
     let mut skipped = 0u64;
     let mut complaints = Vec::new();
     for seed in 0..count {
-        let src = program(seed);
+        let src = program_gnu(seed);
         if gnu11_is_quiet_about(&src) != Some(true) {
             skipped += 1;
             continue;
