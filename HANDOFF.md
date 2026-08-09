@@ -4178,6 +4178,16 @@ not an anecdote.*
   zero**. Include guards mean a cached file is re-requested at the same `start_pos` or not at
   all. So the conflation is harmless in practice, not merely harmless for 011 c13.
 
+- ⚠️ **In a newest-first table, write *temporal* cross-references, never positional ones.**
+  §8.3's yield table grows at the top, so "the previous row" means the row *above* — which is
+  the **later** wave, the opposite of what a writer describing history means. One such
+  reference was wrong within minutes of being written, when the next row went in above it.
+  Swept all ten relative references in this file afterwards: the nine phrased as "the previous
+  wave" are **correct**, because a wave is a position in *time* and reordering cannot break it;
+  the one phrased as "the previous row" was the only casualty. **`lint.py` passes on both and
+  always would have** — this is the claim-shaped half of drift, and re-reading is the only
+  instrument for it.
+
 - **The record drifts wherever nothing mechanically compares it to the tree — and this project
   documents obsessively, which did not help.** Five such checks were run on 2026-08-09 and
   **all five found something**: 020 declared a `conv: CallConv` field whose type exists nowhere;
