@@ -24,6 +24,10 @@ import sys
 # stopped at `tests/` and looked for `tests/HANDOFF.md`.
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 HANDOFF = os.path.join(ROOT, "HANDOFF.md")
+# **The archive is checked too.** Closed items moved out of §9.1 on 2026-08-09 to stop the
+# handoff costing a fresh context 800 lines before it reaches live work. An archive nothing
+# validates is how a cited path rots into a lie that reads like history.
+ARCHIVE = os.path.join(ROOT, "HANDOFF-ARCHIVE.md")
 SPECS = os.path.join(ROOT, "docs", "specs")
 
 
@@ -98,6 +102,11 @@ def main():
     for check in (numbering, paths_resolve, fences):
         for f in check(HANDOFF):
             findings.append(("HANDOFF.md", f))
+    # Not `numbering`: the archive's items keep the §9.1 tags they closed under, so they are
+    # deliberately out of order — the file says so at the top.
+    for check in (paths_resolve, fences):
+        for f in check(ARCHIVE):
+            findings.append(("HANDOFF-ARCHIVE.md", f))
     # The specs get fences and cross-links. Not numbering: their numbered lists *are* the
     # contract ids, which `xtask contract-coverage` already reasons about, and 020 restarts
     # numbering inside `###` subsections by design.
