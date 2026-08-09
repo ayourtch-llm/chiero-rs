@@ -2150,7 +2150,7 @@ typing the paths ever would.
 >
 > | contract | what it asks | verdict |
 > |---|---|---|
-> | **023 c17** | 1, 2 and 8 worker threads give identical `RunResult`s | **the feature does not exist** — there is no worker pool in `chiero-exec`: no `workers`, no `thread::spawn`, no rayon. Nothing to test; an owner call on whether M1's exit may name it. ⚠️ **These are *chiero's own* threads, not VPP's** — 023 §11 says it in as many words ("a scheduling detail of chiero itself, unrelated to the analysed program's concurrency"), and the missing capability is **parallel state exploration**. Do not read this as "chiero ignores threads": the analysed program's concurrency is [025](docs/specs/025-concurrency-and-threading.md), it ships a discipline checker in v1, and 023 §11 carries a sentence warning readers off exactly this conflation. Asked and got it wrong once already |
+> | **023 c17** | 1, 2 and 8 worker threads give identical `RunResult`s | **the feature does not exist** — there is no worker pool in `chiero-exec`: no `workers`, no `thread::spawn`, no rayon. Nothing to test; an owner call on whether M1's exit may name it. ⚠️ **These are *chiero's own* threads, not VPP's** — 023 §11 says it in as many words ("a scheduling detail of chiero itself, unrelated to the analysed program's concurrency"), and the missing capability is **parallel state exploration**. Do not read this as "chiero ignores threads": the analysed program's concurrency is [025](docs/specs/025-concurrency-and-threading.md), it ships a discipline checker in v1, and 023 §11 carries a sentence warning readers off exactly this conflation. ⚠️ **My earlier note here said the owner had misremembered this; that was not mine to assert.** The spec text is unambiguous and says it in three places, but the owner owns the intent, and the question was settled a better way — see below |
 > | **010 c18** | peak memory bounded by *one TU + the index*, not the sum over 100 TUs | ✅ **well formed and buildable** — a *shape*, not a number, so it cannot rot the way an absolute bound does. **Scoped 2026-08-09; the design is below.** This is the one worth writing |
 > | **011 c12** | ≥100 MB/s lexing over a 50 MB blob | ⚠️ **ill formed by this project's own rule.** `CIRCUIT_STARTS`' doc states it: *"A counter, not a clock: a wall-clock bound silently stops being able to fail whenever the build gets faster"* — paid for by the verifier's 5-second assertion, which `opt-level = 2` disarmed. A throughput floor is that mistake in spec form. If lexing cost matters, it wants `growth.rs`'s shape: a **ratio** per 4x input |
 
@@ -2209,8 +2209,21 @@ typing the paths ever would.
 >   green** — retain-the-`SourceMap` is the mutant, and it must produce a visibly different
 >   ratio, or the test is measuring the allocator rather than chiero.
 >
-> ⚠️ **The single uncited M1 contract is 023 contract 17, and it describes a feature that does
-> not exist.** It reads *"with `wall_clock: None`, running with 1, 2 and 8 worker threads
+> ✅ **RESOLVED 2026-08-09 — 023 c17 withdrawn, M1 exits 166/166.** Not deferred: *decided
+> against, with a measurement*. Parallel state exploration would overlap the z3 waits chiero
+> actually blocks on, so it would help — and it is still the wrong trade, because it fights the
+> reproducibility this project runs on, cheaper wins are unspent (`dominators` is ~half the
+> frontend), and it is the most expensive class of change in the component whose answers must be
+> trusted. 023 c17 carries the full reasoning; the number is left reserved so 18+ do not move.
+>
+> 📌 **The question that settled it was the owner's, and it was better than mine.** I had framed
+> it as "which reading of c17 was intended" — chiero's own threads (what the text says, in three
+> places) or the analysed program's (what the owner recalled intending). The owner's reply:
+> *does it matter — would multithreading help at all?* It does not matter, and asking whether
+> the feature earns its cost dissolved a question about intent that had been open for sessions.
+>
+> ⚠️ *The original entry, for the record:* **the single uncited M1 contract is 023 contract 17,
+> and it describes a feature that does not exist.** It reads *"with `wall_clock: None`, running with 1, 2 and 8 worker threads
 > produces identical `RunResult`s"* — and the engine is single-threaded: no `workers`, no
 > `thread::spawn`, no rayon anywhere in `chiero-exec`. So M1's exit criterion, as written,
 > includes a contract for an unbuilt capability, and the gate has been reporting 166/167 without

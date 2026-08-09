@@ -500,9 +500,31 @@ results (contract 17).
     `witness: None` with a recorded reason.
 16. Replaying a `Witness` through the engine with all inputs concretized re-reaches the
     same `Finding` at the same `Span` — for every finding in the corpus.
-17. With `wall_clock: None`, running with 1, 2 and 8 worker threads produces identical
-    `RunResult`s (modulo wall-clock timings in `stats`). Per-state `CheckerState` is what
-    makes this achievable; a checker holding cross-state mutable state would break it.
+**17 — withdrawn 2026-08-09, and the number is left reserved so 18 onward do not move.**
+    It read: *"with `wall_clock: None`, running with 1, 2 and 8 worker threads produces
+    identical `RunResult`s"*. Parallel state exploration was never built, and it is now a
+    **decision not to build it** rather than a gap.
+
+    *Measured, not assumed.* Where chiero is slow on real code it is **waiting on z3** — two
+    stack samples of `find-bugs --entry nsh_md2_encap`, 50 s apart, both in `read_form`
+    blocked on the solver. Parallel states would overlap those waits, so this would buy real
+    throughput on state-rich entries. It is still the wrong trade:
+
+    - It fights the property this project runs on. Reproducibility is load-bearing here
+      (`determinism_key`, and the `nondeterministic_abort` rows that make two of the pinned
+      40 incomparable). Parallel exploration under a wall clock makes *which* states were
+      explored depend on scheduling. This contract existed to forbid exactly that, which
+      says the author saw the fight coming.
+    - Cheaper wins remain unspent: `verify::dominators` is roughly half the frontend's
+      remaining time, and the engine is still 18.2x per 4x step with one cause fixed.
+      Single-threaded work on 2026-08-09 gave **6.0x** on the frontend and **2.7x** on the
+      engine in a day.
+    - It is the most expensive class of change available, in the component whose answers
+      have to be trusted.
+
+    §11 keeps its sentence distinguishing chiero's own threads from the analysed program's
+    concurrency, because [025](025-concurrency-and-threading.md) is unaffected: the
+    discipline checker ships in v1 and none of this touches it.
 18. Exceeding `max_states` terminates the run cleanly with `Bounded`, reporting the
     findings already collected — no data loss, no panic.
 19. A checker returning `Action::Assume` constrains the state and the subsequent branch
