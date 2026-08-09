@@ -1882,11 +1882,17 @@ typing the paths ever would.
 > got their citations (012 c20/21/22/23/24, 014 c4b — each read first, since a citation is a
 > claim).
 >
-> ⚠️ **The three that remain uncited are one class, and it is not "untested".** 023 c17 wants
-> worker-thread determinism in a single-threaded engine; 010 c18 wants a recorded peak-memory
-> high-water mark over a 100-TU fixture; 011 c12 wants ≥100 MB/s lexing over a 50 MB blob.
-> **All three describe instruments that do not exist**, so no test can be written for them as
-> written. That is a question about what the specs promise, not a gap in the suite.
+> ⚠️ **The three that remain uncited are not "untested", and they are three *different* things.**
+> Flattening them into "unbuilt instruments" hides what to do with each:
+>
+> | contract | what it asks | verdict |
+> |---|---|---|
+> | **023 c17** | 1, 2 and 8 worker threads give identical `RunResult`s | **the feature does not exist** — `chiero-exec` is single-threaded, no `workers`, no `thread::spawn`, no rayon. Nothing to test; an owner call on whether M1's exit may name it |
+> | **010 c18** | peak memory bounded by *one TU + the index*, not the sum over 100 TUs | ✅ **well formed and buildable.** It is a *structural* claim — a shape, not a number — so it cannot rot the way an absolute bound does. This is the one worth writing |
+> | **011 c12** | ≥100 MB/s lexing over a 50 MB blob | ⚠️ **ill formed by this project's own rule.** `CIRCUIT_STARTS`' doc states it: *"A counter, not a clock: a wall-clock bound silently stops being able to fail whenever the build gets faster"* — paid for by the verifier's 5-second assertion, which `opt-level = 2` disarmed. A throughput floor is that mistake in spec form. If lexing cost matters, it wants `growth.rs`'s shape: a **ratio** per 4x input |
+>
+> **So one is a missing feature, one is a missing test worth writing, and one is a contract the
+> project has since learned not to write.** Only the middle one is work.
 >
 > ⚠️ **The single uncited M1 contract is 023 contract 17, and it describes a feature that does
 > not exist.** It reads *"with `wall_clock: None`, running with 1, 2 and 8 worker threads
