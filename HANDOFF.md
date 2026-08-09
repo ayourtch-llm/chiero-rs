@@ -1331,6 +1331,43 @@ is closest to the work actually done. 6/6 green at 1.7 s, and tightening parse's
 its real 4.1x fails as it should. **Raising ceilings until a gate stops failing produces a gate
 that cannot fail** — the outcome this project keeps refusing.
 
+### 7.30 The measurement harness hand-maintains flags the compile database already has
+
+The owner's note — *"you need to be able to run dynamically without hardcoded compile
+commands"* — turned into a number.
+
+`chiero_vpp::builddb` **already** parses a compile database and takes *text*, so it accepts
+`ninja -C <build> -t compdb` output or a `compile_commands.json` unchanged. It is used by
+`chiero-probe` and by `chiero-vpp`'s own tests, and **by nothing that takes a published
+number**: `measure.sh` hand-assembles its `-I`/`-D` list from `build.ninja` by eye, which is a
+second reader of one fact — this project's most-repeated defect class, at the level of the
+instrument.
+
+📌 **The pinned 40 is unaffected, and that was checked rather than assumed.** For all seven of
+its files the harness supplies a strict *superset*: 8 include paths against the real command's
+2, none missing. The extras could shadow a header, so the CIR was compared — `vppinfra/hash.c`,
+`vlib/node_cli.c`, `vlib/counter.c` are **byte-identical** under real and harness flags.
+
+⚠️ **The plugin sweep is a different story: 198 of 935 plugin C units — 21% — need include
+paths the harness never passes.**
+
+| files | missing |
+|---|---|
+| 80 | `install-vpp-native/external/include` |
+| 52 | `src/plugins/sfdp_services` |
+| 47 | `CMakeFiles/plugins/unittest/../../vpp-api` and `src/vpp-api` |
+| 11 | `/usr/include/libnl3` |
+| 8 | two more sets |
+
+Those cannot preprocess under the sweep's flags, so they land as *"chiero cannot read this"* —
+**a harness defect wearing a chiero defect's clothes**. §8.3's plugin-sweep rows ("31 `failed`
+rows resolved to six causes") are exactly where this would hide, and 5f's `--built-only` fixed
+the neighbouring confusion (files nothing builds) without reaching this one.
+
+✅ **The fix is not new code, it is using the code that exists**: read the compile database and
+take each unit's own flags. ⚠️ It re-takes the plugin numbers, which is a deliberate spend — but
+the numbers it replaces are measured under flags VPP does not use.
+
 ### 7.29 The verifier's dominator sets — 35.6 GB, and the arithmetic I did not believe
 
 `dominators` seeded every block with a copy of *every block in the function*, so the initial
@@ -2831,6 +2868,18 @@ longer sits between a fresh context and the live work.
    run of the probe **invalidates the baseline every published VPP number was taken against, even
    when it succeeds**. That is a trade worth making — but knowingly, and with the numbers re-taken
    afterwards, not as a side effect of a wave that was about something else.
+
+8d. 🆕 **Point the measurement harness at the compile database instead of a hand-kept flag
+   list** (§7.30). `builddb` already parses one and is used by nothing that produces a published
+   number. **198 of 935 plugin C units (21%) need include paths `measure.sh` never passes**, so
+   they fail to preprocess and are reported as chiero's failure.
+
+   The pinned 40 is unaffected — checked, not assumed: strict superset, and the CIR is
+   byte-identical under real and harness flags for three of its files.
+
+   ⚠️ Re-takes the plugin sweep (~65 min) and changes published numbers. Worth it: those numbers
+   are measured under flags VPP does not use. ⏭️ Start by comparing `failed` rows against the
+   198 — if they overlap, the fix converts instrument noise into coverage.
 
 8b. ✅ **RESOLVED 2026-08-09 as a side effect of the replay probe** — the build ran, cmake
    regenerated, and **zero** `CMakeLists.txt` are now newer than `build.ninja` (was four). The
