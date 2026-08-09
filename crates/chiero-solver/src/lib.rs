@@ -2600,8 +2600,58 @@ fn smt_name(v: &VarId, name: &str) -> String {
 }
 
 /// Read `(define-fun vN_x () (_ BitVec W) #x…)` back into a `Model`.
-fn parse_model(a: &TermArena, text: &str, vars: &[VarId]) -> Model {
+///
+/// **Public so the growth gate can measure it directly.** Its cost is a curve in the number of
+/// variables, and reaching it through a real query would put z3's own time in the measurement —
+/// the same reason `classify` is separated from the walking in the sweep.
+pub fn parse_model(a: &TermArena, text: &str, vars: &[VarId]) -> Model {
     let mut m = Model::new();
+    // **The text is scanned once, not once per variable.** It used to be
+    // `text.split(&format!("define-fun {key} "))` inside the loop below, and the text grows
+    // with the variable count — so reading a model back was O(V²). Measured before the fix:
+    // 500/1000/2000/4000 variables took 0.007/0.025/0.087/0.355 s, ~3.4-4.1x per doubling.
+    // It is item 5b's shape, a full scan inside a per-item loop, and it is what two stack
+    // samples 50 s apart both landed in on `nsh_md2_encap`.
+    // `IndexMap`, not `HashMap` — banned workspace-wide, and rightly: this crate's answers
+    // feed a determinism key, and a map whose iteration order varies run to run is how that
+    // stops meaning anything. Lookup here never iterates, but the ban is on the type.
+    let mut index: IndexMap<&str, u128> = IndexMap::new();
+    for entry in text.split("define-fun ").skip(1) {
+        let Some((name, rest)) = entry.split_once(char::is_whitespace) else {
+            continue;
+        };
+        // **Bounded to this entry**, because `entry` stops at the next `define-fun`. The old
+        // code searched everything after the key, so a definition carrying no value token
+        // would silently read the *next* variable's value; it now reads 0, which is what
+        // every other unparseable answer here already becomes.
+        let Some(tok) = rest.split_whitespace().find(|t| {
+            let t = t.trim_end_matches(')');
+            // **`true`/`false` are values too**, and bounding the search to this entry is what
+            // made that visible. A `Bool` prints `(define-fun v3_b () Bool true)` with no
+            // `#x`/`#b` anywhere in it; the old unbounded scan ran on into the *next*
+            // definition and read whatever bit-vector it found there, so a bool's value came
+            // from another variable. `a_bool_variable_is_usable` caught the regression when
+            // the bounded scan returned nothing and the model failed independent evaluation —
+            // the old behaviour was wrong in a way that happened to keep the model plausible.
+            t.starts_with("#x") || t.starts_with("#b") || t == "true" || t == "false"
+        }) else {
+            continue;
+        };
+        let tok = tok.trim_end_matches(')');
+        let val = if let Some(h) = tok.strip_prefix("#x") {
+            u128::from_str_radix(h, 16).ok()
+        } else if tok == "true" {
+            Some(1)
+        } else if tok == "false" {
+            Some(0)
+        } else {
+            tok.strip_prefix("#b")
+                .and_then(|b| u128::from_str_radix(b, 2).ok())
+        };
+        if let Some(val) = val {
+            index.insert(name, val);
+        }
+    }
     for v in vars {
         let (name, sort) = &a.vars[v.0 as usize];
         // Array-sorted variables have no bit-vector value to read back, and `BvConst`
@@ -2615,24 +2665,10 @@ fn parse_model(a: &TermArena, text: &str, vars: &[VarId]) -> Model {
             continue;
         }
         let key = smt_name(v, name);
-        let val = text
-            .split(&format!("define-fun {key} "))
-            .nth(1)
-            .and_then(|rest| {
-                let body = rest.split(')').next_back().unwrap_or("");
-                let tok = rest
-                    .split_whitespace()
-                    .find(|t| t.starts_with("#x") || t.starts_with("#b"))
-                    .or(Some(body))?;
-                if let Some(h) = tok.strip_prefix("#x") {
-                    u128::from_str_radix(h.trim_end_matches(')'), 16).ok()
-                } else {
-                    tok.strip_prefix("#b")
-                        .and_then(|b| u128::from_str_radix(b.trim_end_matches(')'), 2).ok())
-                }
-            })
-            .unwrap_or(0);
-        m.set(*v, BvConst::new(sort.width(), val));
+        m.set(
+            *v,
+            BvConst::new(sort.width(), index.get(key.as_str()).copied().unwrap_or(0)),
+        );
     }
     m
 }
