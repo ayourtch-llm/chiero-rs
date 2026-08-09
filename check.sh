@@ -64,6 +64,17 @@ if [ $lints -eq 1 ]; then
   # is called from `xtask/src/main.rs` and nowhere else, so `cargo test` cannot see a
   # regression in it. ~0.5 s. (`check-deps` and `check-vpp-leak` *are* covered — by
   # `the_real_workspace_is_clean` and `workspace_has_no_vpp_leaks` — so they stay out.)
+  # **Broader than CI, deliberately, and the only leg that is.** Every other leg here exists
+  # because CI runs it and a narrower local gate lies (§8.3). This one CI does not run: it
+  # checks that HANDOFF.md's numbered lists have not drifted, which §9's START HERE had done
+  # for thirty-five waves before anyone noticed two items numbered `3.`. The file is this
+  # project's continuity, §10 asks for it to be updated before every refresh, and *before
+  # pushing* is exactly when a broken one would go out. ~0.05 s, and the fix is one line.
+  if ! nums=$(python3 tests/corpus/handoff/numbering.py 2>&1); then
+    echo "$nums" | head -10 | sed 's/^/  /'
+    echo "RED (HANDOFF numbering): a repeated or backwards list item — see §9.2"
+    exit 1
+  fi
   if ! proof=$(cargo run -q -p xtask -- check-proof-surface 2>&1); then
     echo "$proof" | head -20 | sed 's/^/  /'
     echo "RED (check-proof-surface): 023 contract 13a — a proof cannot be forged; CI runs this"
