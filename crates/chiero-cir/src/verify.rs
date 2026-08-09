@@ -1150,7 +1150,6 @@ fn require_ptr(
 ) {
     if let Some(t) = resolve(o, types)
         && t != CTy::Ptr
-        && t != CTy::Void
     {
         err(
             out,
