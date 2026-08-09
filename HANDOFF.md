@@ -1793,6 +1793,22 @@ typing the paths ever would.
 >      (untyped CIR pointers) — an architecture decision, not a defect.
 >    - **5j's API change**, still gated on `ub-strict` existing. Both discards are explained at
 >      the site now and both directions of the gap are measured and pinned.
+> ⚠️ **Where the 2026-08-09 session stopped paying, recorded so a fresh context does not restart
+> there.** Its last stretch worked the *meta* seam — gates, instruments, records — and the yield
+> is real but has changed kind:
+>
+> | worked late in the session | yield |
+> |---|---|
+> | every tolerance list, every counter, every instrument, every contract, every spec | **3 record defects** (020's phantom `CallConv`, its stray fence, six uncited contracts) and **5 non-findings** where the guard already existed |
+> | `check.sh` against CI, command by command | **2 real gaps** (`--no-default-features`, `check-proof-surface`), both now gated and mutant-verified |
+> | the handoff against itself | **1 real defect** (two items numbered `3.` in START HERE) and a committed checker for it |
+> | the severity change's downstream consumers | **4 found**: 2 fixed, 1 reproduced and deferred (5o), 1 asked and answered (5p) |
+>
+> **Nothing in that stretch found a defect in chiero's *analysis*.** Every finding was about an
+> instrument, a record, or a consumer. That is the signal §8.3 asks for: *the seam is worked
+> out*. A fresh context should start at item 3's list — the untouched concrete work — rather
+> than auditing the auditors, which is where this one ended up.
+>
 > 4. 📌 **The method that paid all day, and the one to reach for first:** *one fact, more than
 >    one reader* — **four instances in one session** (§11.0 lists them). Its operational half is
 >    cheap and caught real bugs: **when a fix lands, re-run the original reproduction, not the
