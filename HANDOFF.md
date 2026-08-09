@@ -1900,6 +1900,23 @@ typing the paths ever would.
 > claim** — six were added today only after reading the test that justified each. Amend the
 > contract first, then the test is honest.
 >
+> ✅ **Swept every contract in every spec for the same weakness — an honest zero beyond this
+> one, and the sweep found a precedent that settles the recommendation.** Two passes: absolute
+> resource numbers (`MB/s`, `MB`, `ms`, seconds), then any timing language at all
+> (`reference machine`, `wall.?clock`, `throughput`, `faster than`, `elapsed`). 14 contract
+> lines mention time; the triage:
+>
+> - **011 c12** — the only contract naming an absolute number with no sound instrument.
+> - **011 c13** — *"re-lexing with a warm cache is ≥20× faster than a cold lex"*, a timing
+>   ratio. ⚠️ **But its test does not time anything**: `session_cache.rs` asserts
+>   `lex_cache_stats()`, a counter, with zero uses of `Instant` or `elapsed`. **The
+>   counter-over-clock move was already practised here**, against a contract worded exactly like
+>   c12. That is the precedent, in this repo, for amending c12 the same way — the recommendation
+>   above is not a new principle, it is one this project already applied and did not write down.
+> - **023 c6 / c17 / c24a, 050 c15b / c16** — these name `wall_clock` as a *configuration*
+>   (determinism when no clock is set), not as a threshold. Well formed.
+> - **070 c8** — a *documented* budget, a record rather than a gate.
+>
 > 📌 **010 c18 shows the pattern this follows.** Its memory wording had the same weakness, and
 > the fix was to assert the *mechanism* with counters rather than the symptom with a high-water
 > mark — no spec change needed, because the contract named a property (bounded by one TU, not
