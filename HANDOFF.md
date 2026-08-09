@@ -1867,6 +1867,29 @@ typing the paths ever would.
 > cargo test -p chiero-sema --test generated_const_eval -- --ignored --nocapture
 > ```
 >
+> 🆕 **And one more that is not a test at all, and was in this file zero times until
+> 2026-08-09** — it measures the **M1 exit criterion**, which makes it the least discoverable
+> important thing in the repo:
+>
+> ```sh
+> # 080's M1 exit: "all numbered contracts of 020-024 are green". Counts spec contracts and
+> # test citations of the form `NNN contract K`. ~1 s. Coverage, not correctness.
+> cargo run -q -p xtask -- contract-coverage
+> ```
+>
+> Measured 2026-08-09: **M1 166/167 cited** (020 44/44, 021 40/40, 022 31/31, 023 25/26,
+> 024 26/26); frontend 118/126 (010 c18, 011 c12, 012 c20–24, 014 c4b uncited).
+>
+> ⚠️ **The single uncited M1 contract is 023 contract 17, and it describes a feature that does
+> not exist.** It reads *"with `wall_clock: None`, running with 1, 2 and 8 worker threads
+> produces identical `RunResult`s"* — and the engine is single-threaded: no `workers`, no
+> `thread::spawn`, no rayon anywhere in `chiero-exec`. So M1's exit criterion, as written,
+> includes a contract for an unbuilt capability, and the gate has been reporting 166/167 without
+> anyone asking what the 1 was. **That is an owner-level fact about whether M1 can be declared
+> done**, not a missing test: either 023 c17 is explicitly deferred as future work, or the exit
+> criterion names it and cannot be met. ⚠️ Do not "fix" it by writing a test — there is nothing
+> to test.
+>
 > **Not `#[ignore]`d, so `./check.sh` covers it — but worth knowing it exists**, because it is
 > the only channel that asks the question in the dialect chiero ships in:
 > `every_program_gnu11_gcc_accepts_silently_is_silent` in `chiero-sema/tests/generated_silence.rs`.
