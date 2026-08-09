@@ -1868,9 +1868,13 @@ typing the paths ever would.
 > ```sh
 > # what chiero SAYS: 1967 VPP TUs under VPP's own flags AND its own -march. ~23 min.
 > # Metrics 2026-08-09: 1967/1967, 0 panicked, 0 diagnosed, 8 personas, 818 391 162 tokens.
-> # ⚠️ The token count is DETERMINISTIC (two byte-identical runs) — see the lead below about
-> # the +10 972 against the 2026-08-08 baseline.
+> # The token count is DETERMINISTIC (two byte-identical runs). The +10 972 against the
+> # 2026-08-08 baseline is EXPLAINED: 32 regenerated API headers, i.e. the corpus moved — which
+> # is why the pin below belongs with every figure taken from this gate.
 > cargo test -p chiero-vpp --test preprocess_corpus -- --ignored --nocapture
+> # ⚠️ Capture the corpus pin with it — `HEAD` does not identify what was measured, because
+> # 147 of the 1562 sources are generated and not in git. Two runs are comparable iff it matches.
+> python3 tests/corpus/vpp-findings/api_staleness.py --fingerprint
 >
 > # what chiero BELIEVES vs gcc: predefine definedness AND value. ~0.1 s. Expect 0 gaps.
 > cargo test -p chiero-vpp --test persona_gap -- --ignored --nocapture
