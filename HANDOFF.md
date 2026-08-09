@@ -1809,6 +1809,27 @@ typing the paths ever would.
 > cargo test -p chiero-gcov --test growth -- --ignored --nocapture
 > ```
 >
+> ⚠️ **2026-08-09: the corpus gate's token count moved with nothing to move it, and that is an
+> open lead.** Re-run after the `from_specifier` parser change (the standing rule: run it when
+> something touched the frontend). Result **1967/1967, 0 panicked, 0 diagnosed, 8 personas,
+> 1360 s** — all unchanged — but **818 380 190 → 818 391 162 tokens, +10 972**. Checked, not
+> assumed:
+>
+> - the parser change cannot affect preprocessing, and `git diff` over `chiero-pp`, `chiero-lex`,
+>   `chiero-probe` and `chiero-vpp/src` for the whole session is **empty**;
+> - the corpus is **content-identical** — VPP `HEAD` is still `7fe9c2669` and `git status` is
+>   clean. Five files have mtimes after the baseline (including `vppinfra/vec.h`, which nearly
+>   every TU includes), but their contents are unchanged, so a `touch` or a re-checkout, not an
+>   edit.
+>
+> **So either the count is not deterministic, or the environment moved** (gcc's predefines are
+> the obvious candidate — the persona is probed from `cc` on every run). ⚠️ **This matters more
+> than 0.0013% suggests**: the token *delta* is what this file cites as evidence of coverage
+> ("+26M tokens, 3.3% more of VPP visible"), and a delta is only evidence if the number is a
+> measurement. The discriminator is one more run at an unchanged tree — if it reproduces
+> 818 391 162 the count is deterministic and something environmental moved; if it varies again,
+> the headline metric is noisy and every delta recorded against it needs a band.
+>
 > ✅ **All three re-run at the end of the second 2026-08-08 session** — verified numbers, not
 > remembered ones: `preprocess_corpus` 1967/1967, 0 panicked, **0 diagnosed**, **818 380 190
 > tokens** (was 792 404 723 before the per-TU persona join), **8 personas, 0 failed probes**;
@@ -3328,6 +3349,23 @@ typing the paths ever would.
    itself came out of 5j, where an *undocumented* deliberate discard cost a wrong RED — so the
    lesson paid for the next wave immediately. The other three unexplained discards are noise
    (`chiero-diff`'s loop index, `chiero-pp`'s matched `(` token, `chiero-cir`'s explained-below `t`).
+
+5m. 🆕 **`chiero layout` ignores sema diagnostics entirely** — found by the 2026-08-09 review,
+   **pre-existing**, not from that session's changes. `chiero-cli/src/frontend.rs`'s second
+   frontend path never looks at `analysis.diagnostics` at all, so a TU containing a hard error
+   (an undeclared name) still produces a layout report stamped **`proven — this holds for all
+   inputs (Exact)`** and exits 0, with the diagnostic never printed. It contradicts the module's
+   own header ("Every stage's diagnostics are a refusal") and now also the severity policy
+   `lower()` implements ten lines above it. The severity work did not cause this; it made the
+   inconsistency untenable.
+
+5n. 🆕 **`_Alignof` of a typedef never sees an `aligned` attribute on the typedef.** Also
+   pre-existing. gcc gives `_Alignof(A_t) == 16` for
+   `typedef __attribute__((aligned(16))) struct A { char a; } A_t;` and chiero says 1; the
+   post-declarator spelling fails the same way. ⚠️ Member layout *through* the typedef is
+   **correct** (`struct Holder { char c; A_t m; }` is 32 with `m` at 16, matching gcc), so this
+   is narrow. The `from_specifier` fix moved the wrongness from "the record itself was 16",
+   which was worse, to "the typedef name is 1".
 
 5j. 🆕 **`CopyMem` discards the alignment the CIR hands it, so a memcpy and a vector move are the
    same access.**
