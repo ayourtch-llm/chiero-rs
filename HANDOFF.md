@@ -4214,8 +4214,17 @@ typing the paths ever would.
    two are in `chiero-lower`, a crate its census omits. The audit's number measures neither the
    class nor the codebase; **sampling under a size axis found all seven.**
 
-   ⏭️ **`verify` at 6.9x is the one still clearly superlinear** — `check_ssa_and_types` and
-   `dominators` each appeared once in the seven-sample profile and neither has been looked at.
+   ✅ **`set_term_at` too** — 3 of 8 samples at 98 304 statements, doing the identical scan
+   `emit` had just lost. Fixed `emit`, never looked at its sibling; the measurement found it and
+   memory did not. **25.717 s → 20.105 s** at that size.
+
+   ⏭️ **What is left, with the evidence for each.**
+
+   | | |
+   |---|---|
+   | `verify::dominators` | **4 of 8 samples**, ~half the remaining time. Iterative dataflow with explicit dominator *sets*: `sorted_ids.clone()` per block is O(B²) in memory alone — at 98 304 statements that is ~24 576 blocks and ~600M entries. The fix is Cooper–Harvey–Kennedy idom, a real algorithmic change inside a verifier, **not** a scan-to-set swap |
+   | `verify::check_ssa_and_types` | 1 of 8, unexamined |
+   | five more `blocks.iter().find(\|b\| b.id == …)` | `chiero-cir:615`, `chiero-opt:157`, `chiero-exec` 3498 / 4427 / 6959. **The exec three run on every execution step.** ⚠️ Recorded, not fixed: the engine's cost is dominated by z3 on every corpus measured so far, so the shape being present says nothing about the cost. There is no size axis for the engine yet — §7.27's gate covers the frontend only |
 
 8b. 🆕 **The build graph is four `CMakeLists.txt` behind `src/`, and that qualifies every VPP
    number in this file.** Measured 2026-08-08: `build.ninja` was generated at 23:31:38 on
