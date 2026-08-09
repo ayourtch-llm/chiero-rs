@@ -1769,38 +1769,46 @@ typing the paths ever would.
 >
 > ### 🆕 Suggested first moves after the 2026-08-09 session, in order
 >
-> 1. **Run the two fast gates** (`persona_gap` 0.1 s, `growth` ~5 s). The 23-minute corpus gate is
->    worth it only when something touched the frontend or the persona — and that rule was
->    exercised on 2026-08-09: a parser change triggered it, it came back **1967/1967, 0 panicked,
->    0 diagnosed, 8 personas**, and its token count is now known to be **deterministic** (two
->    byte-identical runs).
-> 2. **Pick a widening (§8.3), or take a concrete item from §9.1.** ⚠️ **The layout and
->    diagnostic surfaces are mined out for now** — the last five waves there returned zeros or
->    findings about the gates themselves. Prefer the untouched concrete items: **032 contract
->    18's replay corpus**, still with no `observed` entry (the probe is committed; firing it
->    re-runs cmake and invalidates every published VPP number, so do it deliberately);
->    **`InstKind::Call` carrying no result type** — ⚠️ **not "135 sites"**, that was mentions; the direct half is **closed** and the indirect half is **~25 sites** on `Callee::Indirect`, not 110 — the recorded design put the field in the wrong place. See the item; and the two
->    `vnet/` finding classes, which are policy questions rather than defects. **5j is
->    diagnosed and half-closed** — both discards are explained at the site and both directions
->    of the gap are measured and pinned; what is left is the API change, and it is still gated
->    on `ub-strict` existing.
-> 3. 📌 **The method that paid all day, and the one to reach for first:** *one fact, more than
->    one reader.* Three instances in one session — `packed` read by `lay_out` and
->    `record_is_packed` with different filters; alignment read by three arms of which the fix
->    reached one; and a diagnostic filed as a refusal in four separate places. **When a fix
->    lands, re-run the original reproduction, not the new test.** A green unit test beside an
->    unchanged tool is what that class looks like, and it happened here.
-> 3. ⚠️ **Closed 2026-08-09, do not re-open:** the whole **stale-tolerance-list** class — the
->    generated suite's `KNOWN_GAPS`, `xtask`'s two dependency allowlists, and `persona_gap`'s
->    `DELIBERATE`. See the yield table's three new rows and §7.19.
-> 4. ⚠️ **Closed 2026-08-09, do not re-open:** the stale-tolerance-list class (§7.19); the
->    prefix-attribute, union `:0` and packed-`:0` layout defects (§7.20, found by the new
->    generated layout corpus); `SemaDiagnostic::Severity` and the ten advisory sites; the second
->    silence channel in the gnu11 dialect; `chiero layout` refusing a TU sema refused (5m); and
->    `_Alignof` of a typedef (5n). **Two of those were defects in that session's own fixes**,
->    both found by adversarial review — an ambient severity flag that leaked a demotion across
->    the whole TU, and a fix that reached one reader of three.
-> 5. ⚠️ **Closed in the 2026-08-08 sessions, do not re-open:** the whole persona thread
+> 1. **Run the fast gates.** `./check.sh` is ~4 min and now covers six of CI's ten commands
+>    (fmt, clippy, the `--no-default-features` build, `check-proof-surface`, tests); the other
+>    four are covered by tests or are reports. `./check.sh --both-legs` adds CI's no-solver leg.
+>    Then `persona_gap` (0.1 s) and `growth` (5 s). The 23-minute corpus gate is worth it only
+>    when something touched the frontend or the persona.
+> 2. **Then the two gates that grade what no VPP corpus can reach** — `generated_layout` (~30 s)
+>    and `generated_const_eval` (~2 s). Three `layout` defects came out of the first in three
+>    runs, and **VPP contains zero instances of every shape they fixed** (§7.21), which is the
+>    argument for keeping them.
+> 3. **Pick a widening (§8.3), or a concrete item from §9.1.** ⚠️ **Layout, diagnostics and the
+>    instruments are mined out for now** — the last several waves there returned zeros, or
+>    findings about the gates rather than the tree. The untouched work, in order of readiness:
+>    - **`InstKind::Call`'s indirect half** — ⚠️ *not* "135 sites"; that was a count of mentions.
+>      The direct half is **closed** (no CIR change: `Callee::Direct` makes the type derivable),
+>      and what remains is **~25 sites** on `Callee::Indirect`, whose payoff is deleting
+>      `require_ptr`'s `Void` exemption. The recorded design put the field on `Call`, which would
+>      duplicate a fact the module already holds; put it on the variant.
+>    - **032 contract 18's replay corpus**, still with no `observed` entry. The probe is
+>      committed; firing it re-runs cmake and **invalidates every published VPP number**, so it
+>      is a deliberate spend, not a wave.
+>    - **The two `vnet/` finding classes**, which are policy questions gated on 020 §4.13b
+>      (untyped CIR pointers) — an architecture decision, not a defect.
+>    - **5j's API change**, still gated on `ub-strict` existing. Both discards are explained at
+>      the site now and both directions of the gap are measured and pinned.
+> 4. 📌 **The method that paid all day, and the one to reach for first:** *one fact, more than
+>    one reader* — **four instances in one session** (§11.0 lists them). Its operational half is
+>    cheap and caught real bugs: **when a fix lands, re-run the original reproduction, not the
+>    new test.** A green unit test beside an unchanged tool is what the class looks like.
+>    ⚠️ Its counterweight is in §11.0 too: **five suspicions the same day were already handled,
+>    and the code said so at the site.** Read the file before assuming the gap.
+> 5. ⚠️ **Closed 2026-08-09, do not re-open.** The stale-tolerance-list class (§7.19); the
+>    prefix-attribute, union `:0` and packed-`:0` layout defects (§7.20); `SemaDiagnostic`'s
+>    severity and its ten advisory sites; the gnu11 silence channel; `chiero layout` refusing a
+>    TU sema refused (5m); `_Alignof` of a typedef (5n); the gcov `cycles_count` quadratic (the
+>    line-half is linear now); `chiero … | head` panicking on EPIPE; 010 contract 18; and six
+>    contracts that were tested but uncited. **Two of these were defects in this session's own
+>    fixes**, both found by adversarial review — an ambient severity flag that leaked a demotion
+>    across the whole TU, and a fix that reached one reader of three.
+>
+> 6. ⚠️ **Closed in the 2026-08-08 sessions, do not re-open:** the whole persona thread
 >    (`chiero-probe`, the per-TU join, 060 contract 2, the corpus gate's configuration); the gcov
 >    growth gate, which passes for the first time; the witness reporting defect (5e — read its
 >    three corrected claims before trusting a truncated witness); the stale VPP build directory
