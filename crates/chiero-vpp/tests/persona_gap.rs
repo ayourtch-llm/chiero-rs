@@ -276,4 +276,20 @@ fn every_gcc_predefine_vpp_tests_is_one_the_persona_has_an_answer_for() {
         live.len(),
         live.iter().map(|(n, ..)| n.as_str()).collect::<Vec<_>>()
     );
+
+    // **And the excuse list read backwards.** `DELIBERATE`'s doc claims every entry is a
+    // difference the gate really sees on every run — a claim nothing checked, which is the
+    // same shape as the `KNOWN_GAPS` entry that outlived its gap by two hundred waves.
+    let unfired: Vec<&str> = DELIBERATE
+        .iter()
+        .map(|(n, _)| *n)
+        .filter(|n| !differing.iter().any(|(d, ..)| d == n))
+        .collect();
+    assert!(
+        unfired.is_empty(),
+        "{} DELIBERATE entr(ies) excused nothing. An excuse with no divergence behind it is \
+         a claim about chiero that nothing checks, and it silently excuses the divergence if \
+         it ever appears: {unfired:?}",
+        unfired.len()
+    );
 }
