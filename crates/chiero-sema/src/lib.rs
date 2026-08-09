@@ -3360,7 +3360,15 @@ impl Cx<'_> {
             if self.dialect.pedantic {
                 self.advisory(span, format!("{named} has no members"));
             }
-        } else if !members.iter().any(|&m| names_something(self, m)) {
+        } else if !members.iter().any(|&m| names_something(self, m))
+            // **Pedantic-only, like the sibling above it, and it was not gated.** Measured on
+            // `struct N { unsigned long :24; };`: `gcc -std=gnu11` and `clang -std=gnu11` are
+            // both silent; `-Wpedantic` warns and `-pedantic-errors` errors. Sitting in this
+            // `else` rather than inside the guard put it outside the dialect entirely, so the
+            // gnu11 sweep -- which exists to report what a project's own compiler would --
+            // carried a sentence gcc never says.
+            && self.dialect.pedantic
+        {
             self.advisory(span, format!("{named} has no named members"));
         }
         if name.is_some() {

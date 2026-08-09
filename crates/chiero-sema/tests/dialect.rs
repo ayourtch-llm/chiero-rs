@@ -1497,18 +1497,16 @@ fn an_iso_conformance_remark_is_advisory_not_an_error() {
         // **The discriminator.** Under `gnu11` the sentence is not emitted at all, so this
         // test would pass vacuously against a build that simply stopped reporting.
         //
-        // ⚠️ One exception, and it is a finding in its own right: `has no named members` sits
-        // in the `else` of the pedantic guard rather than inside it, so chiero reports it in
-        // **both** dialects where gcc needs `-Wpedantic`. That is a separate question from
-        // this test's subject — the layout is complete either way, so `Advisory` is right
-        // regardless of when it is emitted — and it is recorded rather than quietly excluded.
-        if needle != "has no named members" {
-            let quiet = sema_diagnostics(src, Dialect::gnu());
-            assert!(
-                !quiet.iter().any(|d| d.message.contains(needle)),
-                "`{src}` must be silent under gnu11, or this is not a dialect rule: {quiet:?}"
-            );
-        }
+        // ⚠️ This check carried an exception for `has no named members`, which was the one
+        // rule here reported in **both** dialects — recorded rather than excluded, and then
+        // fixed by `a_record_with_no_named_member_is_a_pedantic_rule_only`. The exception is
+        // gone because the reason for it is: **a carve-out that outlives its cause reads
+        // exactly like one that is still needed.**
+        let quiet = sema_diagnostics(src, Dialect::gnu());
+        assert!(
+            !quiet.iter().any(|d| d.message.contains(needle)),
+            "`{src}` must be silent under gnu11, or this is not a dialect rule: {quiet:?}"
+        );
 
         // **A usable result exists beside it**, which is what `Advisory` asserts and what a
         // severity marked from a code comment alone would not have checked.
