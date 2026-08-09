@@ -295,6 +295,34 @@ fn the_real_workspace_is_clean() {
     );
 }
 
+/// **Every exemption must still exempt something.**
+///
+/// `ALLOWED_VERTICAL_EDGES` and `FRONTEND_USING_VERTICALS` are allowlists, and an allowlist
+/// is checked in one direction only: an edge *not* in it is a violation. Nothing looks at an
+/// entry that permits an edge the workspace no longer has. Such an entry is not inert — it
+/// silently re-permits the edge, so reintroducing a dependency somebody once argued about
+/// passes the gate with nobody making the decision again.
+///
+/// This is not hypothetical here. `ALLOWED_VERTICAL_EDGES` carries a comment recording that
+/// `chiero-diff -> chiero-gcov` "was declared and unused" in `chiero-diff`'s *source* — the
+/// entry outlived the edge, and it took somebody reading the list to notice. The same shape
+/// had gone stale in the generated differential suite's `KNOWN_GAPS` at the same time.
+///
+/// Measured when this was written: all six edges and both frontend exemptions are live, so
+/// this passes on its own merits rather than by being vacuous.
+#[test]
+fn no_exemption_outlives_the_edge_it_permits() {
+    let g = xtask::deps::workspace_graph().expect("cargo metadata");
+    let dead = xtask::deps::unused_exemptions(&g);
+    assert!(
+        dead.is_empty(),
+        "{} exemption(s) permit nothing. An allowlist entry with no edge behind it \
+         re-permits that edge for free, so delete it or reintroduce the dependency \
+         deliberately:\n{dead:#?}",
+        dead.len()
+    );
+}
+
 /// 001 contract 8: the CLI exits non-zero when a rule is violated. Nothing previously
 /// executed the binary, so the exit-code mapping — the actual subject of contract 8 —
 /// was unverified.
