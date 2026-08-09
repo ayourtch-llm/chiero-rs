@@ -1428,6 +1428,49 @@ Two properties worth copying into the next invariant test of this shape:
   round-trip half vacuous; `checked > 0` caught it and the **fixture** gained `int v = … ;`
   rather than the assertion being relaxed.
 
+### 7.19 Every tolerance list in the repo, read backwards — 2026-08-09
+
+**Four lists, three defects, two honest zeros.** The class: *a list that excuses things is
+checked in one direction only.* An item **not** on it is a violation; nothing ever asks whether
+an item **on** it still excuses anything. A stale entry is not inert — it silently re-permits
+the thing it names, so a decision somebody once argued about gets re-made by nobody.
+
+| list | verdict |
+|---|---|
+| `chiero-lower/tests/generated.rs` **`KNOWN_GAPS`** | ❌ **entirely dead — 0 of 4 entries matched anything across 600 programs.** One provably stale: it excused a float-comparison gap closed two hundred waves earlier, and its own text read *"this entry is what will fail when they land"*. Split into `KNOWN_GAPS` (gap records, must fire) and `DECLARED_FIDELITY` (023 §7 grading policy, exempt); the float entry deleted; `KNOWN_GAPS` is **empty**, which makes the original assertion strict — *any* refusal now fails, matching what the focused and control-flow channels already assert |
+| `xtask/src/deps.rs` **`ALLOWED_VERTICAL_EDGES`** + **`FRONTEND_USING_VERTICALS`** | ⚠️ **all six edges and both exemptions live today** — but the file *records this failure already happening once* (`chiero-diff -> chiero-gcov` "was declared and unused", caught by a person reading the list). `unused_exemptions()` added, wired into `main`'s `check-deps` |
+| `chiero-vpp/tests/persona_gap.rs` **`DELIBERATE`** | ❌ **five of six entries excused nothing**, while the doc claimed *"every entry is a difference the gate really sees on every run"*. **The only instance whose claim was false today** — and it was measurable from the gate's own printed output (`15 compared, 1 differ` against six entries). Same split: `DELIBERATE` (must fire) / `NEVER_COMPARABLE` (exempt) |
+| `generated.rs` **`ASAN_CLASSES`** | ✅ **honest zero** — already has a real per-class liveness floor (`seen >= 3`). It is the one that got this right first; the pattern was available in-repo |
+| `xtask/src/pp_gate.rs` **`SIMPLECPP_SKIP`** | ✅ **honest zero, and not a suppression at all** — `Prior` is *"carried, not obeyed"*: all 141 cases run regardless and the list is only a label |
+
+⚠️ **Three things this cost, in the order they hurt.**
+
+1. **A false zero on the way in.** The census keyed float comparisons on a `d_`/`f_` naming
+   convention the generator does not have, and read **0** where there are **57 of 200**. It read
+   exactly like *"the corpus cannot reach this"*, which would have made the whole finding
+   backwards. §8.3's "when a probe reports zero, check it can report non-zero", again.
+2. **The fix's own assertion was unreachable logic, not merely vacuous.** With `KNOWN_GAPS` empty
+   the filter iterates zero entries, so a polarity flip and a reversed `contains` both survived
+   the entire suite. The mutation evidence had been gathered by mutating the **data** — adding a
+   bogus entry — and then left in a commit message, where it expires the moment somebody edits
+   the block. Fixed by extracting `dead_entries()` and unit-testing it on synthetic input, a
+   pattern this file already used for the shrinker. **Mutate the code that will still be there,
+   not the input you can revert.**
+3. **An exemption list is a place to file things unless something stops it.** Both splits create
+   an exempt list, and in `persona_gap` a mutant moving the *live* `__STDC_VERSION__` entry down
+   into `NEVER_COMPARABLE` **survived** — the dodge is real, not theoretical. Closed with the
+   structural property that is the actual reason those entries never fire: **VPP tests none of
+   them in an `#if`**, checkable from the same map the gate already builds. `generated.rs` got
+   the same treatment differently — `DECLARED_FIDELITY` is consulted only for the row a
+   `Verdict::Gap` produced, and matched exactly, so the split is enforced by the verdict type
+   rather than by which `const` somebody chose. ⚠️ **Both exempt lists are still unexercised** —
+   nothing degrades, nothing diverges by construction — and that is written at each list rather
+   than papered over.
+
+📌 **Two lists reaching the same split independently is some evidence the distinction is real.**
+The recurring shape is *"X is broken today"* (must still be true) versus *"X could never work"*
+(policy, true whether or not it occurs). It is not evidence either list is right.
+
 ### 7.5 How to check the workspace is green — `./check.sh`
 
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
@@ -1500,6 +1543,9 @@ This has now paid out three times in a row, each time on the first run after a w
 | **reproducing a defect at the layer it lives in** — the witness reporting item, after four waves of engine fixtures | one wave | **950 KB → 11.9 KB on the real VPP entry**, and two defects inside the fix: "show the first *k*" would have dropped every pinned binding, and a bounded rendering would have become a bounded *proof condition* in `check_reachable`. The four earlier dead ends all tried to *produce* a huge witness by execution; it was a reporting defect, and three of the six tests build a `Witness` directly |
 | **splitting a clock instead of counting inside it** — timing `ingest_into` apart from the arc-index walk | one column in an existing gate, 4 min | **the gcov growth gate passes for the first time.** 90% of the cost was on the *other side* of the suspect §9.1 had recorded, and two throwaway experiments bisected it to `block_counts` — every block scanning every arc. ⚠️ One of the three fixes was a change **measured and honestly ruled out earlier the same day**; the null result was true while `block_counts` dominated |
 | **the per-TU persona join** — the corpus gate stopped preprocessing 1967 units as one compiler | one crate + one wave, 23 min to re-measure | **+26M tokens, 3.3% more of VPP visible**, 0 diagnosed throughout — and the yield was a *number*: 8 distinct target flag-sets where I had written 5 in four places. A `-march` value is not a flag-set (`-mtune`, `-mprefer-vector-width=512`, `-maes`, four units with none, one naming `-march` twice). One `ninja -t compdb` pipe would have said so at any point |
+| **reading a gate's own tolerance list as a corpus** — the generated differential suite's `KNOWN_GAPS` | one census, minutes | **the ledger was entirely dead: 0 of 4 entries matched anything across 600 programs**, and one was provably stale — it excused a float-comparison gap that closed two hundred waves ago, and its own text said *"this entry is what will fail when they land"*. It did not fail, because **a one-directional ratchet only stops a list growing; nothing stops it going stale**, and a stale entry reads exactly like a live one. ⚠️ **A false zero on the way in**: the census keyed on a `d_`/`f_` naming convention the generator does not have and read 0 float comparisons where there are **57 of 200** |
+| **the same class, three more instances** — every allowlist/excuse table in the repo, read backwards | one grep + one review | `xtask` **`ALLOWED_VERTICAL_EDGES`**/`FRONTEND_USING_VERTICALS` — all live today, but the file *records the failure already happening once* (an edge "declared and unused"), so the guard went in; **`persona_gap`'s `DELIBERATE` — five of six entries excused nothing** while its doc claimed *"every entry is a difference the gate really sees on every run"*, the only instance whose claim was **false today**; `ASAN_CLASSES` already had a real liveness floor (`seen >= 3`) and needed nothing; `SIMPLECPP_SKIP` is *"carried, not obeyed"* — a label, not a suppression. **4 found, 3 fixed, 2 honest zeros** |
+| *not a widening* — **asking a reviewer "does this shape exist elsewhere"** rather than only "is this right" | one fable subagent | it named the `persona_gap` instance *and* found the fix's own weakness: the new liveness check was **unreachable logic**, not merely a vacuous assertion — with the list empty a polarity flip survived the whole suite, because the mutation evidence had been gathered by mutating the **data** and then left in a commit message. **Mutate the code that will still be there, not the input you can revert** |
 | *not a widening* — **disbelieving a "blocked" label** (the gcov `Vec::contains` audit) | one generated `.gcno` | the block was false: gcc emits a `.gcno` of any size from generated C, so no VPP coverage build and no format writer were ever needed. Native ingest measured **quadratic**, then **~250x faster** (17.31 s → ~0.068 s at n=3200, two runs; ±20% at these times) across five fixes. ⚠️ **Six confident hypotheses were refuted by measurement**, four of them before anything worked; counters found every real site. The curve itself was blind twice — once holding blocks-per-line at 1, once measuring below its own noise floor — and a genuinely quadratic counter (327 808 014 cells) turned out to be 7% of the clock. **Counting stops you being confidently wrong; it does not by itself make you right** |
 
 The loop, and it is deliberately mechanical:
@@ -1591,25 +1637,29 @@ typing the paths ever would.
 > for months (*a green gate is evidence about the corpus, not about the tree*). Then §9.1 for
 > the next target.
 >
-> ### 🆕 Suggested first moves after the second 2026-08-08 session, in order
+> ### 🆕 Suggested first moves after the 2026-08-09 session, in order
 >
 > 1. **Run the two fast gates** (`persona_gap` 0.1 s, `growth` ~5 s). The 23-minute corpus gate is
 >    worth it only when something touched the frontend or the persona.
-> 2. **Pick a widening (§8.3), or take a concrete item from §9.1.** The live ones, roughly by
->    value: **032 contract 18's replay corpus**, still with no `observed` entry — the probe is
->    built and committed (`tests/corpus/replay/replay_probe.sh`) and §9.1 item 8 says what firing
->    it costs; **5j**, `CopyMem` discarding the alignment the CIR hands it, which is what a
->    `ub-strict` mode will rest on; the two `vnet/` finding classes, which are policy questions
->    rather than defects; and `InstKind::Call` carrying no result type, a CIR change across 135
->    sites.
-> 3. ⚠️ **Closed in that session, do not re-open:** the whole persona thread (`chiero-probe`, the
->    per-TU join, 060 contract 2, the corpus gate's configuration); the gcov growth gate, which
->    passes for the first time; the witness reporting defect (5e — read its three corrected claims
->    before trusting a truncated witness); the stale VPP build directory (5d, four files rather
->    than a rebuild); the AVX2/AVX-512 half of vppinfra, parsed and analysed for the first time;
->    and an enum's declared underlying type, which had been making `layout` wrong on 22 VPP sites
->    and saying `proven` (5k). §9.1 1d (`__STDC_VERSION__`) is the **owner's call on the language
->    level**.
+> 2. **Pick a widening (§8.3), or take a concrete item from §9.1.** The live ones are unchanged
+>    and roughly by value: **032 contract 18's replay corpus**, still with no `observed` entry —
+>    the probe is built and committed (`tests/corpus/replay/replay_probe.sh`) and §9.1 item 8 says
+>    what firing it costs; **5j**, `CopyMem` discarding the alignment the CIR hands it, which is
+>    what a `ub-strict` mode will rest on; the two `vnet/` finding classes, which are policy
+>    questions rather than defects; and `InstKind::Call` carrying no result type, a CIR change
+>    across 135 sites.
+> 3. ⚠️ **Closed 2026-08-09, do not re-open:** the whole **stale-tolerance-list** class — the
+>    generated suite's `KNOWN_GAPS`, `xtask`'s two dependency allowlists, and `persona_gap`'s
+>    `DELIBERATE`. See the yield table's three new rows and §7.19.
+> 4. ⚠️ **Closed in the 2026-08-08 sessions, do not re-open:** the whole persona thread
+>    (`chiero-probe`, the per-TU join, 060 contract 2, the corpus gate's configuration); the gcov
+>    growth gate, which passes for the first time; the witness reporting defect (5e — read its
+>    three corrected claims before trusting a truncated witness); the stale VPP build directory
+>    (5d, four files rather than a rebuild); the AVX2/AVX-512 half of vppinfra, parsed and
+>    analysed for the first time; and an enum's declared underlying type, which had been making
+>    `layout` wrong on 22 VPP sites and saying `proven` (5k). §9.1 1d (`__STDC_VERSION__`) is the
+>    **owner's call on the language level** — and `persona_gap` now *asserts* that this divergence
+>    is still live, so it goes red the day the decision is made and not acted on.
 >
 > ⚠️ **What not to do:** do not "fix" a `Vec::contains` because it looks quadratic — see §9.1,
 > where two that looked it were not and one described in passing was the whole cost. Do not
@@ -1686,8 +1736,23 @@ typing the paths ever would.
 > **None of them was visible to the pp-gate**, which has reported 0 findings for weeks: none is
 > about preprocessing *syntax*. A gate that has been green for weeks is an untested surface.
 >
-> **State: 2026-08-08, second session — `./check.sh` GREEN at 2281 across 277 suites**, fmt and
-> clippy clean, both solver legs. Up from 2257/270 at the first session's end.
+> **State: 2026-08-09 — `./check.sh` GREEN at 2285 across 277 suites**, fmt and clippy clean.
+> Up from 2281/277 at the previous session's end. Both fast gates re-run and unchanged
+> (`persona_gap` 0 gaps; `growth` `line` 6.3x / `onelin` 4.8x against the 8.0x threshold).
+>
+> **The 2026-08-09 session in one line: every tolerance list in the repo was read backwards, and
+> three of the four were wrong.** §7.19 has it. The method generalises past this repo and is the
+> thing to carry: **a list that excuses things is checked in one direction only — an item not on
+> it is a violation, and nothing ever asks whether an item on it still excuses anything.** A stale
+> entry is not inert; it silently re-permits the thing it names, so the decision gets made once
+> and never revisited.
+>
+> 📌 **And the sharpest lesson was about the fix, not the defect.** The first version proved its
+> new assertion fires by adding a bogus entry — mutating the **data**. With the list then empty,
+> the assertion's *logic* was unreachable: a polarity flip survived the whole suite, and the only
+> evidence it ever worked lived in a commit message. **Mutate the code that will still be there,
+> not the input you can revert.** An adversarial review found this; asking it *"does this shape
+> exist elsewhere"* rather than only *"is this right"* is what also produced the third instance.
 >
 > **This session's closes:** the witness reporting defect (§9.1 5e); the gcov growth gate, which
 > passes for the first time; the stale VPP build directory (5d, four files rather than a rebuild);
