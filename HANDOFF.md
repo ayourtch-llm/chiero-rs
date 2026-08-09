@@ -4028,6 +4028,16 @@ not an anecdote.*
   five runs, which run six broke at 5.8x. In each case the sentence just written was the thing
   worth testing, and in each case testing it cost under a minute.
 
+- ⚠️ **And the audit that followed it initially missed two counters, for the reason it exists.**
+  The sweep grepped `thread_local` and `AtomicU64` and reported "four counters, three sound".
+  `chiero-lex`'s `cache_hits`/`cache_misses` are `Rc<Cell<u64>>` — a shape the pattern did not
+  match. They are **complete** (`lex_cached` has exactly two exits and each increments exactly
+  one, so hits + misses = calls), so the verdict stands at six counters, five sound. But *the
+  audit for narrow measurement was itself narrowly scoped*, which is the joke the class keeps
+  telling. ⚠️ One nuance left unmeasured rather than asserted: a hit that must be `relocated`
+  counts the same as a free hit, so `cache_stats` cannot distinguish them — harmless for 011
+  c13's warm-vs-cold claim, unquantified for anything finer.
+
 - **A counter that omits a term is not a smaller measurement, it is a wrong one** — and a wrong
   one that agrees with the fix you already made is the worst kind, because it retires the
   question. `CYCLES_CELLS` counted the two scratch buffers that had been hoisted and not the one
