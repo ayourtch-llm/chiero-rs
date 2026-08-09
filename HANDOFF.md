@@ -1625,6 +1625,31 @@ is what found both counterparts, and it is cheaper than the pattern that missed 
 same VPP files for the same reasons. What the sweep cannot currently show is *which* reasons
 overlap, because it keeps one message per side.
 
+### 7.26 Why a growth curve over VPP files cannot find 5b's class in the frontend
+
+5c's quadratic was found by sampling, and 5b's audit grep cannot see that shape (§9.1). The
+obvious replacement — time `chiero cir` across real files of increasing size and look for a
+bend — was tried, and the corpus will not support it.
+
+| file | own lines | CIR lines | frontend |
+|---|---|---|---|
+| `vppinfra/bitmap.c` | **167** | 185 434 | 1009 ms |
+| `vppinfra/format.c` | 857 | 184 418 | 1018 ms |
+| `vlib/node_cli.c` | 888 | 247 057 | 1476 ms |
+| `vnet/ip/ip4_forward.c` | 2901 | 307 994 | 1966 ms |
+
+**5–6 µs per CIR line across all ten files measured**, and the reason the curve is useless is in
+the second column: 167 lines of source become 185 000 lines of CIR, a **1108x** ratio. A
+translation unit's size here is its *header closure*, which barely varies — the whole corpus
+spans **1.7x**. A quadratic needs an order of magnitude to show a bend, so this instrument
+cannot distinguish linear from quadratic no matter how many files it runs.
+
+📌 **§7.21's rule, applied before believing a flat line rather than after.** The flatness is
+evidence about the corpus first. What could find the class is a generator with a *controlled*
+size axis — the shape `generated_layout`/`generated_const_eval` already have for correctness,
+and which no gate has for scale — or more sampling of real runs, which is what found both
+instances so far.
+
 ### 7.24 Two of the pinned 40 cannot be compared, and I compared them twice
 
 `--time-budget` is a **wall clock**. An entry that hits it stops wherever the machine got to,
