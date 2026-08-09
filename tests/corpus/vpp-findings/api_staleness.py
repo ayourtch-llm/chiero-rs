@@ -84,7 +84,43 @@ def regenerate(api, header):
     return r.returncode, (r.stderr or "").strip()
 
 
+def fingerprint():
+    """A stable identity for the **generated** half of the corpus.
+
+    VPP's `HEAD` does not pin the corpus: 147 of the 1562 sources the corpus gate reads are
+    generated into the build directory and are not in git. On 2026-08-09 a published token
+    count moved by 10 972 between two sessions with `HEAD` unchanged and `git status` clean,
+    and the cause was 32 regenerated API headers — which looked exactly like a chiero change.
+
+    Content, not mtime: a `touch` must not move this, and an edit must. Printed as a short
+    digest so it can sit beside a published figure without dominating it.
+    """
+    import hashlib
+
+    h, n = hashlib.sha256(), 0
+    for root, _, files in os.walk(GEN):
+        for name in sorted(files):
+            if not name.endswith((".h", ".c")):
+                continue
+            path = os.path.join(root, name)
+            # The path matters as much as the bytes: a header that disappears changes the
+            # corpus even if every surviving file is identical.
+            h.update(os.path.relpath(path, GEN).encode())
+            try:
+                with open(path, "rb") as f:
+                    h.update(f.read())
+            except OSError:
+                h.update(b"<unreadable>")
+            n += 1
+    return n, h.hexdigest()[:16]
+
+
 def main():
+    if "--fingerprint" in sys.argv[1:]:
+        n, digest = fingerprint()
+        print(f"generated corpus: {n} files, sha256:{digest}")
+        print("  record this beside any published VPP number — `HEAD` does not pin it")
+        return 0
     fix = "--fix" in sys.argv[1:]
     bad, ungenerated = stale()
     print(f"{len(bad)} stale, {len(ungenerated)} .api with no generated header (not built here)")
