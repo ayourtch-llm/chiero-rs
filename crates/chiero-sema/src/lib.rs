@@ -3980,10 +3980,21 @@ impl Cx<'_> {
                     // `has_zero_width_bitfield` is still recorded: a consumer proposing a
                     // reorder needs to know the record declared one, in a union as much as in
                     // a struct.
+                    // ⚠️ **`packed` does not switch the flush off**, and the guard here used
+                    // to say it did. `packed` removes padding *between members* and drops
+                    // member alignment to 1; a zero-width bit-field is neither. gcc and clang
+                    // both still round the next allocation, and so the record's size, up to
+                    // the boundary of the `:0`'s declared type:
+                    //
+                    //     struct { char a; int :0; }        __attribute__((packed))  is 4
+                    //     struct { char a; int :0; char b; } __attribute__((packed)) is 5, b at 4
+                    //
+                    // chiero said 1 and 2. Found by `generated_layout.rs` on the run that
+                    // added 16-byte-aligned members — a pre-existing defect in an unrelated
+                    // shape, surfaced because new scalars reshuffled which records the seeds
+                    // produce. A widening pays sideways as well as forwards.
                     if !is_union {
-                        if !member_packed {
-                            bit_cursor = round_up(bit_cursor, unit_align_bits);
-                        }
+                        bit_cursor = round_up(bit_cursor, unit_align_bits);
                         size_bits = size_bits.max(bit_cursor);
                     }
                     continue;

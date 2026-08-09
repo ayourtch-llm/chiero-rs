@@ -164,6 +164,23 @@ const SCALARS: &[Scalar] = &[
         bits: 64,
         bitfieldable: false,
     },
+    // **The only members that force 16-byte alignment**, and nothing else in this project
+    // reaches one: neither `layout.rs`'s hand fixtures nor the 22-seed VPP gate has a member
+    // whose natural alignment exceeds 8. Every padding number the corpora have ever checked
+    // was computed at 1, 2, 4 or 8, so a rule that happens to be written `min(align, 8)`
+    // somewhere would have gone on passing forever.
+    Scalar {
+        c: "long double",
+        bits: 128,
+        bitfieldable: false,
+    },
+    // ⚠️ **`__int128` is deliberately absent, and the omission is a cost, not a tidy-up.**
+    // chiero diagnoses it — *"ISO C does not support `__int128` types"* — which is correct
+    // pedantry under 013 and matches `gcc -pedantic`. But this gate treats any diagnostic as
+    // a refusal, and `SemaDiagnostic` carries no severity, so there is nothing to filter on:
+    // 57 of 120 seeds refused and the gate stopped measuring layout at all. What is lost is
+    // the 128-bit *bit-field allocation unit*, which nothing now reaches. `long double` above
+    // still supplies the 16-byte alignment this widening was for.
 ];
 
 /// Where a record's attributes were written.
@@ -398,14 +415,25 @@ enum Outcome {
     /// gcc contradicts chiero and clang does not. **Not a chiero defect** — the two
     /// compilers disagree with each other and chiero took one side.
     ///
-    /// **One cause so far, established by reading all three rows rather than by their
-    /// sharing a verdict (§7.6).** `__attribute__((aligned(N)))` on a member whose natural
-    /// alignment is *larger* than N: gcc lowers the alignment (`void *` with `aligned(4)`
-    /// gives 12/4) and clang does not (16/8). chiero is on clang's side, which is also the
-    /// side **gcc's own manual documents** — "the aligned attribute can only increase the
-    /// alignment; to decrease it you need packed as well". So this is the measured behaviour
-    /// of gcc disagreeing with the documented behaviour of gcc, and chiero implements what
-    /// is written down. Reported as its own row,
+    /// **One cause, and the first statement of it here was too narrow.** It was written as
+    /// *"`aligned(N)` on a member whose natural alignment exceeds N"* from three rows that
+    /// all had that shape; the next run had five, and two of them did not. Read the last one.
+    ///
+    /// The rule, measured rather than inferred: **gcc lets an alignment-*lowering* context
+    /// override a member's explicit `aligned`, and clang never does.** chiero is on clang's
+    /// side throughout.
+    ///
+    /// | | gcc | clang & chiero |
+    /// |---|---|---|
+    /// | `{ void * __attribute__((aligned(8))) m; } __attribute__((packed));` | 8/**1** | 8/**8** |
+    /// | `{ void * __attribute__((aligned(4))) m; };` — no `packed` | 8/**4** | 8/**8** |
+    /// | `{ void * __attribute__((aligned(16))) m; } __attribute__((packed));` | 8/**1** | **16/16** |
+    ///
+    /// ⚠️ **gcc contradicts its own manual in both directions here** — it documents that
+    /// "the aligned attribute can only increase the alignment; to decrease it you need packed
+    /// as well", yet row two *decreases* without `packed` and row three refuses an *increase*
+    /// because of it. chiero implements what is written down. Worth knowing before anyone
+    /// "corrects" chiero against a quick `gcc` experiment. Reported as its own row,
     /// never merged into `Agrees`, because a gate that quietly counted it as agreement would
     /// be lowering its own standard; and never into `Disagrees`, because that would be the
     /// gate being wrong about chiero.
@@ -567,6 +595,7 @@ fn the_generator_reaches_what_the_vpp_and_hand_corpora_cannot() {
         (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
     let mut bitfield_after_zero = 0usize;
     let (mut prefix, mut middle, mut postfix) = (0usize, 0usize, 0usize);
+    let mut wide_align = 0usize;
 
     for seed in 0..400u64 {
         let u = unit(seed);
@@ -585,6 +614,9 @@ fn the_generator_reaches_what_the_vpp_and_hand_corpora_cannot() {
             if t.contains(':') && !t.contains(" :") && seen_zero {
                 bitfield_after_zero += 1;
             }
+        }
+        if u.src.contains("long double") || u.src.contains("__int128") {
+            wide_align += 1;
         }
         if u.src.contains("__attribute__((packed))") {
             packed += 1;
@@ -620,11 +652,20 @@ fn the_generator_reaches_what_the_vpp_and_hand_corpora_cannot() {
         "a `:0` only means something if a member follows it: {bitfield_after_zero}"
     );
     assert!(packed >= 40, "packed records: {packed}");
+    // The only members whose natural alignment is 16. No other corpus in the project has one,
+    // so every padding number ever checked here was computed at 8 or below.
+    assert!(
+        wide_align >= 40,
+        "records with a 16-byte-aligned member: {wide_align}"
+    );
     // ⚠️ **The counts that matter are the two positions where an attribute does something.**
     // `packed >= 40` above went on passing after the prefix fix while every one of those
     // attributes had become inert — chiero ignored it, gcc ignored it, and the gate scored an
     // agreement about nothing. Counting a construct is not counting a *test* of it.
-    eprintln!("attribute positions: {prefix} prefix (ignored), {middle} middle, {postfix} postfix");
+    eprintln!(
+        "attribute positions: {prefix} prefix (ignored), {middle} middle, {postfix} postfix; \
+         {wide_align} records with a 16-byte-aligned member"
+    );
     assert!(
         middle >= 30,
         "`struct __attribute__((packed)) S {{…}}` — the position that applies: {middle}"
