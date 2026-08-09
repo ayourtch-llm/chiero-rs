@@ -1883,7 +1883,34 @@ typing the paths ever would.
 > for months (*a green gate is evidence about the corpus, not about the tree*). Then §9.1 for
 > the next target.
 >
-> ### 🆕 Suggested first moves after the 2026-08-09 session, in order
+> ### 🔥 What the **second** 2026-08-09 session did, and what it leaves
+>
+> Five items closed: **item 6** (both halves — §7.22), **5o** (the advisory taxonomy), **5c**
+> (the nsh timeouts — §7.25), plus two reviews that closed as honest zeros (§7.23, §7.24).
+> `./check.sh` **2313 across 280 suites**. The VPP corpus fingerprint is unchanged
+> (`sha256:5447e4661663b86c`, still 4 `CMakeLists.txt` behind), so today's numbers are
+> comparable with 2026-08-08's.
+>
+> ⚠️ **Three numbers this session published were wrong and are corrected in place** — every
+> conclusion survived, which is the point:
+>
+> | claim | corrected | why |
+> |---|---|---|
+> | "6 indirect call sites in the pinned 40" | **56** | censused with the wrong include flags (§7.22) |
+> | "5 of 40 envelopes differ" (void fix) | **3** | two are `nondeterministic_abort` (§7.24) |
+> | "the over-report is rare in VPP" (5o) | **255 of 1552** | measured on the gnu dialect, the sweep runs pedantic |
+>
+> 📌 **The method that paid every time: write the prediction down, then let the number contradict
+> it.** All three errors were invisible until one did. Two led straight to a defect — the
+> backwards void filter and 5o's wrong `Miss` arm.
+>
+> ⚠️ **Five false zeros in one session, all one shape: a pattern narrower than the thing it
+> looked for.** A grep in chiero's wording against gcc's output (twice — one nearly became a
+> defect record about 1019 files), an `awk` matching gdb's *"Thread 1 received signal"* banner,
+> a `grep -l` matching a JSON field's *name* instead of its value, and `-> void` eaten as a
+> shell flag. **When the subject is another tool, list its output and read it.**
+>
+> ### 🆕 Suggested first moves, in order
 >
 > 1. **Run the fast gates.** `./check.sh` is ~4 min and now covers six of CI's ten commands
 >    (fmt, clippy, the `--no-default-features` build, `check-proof-surface`, tests); the other
@@ -1901,6 +1928,10 @@ typing the paths ever would.
 >      only for what it cost to believe: "135 sites" was a count of *mentions* and it is what
 >      left the item unstarted for weeks. The engine half's payoff was **not** the filter it
 >      added — that one cuts nothing on the pinned 40 — but the backwards rule beside it (§7.22).
+>    - ⚠️ **`5b`'s audit grep cannot find its own class.** 5c's quadratic was
+>      `text.split(...)` inside a per-item loop; the audit greps `.contains(&`, so its "79 sites"
+>      counts a *narrower* shape than the one it names. Both instances found this year came from
+>      **sampling a real run**, not from the grep. Widen the definition or change the method.
 >    - **032 contract 18's replay corpus**, still with no `observed` entry. The probe is
 >      committed; firing it re-runs cmake and **invalidates every published VPP number**, so it
 >      is a deliberate spend, not a wave.
