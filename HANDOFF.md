@@ -1770,11 +1770,32 @@ typing the paths ever would.
 >
 > ### 🔥 What the **second** 2026-08-09 session did, and what it leaves
 >
-> Five items closed: **item 6** (both halves — §7.22), **5o** (the advisory taxonomy), **5c**
-> (the nsh timeouts — §7.25), plus two reviews that closed as honest zeros (§7.23, §7.24).
-> `./check.sh` **2313 across 280 suites**. The VPP corpus fingerprint is unchanged
-> (`sha256:5447e4661663b86c`, still 4 `CMakeLists.txt` behind), so today's numbers are
-> comparable with 2026-08-08's.
+> **Closed:** item 6 (both halves, §7.22), 5o (the advisory taxonomy), 5c (the nsh timeouts),
+> 8b (the stale build graph, resolved as a side effect), 8c (the frontend quadratics), 023 c17
+> (**withdrawn — M1 now exits 166/166**), plus three reviews that ended in honest zeros
+> (§7.23, §7.24, §7.26). `./check.sh` **2321 across 283 suites**.
+>
+> **Two instruments that did not exist this morning**, and every performance defect below was
+> found by one of them: `crates/chiero-lower/tests/scale.rs` (a *controlled size axis* — VPP
+> cannot supply one, its TUs span 1.7x because a TU's size is its header closure) and the
+> all-concrete-conditions engine probe of §7.28, which runs the engine with **no z3 at all**.
+>
+> | on one 32 768-statement function | start of day | end |
+> |---|---|---|
+> | frontend | 22 671 ms | **1 693 ms** |
+> | full `find-bugs`, 96k blocks | 53 279 ms | **3 264 ms** |
+> | peak RSS | **35 628 MB** | **494 MB** |
+>
+> Nine scans of one shape — *a full scan inside a per-item loop* — plus the verifier's O(B²)
+> dominator sets. ⚠️ **None of this was visible to any VPP measurement**, and fixing it moved no
+> published number.
+>
+> **032 c18 has its first `observed` entry** (`3f544b872 / test_lldp`), established with a
+> control run. The gate still reports `recall 0.0%` because replay is a stub; item 8 carries the
+> scouted recipe.
+>
+> ⚠️ **New corpus fingerprint `sha256:d8e4a04713923a31`** (was `5447e466…`) — the replay build
+> regenerated cmake. The pinned 40 was re-taken and is **byte-identical**.
 >
 > ⚠️ **Three numbers this session published were wrong and are corrected in place** — every
 > conclusion survived, which is the point:
@@ -1783,13 +1804,16 @@ typing the paths ever would.
 > |---|---|---|
 > | "6 indirect call sites in the pinned 40" | **56** | censused with the wrong include flags (§7.22) |
 > | "5 of 40 envelopes differ" (void fix) | **3** | two are `nondeterministic_abort` (§7.24) |
-> | "the over-report is rare in VPP" (5o) | **255 of 1552** | measured on the gnu dialect, the sweep runs pedantic |
+> | "the over-report is rare in VPP" (5o) | **255 of 1552** | measured on gnu; the sweep runs pedantic |
+> | "the engine is still 18.2x" | **it was a second verify** | subtraction is not a phase split (§7.28) |
+> | "~24 576 blocks, ~600M entries" | **96 000 blocks, 35.6 GB** | disbelieved my own arithmetic (§7.29) |
+> | "198 plugin units cannot preprocess" | **~30 of them do fail** | exposure counted as breakage (§7.30) |
 >
 > 📌 **The method that paid every time: write the prediction down, then let the number contradict
 > it.** All three errors were invisible until one did. Two led straight to a defect — the
 > backwards void filter and 5o's wrong `Miss` arm.
 >
-> ⚠️ **Five false zeros in one session, all one shape: a pattern narrower than the thing it
+> ⚠️ **Six false zeros in one session, all one shape: a pattern narrower than the thing it
 > looked for.** A grep in chiero's wording against gcc's output (twice — one nearly became a
 > defect record about 1019 files), an `awk` matching gdb's *"Thread 1 received signal"* banner,
 > a `grep -l` matching a JSON field's *name* instead of its value, and `-> void` eaten as a
