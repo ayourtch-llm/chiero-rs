@@ -3792,7 +3792,18 @@ typing the paths ever would.
    enough"* is a reasonable question to ask again, and the next asker should get the measurement
    instead of repeating it.
 
-6. **`InstKind::Call` carries no result type**, so an indirect call's result width is whatever
+6. ✅ **CLOSED 2026-08-09 — both halves.** The direct half needed no CIR change (`Callee::Direct`
+   makes the type derivable); the indirect half is `Callee::Indirect { target, ret }`, text
+   syntax `call %5 -> i32(args)`, 020 updated. **`require_ptr`'s `CTy::Void` exemption is
+   deleted** — the check it disabled has been off since the verifier was written. Verified on
+   real input: `vppinfra/format.c` lowers to 184 418 lines, exit 0, its two indirect calls
+   carrying `-> void` and `-> ptr`. The scope estimate held exactly: 22 mechanical sites, 3
+   needing judgement, 1 spec edit. ⚠️ Two of the three were decided by **reading a fixture's own
+   comment** — one said "the call site believes it called a pointer-returning function" while my
+   blanket `Int(32)` said otherwise, and the verifier caught the contradiction. The entry below
+   is kept for its reasoning.
+
+6z. 🗄️ **Original entry — `InstKind::Call` carries no result type**, so an indirect call's result width is whatever
    candidate ran. The arity and parameter-type filters cut the wildest cases and cannot close it;
    the engine survives the rest by degrading. The real fix is a CIR change.
 
