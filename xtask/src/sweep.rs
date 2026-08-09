@@ -791,7 +791,10 @@ pub fn report_sections() -> Vec<(&'static str, Bucket, bool)> {
             false,
         ),
         (
-            "BOTH REFUSED — usually the flags, not the code",
+            // Not "both refused": since 2026-08-09 this bucket also holds files where chiero
+            // merely *advised*. What every row shares is gcc's refusal, which is the reason
+            // none of them tested anything — so gcc is what the title names.
+            "GCC REFUSED — usually the flags, not the code",
             Bucket::BothRefused,
             false,
         ),
@@ -900,6 +903,18 @@ pub fn report_lines(verdicts: &[Verdict], tree: &Path) -> Vec<String> {
         }
         rows.sort_by_key(|r| std::cmp::Reverse(r.1));
         out.push(format!("\n{title}"));
+        // **The two halves of a row are each side's *first* message, not a comparison.**
+        // Printed because the `a || b` shape invites exactly the opposite reading, and it got
+        // one: three rows of the 2026-08-09 VPP sweep were each chased as a chiero defect
+        // class — 1019 files of `return` with a value in a `void` function, 90 of a member
+        // declaring nothing — and gcc reports both, in different words, further down its own
+        // output. Confirming a disagreement here means diffing the two *full* diagnostic sets.
+        if bucket == Bucket::BothRefused {
+            out.push(
+                "         (each side's FIRST message; different text is not disagreement)"
+                    .to_string(),
+            );
+        }
         for (msg, n, example) in rows.iter().take(25) {
             out.push(format!("  {n:5}  {msg}"));
             // The example is the *located* text when there was a location to render, so the

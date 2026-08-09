@@ -1136,3 +1136,52 @@ fn the_report_says_which_files_the_advisory_taxonomy_moved() {
     let plain = report_lines(&[v(Outcome::Clean, Outcome::Clean)], Path::new("/tree"));
     assert!(!plain.iter().any(|l| l.contains("chiero advised")));
 }
+
+/// **The both-refused section warns that its two messages are not a comparison.**
+///
+/// The row reads `gcc: X || chiero: Y`, which looks like a disagreement and is not: each side
+/// contributes its first message only. On the 2026-08-09 VPP sweep three such rows were chased
+/// as chiero defect classes and gcc turned out to report all three, in different words, later
+/// in its own output. The caption is cheaper than the next person repeating it.
+#[test]
+fn the_both_refused_section_says_its_two_messages_are_not_a_comparison() {
+    use xtask::sweep::{Verdict, report_lines};
+    let v = |chiero: Outcome, gcc: Outcome| Verdict {
+        path: PathBuf::from("t.c"),
+        bucket: classify(&gcc, &chiero),
+        gcc,
+        chiero,
+    };
+    let lines = report_lines(
+        &[
+            v(
+                d("sema: a member declaration must declare a member"),
+                d("error: __int128"),
+            ),
+            // A finding, so the caption must not attach itself to every section.
+            v(d("sema: only chiero speaks"), Outcome::Clean),
+        ],
+        Path::new("/tree"),
+    );
+    let joined = lines.join("\n");
+    let caption = "(each side's FIRST message; different text is not disagreement)";
+    assert!(joined.contains(caption), "{joined}");
+    assert_eq!(
+        joined.matches(caption).count(),
+        1,
+        "one section only:\n{joined}"
+    );
+
+    // And it sits under BOTH REFUSED, not under FINDINGS.
+    let idx_caption = lines.iter().position(|l| l.contains(caption)).unwrap();
+    let idx_refused = lines
+        .iter()
+        .position(|l| l.contains("GCC REFUSED"))
+        .unwrap();
+    let idx_findings = lines.iter().position(|l| l.contains("FINDINGS")).unwrap();
+    assert!(idx_caption > idx_refused, "caption follows its own title");
+    assert!(
+        idx_caption < idx_findings || idx_refused > idx_findings,
+        "caption belongs to the refused section, not findings"
+    );
+}

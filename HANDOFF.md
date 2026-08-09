@@ -1591,6 +1591,40 @@ cover, which is why it was run.
 contain for this number to move.* If the answer is "nothing it has", the run is a control, not
 a check — worth doing, worth recording, and worth not mistaking for confirmation.
 
+### 7.23 Reading the sweep's residue — an honest zero, and the misreading that produced it
+
+The 2026-08-09 whole-VPP sweep (pedantic, the build's own flags) puts **1390 of 1552 files** in
+`BothRefused`. §11.2 says a dominant bucket is a lid, so the rows underneath were read. Three
+looked like large chiero defect classes. **All three were agreement.**
+
+| row | files | what it looked like | what it was |
+|---|---|---|---|
+| `gcc: __int128 ‖ sema: `return` with a value in a `void` function` | **1019** | a false-positive class on two thirds of VPP | gcc says it too — *"ISO C forbids 'return' with expression, in function returning void"* |
+| `gcc: __int128 ‖ parse: a member declaration must declare a member` | **90** | a parser gap, 90 of the 95 parse failures | gcc says it too — *"extra semicolon in struct or union specified"* |
+| `error: ISO C does not support '__int128'` | 250 | — | both refuse the same construct |
+
+⚠️ **The cause is presentation, and it fooled me three times in ten minutes.** A row reads
+`gcc: X ‖ chiero: Y`, which invites reading X and Y as a disagreement. They are each side's
+**first** message. gcc stops its report at `__int128` in the file's first header; chiero stops at
+its own first. Two unrelated sentences say nothing about whether the tools agree — for that you
+diff the two *full* diagnostic sets, which is what settled all three rows above.
+
+📌 **Fixed in the instrument rather than only recorded**: the section now prints
+*"(each side's FIRST message; different text is not disagreement)"*, tested, and the mutation
+that captions every section fails.
+
+⚠️ **And twice the check itself was a false zero, from a grep pattern written to chiero's
+wording instead of gcc's.** `grep -i 'return with a value\|return.*void function'` scores **0**
+against a gcc that is saying *"forbids 'return' with expression, in function returning void"*.
+The first of those zeros nearly became a defect record. **When two tools are the subject, grep
+for the construct in the other tool's vocabulary — or grep for nothing and read the list.**
+Listing gcc's distinct error kinds (`grep -o 'error: .*' | sed 's/[^ ]*//' | sort -u`, 19 lines)
+is what found both counterparts, and it is cheaper than the pattern that missed them.
+
+📌 **The zero is real and it is good news**: under the pedantic dialect chiero and gcc refuse the
+same VPP files for the same reasons. What the sweep cannot currently show is *which* reasons
+overlap, because it keeps one message per side.
+
 ### 7.22 The pinned-40 retake that *did* move — and where the movement was hiding
 
 Item 6's engine half, measured before and after with `KEEP` on both legs.
@@ -1633,7 +1667,7 @@ at from the analysis side.
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
 three xtask gates were red: a crate whose test *binary* fails to build emits no `test result`
 line at all, so counting successes cannot detect a missing success. `./check.sh` keys on
-cargo's exit status and prints the failing suites first. Current: **2309 passed, 279 suites** (2026-08-09).
+cargo's exit status and prints the failing suites first. Current: **2310 passed, 279 suites** (2026-08-09).
 
 ⏱️ **It now takes over an hour per leg**, and that is the session's dominant cost — see §9's
 note on the corpus. `conversions` and `semantics` are ~55 s each, the two VPP gates ~60 s, and
@@ -4387,6 +4421,15 @@ not an anecdote.*
   in the same edit that fixed a heading for saying "chiero refused" when chiero had not. A
   heading that has quietly stopped being true is the same defect as the one being fixed; look
   for the others *in the same commit*, because nothing will fail when they go stale.
+
+- **When two tools are the subject, grep in the other tool's vocabulary — or grep for nothing.**
+  Twice on 2026-08-09 a pattern written to chiero's wording scored `0` against a gcc that was
+  saying the same thing in its own words: `return with a value` vs *"forbids 'return' with
+  expression"*, `does not declare anything` vs *"extra semicolon in struct or union"*. The first
+  zero nearly became a defect record about 1019 files. **Listing the other tool's distinct
+  messages is cheaper than the pattern that misses them** — 19 lines of `grep -o 'error: .*' |
+  sort -u` found both counterparts at once. This is the same false-zero shape as the
+  float-comparison census keyed on names the generator never emits; that makes it four.
 
 ### 11.1 About tests and what they can see
 
