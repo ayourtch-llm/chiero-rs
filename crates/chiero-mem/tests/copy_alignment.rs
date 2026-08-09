@@ -100,3 +100,70 @@ fn a_wide_scalar_read_is_refused_before_alignment_is_considered() {
         "a 32-byte scalar read is refused by width, so its misalignment is never reached"
     );
 }
+
+/// **The other half of the gap, and it points the opposite way: a false positive.**
+///
+/// The header above records what dropping `align` costs on the *vector* side — the model
+/// cannot express a 32-byte requirement, so it under-reports. Dropping it costs something in
+/// the other direction too, and nothing had written that down.
+///
+/// The requirement is re-derived from the access **size** (`align_fault`: `want = size` for a
+/// power of two up to 16). The CIR does not have to be guessed at — it says what the access
+/// actually requires. Measured on `struct __attribute__((packed)) P { char c; int v; };`:
+///
+///     store i32 7i32 -> %5 align 1     ; p->v = 7
+///     %9 = load i32, %8 align 1        ; return p->v
+///
+/// **`align 1` is the compiler saying this access is deliberately unaligned and handled.** A
+/// packed member access is ordinary, legal C that gcc compiles into safe code. Re-deriving
+/// `want = 4` from the size turns it into a misalignment report, and `chiero-exec` throws away
+/// the `align 1` that would have said otherwise.
+///
+/// Nothing reaches a report today — the engine filters `Misaligned` until a `ub-strict` mode
+/// exists — which is exactly why it is worth pinning now. **The under-reporting half fails
+/// silently; this half would fail loudly, on legal code, on the day that mode ships**, and
+/// this project's own record says a false rejection is the more damaging kind.
+///
+/// This test pins the *current* behaviour, not the desired one. It is the measurement a
+/// `ub-strict` mode has to change, and it will fail when the `align` operand is threaded
+/// through — which is the point.
+#[test]
+fn a_scalar_access_in_an_align_1_object_is_reported_misaligned_today() {
+    let mut m = chiero_mem::Memory::new();
+    // Alignment 1 is what a packed record's storage looks like.
+    let o = m.alloc(chiero_mem::ObjKind::Stack, 256, 1, Span::DUMMY);
+    m.set(chiero_mem::Pointer { base: o, off: 0 }, 0, 256, Span::DUMMY);
+    let mut a = chiero_solver::TermArena::new();
+
+    // Offset 1, four bytes: exactly `p->v` in `struct __attribute__((packed)) P`.
+    let r = m.read_term(
+        &mut a,
+        chiero_mem::Pointer { base: o, off: 1 },
+        4,
+        chiero_mem::Endian::Little,
+        Span::DUMMY,
+    );
+    let faults: Vec<String> = r.faults.iter().map(|f| f.kind().to_string()).collect();
+    assert!(
+        faults.iter().any(|f| f == "misaligned"),
+        "pinning today's behaviour: the requirement is derived from the access size, so a \
+         packed member read is misaligned as far as the model is concerned. If this stops \
+         being true, the `align` operand has been threaded through and the header's \
+         description of the gap needs updating with it: {faults:?}"
+    );
+
+    // **The discriminator.** A byte access has no requirement, so the assertion above is
+    // about alignment rather than about the object being align-1.
+    let one = m.read_term(
+        &mut a,
+        chiero_mem::Pointer { base: o, off: 1 },
+        1,
+        chiero_mem::Endian::Little,
+        Span::DUMMY,
+    );
+    let one_faults: Vec<String> = one.faults.iter().map(|f| f.kind().to_string()).collect();
+    assert!(
+        !one_faults.iter().any(|f| f == "misaligned"),
+        "a one-byte access is aligned everywhere: {one_faults:?}"
+    );
+}

@@ -3758,6 +3758,20 @@ impl<'m> Engine<'m> {
                         )
                     }
                 };
+                // **The CIR's declared alignment, dropped on purpose — and it is not free.**
+                // `Memory` re-derives the requirement from the access *size*, so this operand
+                // changes nothing today. What it would change is the direction that produces
+                // **false positives**: lowering emits `align 1` for a packed member
+                // (`struct __attribute__((packed)) P { char c; int v; }` gives
+                // `store i32 7i32 -> %5 align 1`), which is the compiler saying the access is
+                // deliberately unaligned and handled. Deriving `want = 4` from the size instead
+                // calls ordinary legal C misaligned.
+                //
+                // Nothing reaches a report — the engine filters `Misaligned` until a
+                // `ub-strict` mode exists — and `chiero-mem/tests/copy_alignment.rs` pins both
+                // halves of the gap, including this one, so the day that mode ships the
+                // measurement is already there. **Documented here because the explanation used
+                // to live only in HANDOFF §9.1, which a reader of this line does not have.**
                 let _ = align;
                 let size = size_of_cty(ty);
                 // **020 §4.2: a volatile store is an observable event.** Recorded before
@@ -3834,6 +3848,17 @@ impl<'m> Engine<'m> {
                 size,
                 align,
             } => {
+                // **Dropped on purpose, and the cost is the opposite one.** A `copymem` is
+                // byte-wise, as `memcpy` is, so it has no alignment requirement — but C
+                // distinguishes two accesses that both lower here: a struct assignment, and a
+                // vector move that requires its full width (vppinfra has `u8x32` *and*
+                // `u8x32u` for exactly this). The CIR carries the distinction —
+                // `copymem %6 -> %13, 32i64 align 16` — and this discards it, so the model
+                // cannot tell them apart and `align_fault`'s `size <= 16` bound could not
+                // express a 32-byte requirement if it were asked.
+                //
+                // `chiero-mem/tests/copy_alignment.rs` is the record, including the RED that
+                // was written against this and was *wrong*. See HANDOFF §9.1.
                 let _ = align;
                 let (Some(Value::Ptr(d)), Some(Value::Ptr(sp)), Some(n)) = (
                     self.operand(a, s, dst),
