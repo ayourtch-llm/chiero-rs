@@ -1625,6 +1625,47 @@ is what found both counterparts, and it is cheaper than the pattern that missed 
 same VPP files for the same reasons. What the sweep cannot currently show is *which* reasons
 overlap, because it keeps one message per side.
 
+### 7.24 Two of the pinned 40 cannot be compared, and I compared them twice
+
+`--time-budget` is a **wall clock**. An entry that hits it stops wherever the machine got to,
+so its envelope is a measurement of the machine. Three runs of one binary on
+`clib_mem_create_heap`:
+
+| run | 1 | 2 | 3 |
+|---|---|---|---|
+| states left unexplored | **22** | **23** | **24** |
+
+📌 **chiero already says which ones these are, precisely.** The envelope carries
+`"nondeterministic_abort": true`, and only on the two entries that hit the budget — the other
+38 carry `false`. The product's own `--help` says it outright: *"where it stopped depends on the
+machine, so the answer is a measurement"*, and offers `--solver-rlimit` as the deterministic
+bound. **Nothing here is a defect in chiero.** The defect was in how the instrument was used.
+
+⚠️ **It qualifies evidence given twice on 2026-08-09.** §7.22's "5 of 40 envelopes differ" is
+**3 of 40**: two of the five were this pair. And the parse_model retake (§7.25) shows "2 of 40
+differ" which is **0** — both are the same pair. Neither conclusion changes; both numbers did.
+
+✅ **Turned into a tool rather than a rule**: `tests/corpus/vpp-findings/compare.py BEFORE AFTER`
+diffs two `KEEP=` directories, excludes the flagged envelopes, and **names what it excluded** —
+a comparison that silently skips entries reads as "everything matched", which is the failure it
+exists to prevent.
+
+⚠️ **The `cut` rows stay `cut` and that is a separate question.** Making them reproducible means
+`--solver-rlimit` instead of a clock, which changes what the pinned 40 measure and invalidates
+every published number from it. **A deliberate spend, like 032 c18's replay corpus — the
+owner's call, not a wave's.**
+
+### 7.25 Does the `parse_model` fix reach the pinned 40? Barely, and the honest answer is no
+
+`cut=2 ok=38 findings=21 exact=0` — identical, and this time **0 comparable envelopes differ**.
+The only movement is inside the two non-comparable ones: `24 → 22` states left unexplored, which
+is within the 22–24 that three runs of a single binary produce anyway.
+
+So the 30x parse speed-up is worth ~2 states out of 60 seconds on these entries — because their
+cost is z3, not chiero. That is the same conclusion two stack samples gave for `nsh_md2_encap`
+after the fix, arrived at from the corpus side, and it is why §7.23's "the sweep cannot show
+which reasons overlap" and this both point at the solver rather than at the frontend.
+
 ### 7.22 The pinned-40 retake that *did* move — and where the movement was hiding
 
 Item 6's engine half, measured before and after with `KEEP` on both legs.
@@ -1632,12 +1673,17 @@ Item 6's engine half, measured before and after with `KEEP` on both legs.
 | | before | after |
 |---|---|---|
 | summary line | `cut=2 ok=38 findings=21 exact=0` | **byte-identical** |
-| envelopes differing | — | **5 of 40** |
+| envelopes differing | — | **3 of 40** (corrected; see §7.24) |
 | assumptions | 582 | 586 |
 | builtins reached only after | — | `__builtin_ia32_writeeflags_u64`, `_rstorssp`, `_clrssbsy` |
 | reached only before | `__builtin_ia32_lzcnt_u64` | — |
 
-**The summary line said nothing happened and five envelopes disagreed.** This is the case
+⚠️ **Reported as "5 of 40" when it was taken, and that was wrong.** Two of the five are
+`mem_dlmalloc`'s pair, which chiero marks `nondeterministic_abort` — their diff was the wall
+clock, not the change (§7.24). The conclusion survives unchanged: the three real ones are
+exactly the three carrying the newly reached void builtins.
+
+**The summary line said nothing happened and three envelopes disagreed.** This is the case
 `KEEP` was added for (§11.3) and the first time it has paid: §7.21's identical retake was
 genuinely a control, this one was not, and *the two are indistinguishable from the summary
 line alone*. All three newly reached builtins return `void` — the fix stated as a measurement.
@@ -4101,6 +4147,7 @@ they lived only in scratch") and it happened again anyway.
 | `xtask/src/replay_gate.rs` | ✅ committed — `cargo run -p xtask -- replay-gate`, corpus `tests/corpus/replay/corpus.tsv` |
 | `xtask/src/pp_gate.rs` | ✅ committed — `cargo run -p xtask -- pp-gate`, ~2 min. Reads `$SIMPLECPP` (default `/home/ubuntu/simplecpp`, pinned `74a5a63`); gcc and clang are the oracle. §7.11 |
 | `tests/corpus/vpp-findings/march_probe.sh` | ✅ committed 2026-08-08 — lowers VPP's 384 `-march=x86-64-v3/v4` units with and without their own `-march`, reporting the definition delta, any diagnostic, and **`EMPTY` for a unit that lowered nothing** (a clean run over six lines of nothing is not a pass). `STRIDE=1` for all 384 |
+| `tests/corpus/vpp-findings/compare.py` | ✅ committed 2026-08-09 — diffs two `measure.sh `KEEP=`` directories and **excludes the envelopes chiero marks `nondeterministic_abort`**, naming what it excluded. Two of the pinned 40 hit the wall clock and vary 22/23/24 states between runs of one binary; comparing them measures the machine (§7.24). Use it instead of `cmp` — two envelope claims on 2026-08-09 were inflated by exactly that pair |
 | `tests/corpus/vpp-findings/api_staleness.py` | ✅ committed 2026-08-08, **`--fingerprint` added 2026-08-09** — a content digest of the 1506 generated files, 0.16 s, to pin the half of the corpus `git status` cannot see. Verified stable under `touch` and sensitive to an edit. — which of VPP's 1049 generated API headers are older than the `.api` they come from. Exits 1 on drift; `--fix` regenerates with `vppapigen` rather than `ninja`, whose target re-runs cmake and rewrites the `build.ninja` every VPP measurement reads |
 | `tests/corpus/vpp-findings/probe.sh` | ✅ **REBUILT and committed 2026-08-07.** The 7-second five-TU probe that replaces 2-hour sweeps — measured 7.3 s, all five `clean`. `REALCC=true` by default, so it asks what *chiero* makes of the build's flags without compiling. ⚠️ Its rebuild note: the object path **cannot** be constructed from the source path (CMake names an object after its position in the object library, so `src/vlib/main.c` is `…/vlib_objs.dir/main.c.o`) — match `-c <source>` in one `ninja -t commands all` dump, 63 ms for all 2945 |
 | `crates/chiero-sema/tests/generated_const_eval.rs` | ✅ committed 2026-08-09 — the fifth standing gate. Generated integer constant expressions graded by `_Static_assert`, so there is no output to parse. `#[ignore]`d, ~2 s. **An honest zero on chiero (300/300)** — its value is that `const_evaluator_reuse.rs` asks gcc *nothing*, and constant folding decides array bounds, bit-field widths, enumerators and case labels |
@@ -4464,6 +4511,13 @@ not an anecdote.*
   red test showed the old code had been giving bools *the next variable's value* for as long as
   it existed. **The speed defect and the correctness defect were the same line**, and only the
   first was being looked for.
+
+- **Before diffing an instrument's residue, find its noise floor — run it against itself.**
+  Envelope diffs were used as evidence twice on 2026-08-09 before anyone asked which entries are
+  stable. Three runs of one binary answered it in four minutes: two of the pinned 40 vary by
+  themselves, and chiero had been flagging exactly those two as `nondeterministic_abort` the
+  whole time. **The instrument knew; the reader did not ask.** Both conclusions survived and
+  both numbers were wrong, which is the cheap version of this mistake.
 
 ### 11.1 About tests and what they can see
 
