@@ -3858,6 +3858,59 @@ doubles the wake-ups.
 > They are here because they are **about method, not about a contract**, and every one of them
 > recurred at least twice. The wave-by-wave detail is at `git show c94051f:HANDOFF.md`.
 
+### 11.0 Harvested from 2026-08-09, before §9 replaces it
+
+*The session that produced these fixed seven defects, two of them in its own earlier fixes. Each
+lesson below is here because it recurred — the instance count is the reason it is a lesson and
+not an anecdote.*
+
+- **One fact, more than one reader.** Four instances in one day. `packed` was read by `lay_out`
+  and by `record_is_packed` with different position filters, so a rule was half-applied.
+  Alignment was read by three arms, and the fix reached one — the unit test went green while
+  `chiero cir` emitted the old numbers. A diagnostic was filed as a refusal in four separate
+  places. And `cycles_count` had three scratch buffers, two hoisted and one not, which was a
+  quadratic nobody could see. **The operational half: when a fix lands, re-run the original
+  reproduction, not the new test.** A green unit test beside an unchanged tool is what this
+  class looks like from outside.
+
+- **A conclusion is most wrong immediately after you form it**, because the evidence that
+  produced it is still the only evidence there is. Three times: a fix declared done that had
+  reached one of three readers; a counter declared dead that was working (the grep pattern
+  spanned a line `rustfmt` had wrapped); and a band called "essentially linear, 4.1–4.7x" from
+  five runs, which run six broke at 5.8x. In each case the sentence just written was the thing
+  worth testing, and in each case testing it cost under a minute.
+
+- **A counter that omits a term is not a smaller measurement, it is a wrong one** — and a wrong
+  one that agrees with the fix you already made is the worst kind, because it retires the
+  question. `CYCLES_CELLS` counted the two scratch buffers that had been hoisted and not the one
+  that had not, so it read "4.0x, linear" for two sessions while the clock stayed superlinear.
+  Adding the missing term located the defect in a single run.
+
+- **A fix can blind the corpus that found it.** The prefix-attribute fix made every record
+  attribute the generator emitted *inert* — chiero ignored them, gcc ignored them, and the gate
+  scored agreements about nothing while its reach test went on asserting `packed >= 40`.
+  **Counting a construct is not counting a test of it.**
+
+- **A cap does not have to defeat a guard to be silent; it only has to stay inside it.** Adding
+  six shapes to a shared corpus cost a channel a quarter of its coverage — 300 checked became
+  221 — and its anti-collapse floor, written precisely to notice that, passed comfortably.
+
+- **Committing an instrument keeps the code; indexing it is what keeps it used.** §9.2 already
+  said the first half, having lost scripts twice, and was itself missing two committed
+  instruments — one of them a generated differential for a claim nothing else checks, which
+  therefore nobody had ever run.
+
+- **Before a retake, ask what the corpus would have to contain for the number to move.** The
+  pinned-40 came back byte-identical after a session that changed layout, alignment and
+  diagnostics — necessarily, since VPP contains zero instances of every shape that changed. That
+  run was a control, not a check, and reading it as confirmation would have been the whole error.
+
+- ⚠️ **Mechanical: never key a scripted edit or a grep on prose or on multi-token source text.**
+  Four failures in one session, all the same cause — `cargo fmt` had reflowed the anchor. Three
+  were silent no-ops; one produced a false finding. `assert old in s` before writing, key on line
+  numbers or a bare identifier, and grep for the text you removed rather than reading the test
+  result.
+
 ### 11.1 About tests and what they can see
 
 - **A test can pass for the wrong reason, and it happens in a recognisable shape.** Diagnosing
