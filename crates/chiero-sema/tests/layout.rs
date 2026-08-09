@@ -189,6 +189,62 @@ fn a_zero_width_bitfield_in_a_union_contributes_nothing() {
     );
 }
 
+/// **Contract 4 under `packed` — which does *not* switch the flush off.**
+///
+/// Found by `generated_layout.rs` on the run that added 16-byte-aligned members: adding
+/// scalars reshuffled which records the seeds produce, and a *pre-existing* defect in an
+/// unrelated shape surfaced. A widening pays sideways as well as forwards.
+///
+/// `packed` removes padding *between members* and drops member alignment to 1. It does not
+/// remove a zero-width bit-field's effect: both gcc and clang still round the next allocation
+/// — and therefore the record's size — up to the boundary of the `:0`'s declared type.
+/// chiero skipped the flush whenever the record was packed.
+#[test]
+fn packed_does_not_cancel_a_zero_width_bitfields_flush() {
+    // Trailing: the `:0` is the only thing that can take the size past 1.
+    check(
+        "struct S { char a; int :0; } __attribute__((packed));",
+        "S",
+        4,
+        1,
+        &[("a", 0)],
+    );
+    // With a member after it, so the flush shows as an *offset* and not only as a size.
+    check(
+        "struct S { char a; int :0; char b; } __attribute__((packed));",
+        "S",
+        5,
+        1,
+        &[("a", 0), ("b", 4)],
+    );
+    // A narrower unit flushes less far — otherwise a fix that rounded to a constant passes.
+    check(
+        "struct S { char a; short :0; char b; } __attribute__((packed));",
+        "S",
+        3,
+        1,
+        &[("a", 0), ("b", 2)],
+    );
+
+    // **The discriminator.** Same record without the `:0` is 1 byte; `packed` must not make
+    // the two equal.
+    let with = parse(
+        "struct S { char a; int :0; } __attribute__((packed));",
+        TargetConfig::x86_64_linux(),
+    );
+    let without = parse(
+        "struct S { char a; } __attribute__((packed));",
+        TargetConfig::x86_64_linux(),
+    );
+    let (aw, rw) = layout_of(&with, "S");
+    let (ao, ro) = layout_of(&without, "S");
+    assert_ne!(
+        aw.layout(rw).size,
+        ao.layout(ro).size,
+        "`packed` suppresses padding between members, not the zero-width flush"
+    );
+}
+
 /// **Contract 5.** A bit-field that would straddle an allocation unit boundary is placed
 /// per gcc's rules — and the cross-check is against gcc, not against my arithmetic.
 ///
