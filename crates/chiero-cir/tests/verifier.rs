@@ -2314,3 +2314,81 @@ fn a_value_defined_in_a_later_listed_block_is_not_typed_void() {
          `unresolved` and something read it as a type: {typed:?}"
     );
 }
+
+/// **A genuinely void value is not a usable operand**, and the checks say so now.
+///
+/// `require_ty` and `require_int` carried `t != CTy::Void` for the same reason `require_ptr`
+/// did: unresolved values were recorded as `Void`, so exempting `Void` was the only way to
+/// avoid reporting them. With unresolved now absent from the map (`rvalue_type_in` returns
+/// `Option`), `Void` means only *void* — and storing a void value, or doing arithmetic on one,
+/// is malformed IR the verifier should reject.
+///
+/// This is the positive half of removing an exemption: a green suite shows nothing broke, and
+/// only a check that *fires* shows the removal restored something. Both cases below are
+/// accepted by the verifier without it.
+#[test]
+fn a_void_value_is_rejected_as_a_store_value_and_as_an_operand() {
+    let void_call = |dst: ValueId| {
+        inst(InstKind::Call {
+            dst: Some(dst),
+            callee: Callee::Indirect {
+                target: Operand::Const(Const::Undef(CTy::Ptr)),
+                ret: CTy::Void,
+            },
+            args: vec![],
+        })
+    };
+    let wrap = |insts: Vec<chiero_cir::Inst>| {
+        let mut m = valid_module();
+        let mut g = Function {
+            id: FuncId(1),
+            name: "g".into(),
+            params: vec![Param {
+                value: ValueId(7),
+                ty: CTy::Ptr,
+            }],
+            ret: CTy::Void,
+            variadic: false,
+            allocas: vec![],
+            blocks: vec![block(0, insts, Terminator::Return(None))],
+            entry: BlockId(0),
+            attrs: Default::default(),
+            access_paths: Default::default(),
+            body: Body::Defined,
+            span: Span::DUMMY,
+            linkage: chiero_cir::Linkage::External,
+        };
+        g.blocks[0].id = BlockId(0);
+        m.funcs.push(g);
+        m
+    };
+
+    // `store i32 <void> -> %7` — the value has no bits to store.
+    let stored = wrap(vec![
+        void_call(ValueId(9)),
+        inst(InstKind::Store {
+            addr: Operand::Value(ValueId(7)),
+            val: Operand::Value(ValueId(9)),
+            ty: CTy::Int(32),
+            align: 4,
+            vol: Volatility::Normal,
+        }),
+    ]);
+    assert_rejects(&stored, VerifyErrorKind::WidthMismatch);
+
+    // `%10 = add i32 <void>, 1` — arithmetic on nothing.
+    let added = wrap(vec![
+        void_call(ValueId(9)),
+        inst(InstKind::Assign {
+            dst: ValueId(10),
+            rv: RValue::Bin {
+                op: BinOp::Add,
+                a: Operand::Value(ValueId(9)),
+                b: Operand::Const(Const::Int { bits: 32, val: 1 }),
+                ty: CTy::Int(32),
+                signed: true,
+            },
+        }),
+    ]);
+    assert_rejects(&added, VerifyErrorKind::WidthMismatch);
+}
