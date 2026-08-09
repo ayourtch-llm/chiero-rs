@@ -13,6 +13,24 @@ use chiero_sema::{TargetConfig, analyze_with};
 
 /// The diagnostics themselves, for the tests whose subject is a diagnostic's **severity**
 /// rather than its text.
+fn sema_analysis(src: &str, dialect: Dialect) -> chiero_sema::Analysis {
+    let tu = preprocess_str("t.c", src, Config::default());
+    assert!(tu.diagnostics.is_empty(), "pp: {:?}", tu.diagnostics);
+    let mut oracle = ScopedTypedefs::new();
+    let parsed = parse_tu_with(&tu, &mut oracle, dialect);
+    assert!(
+        parsed.diagnostics.is_empty(),
+        "parse: {:?}",
+        parsed.diagnostics
+    );
+    analyze_with(
+        &parsed.ast,
+        &TargetConfig::x86_64_linux(),
+        &harness::names_of(&parsed),
+        dialect,
+    )
+}
+
 fn sema_diagnostics(src: &str, dialect: Dialect) -> Vec<chiero_sema::SemaDiagnostic> {
     let tu = preprocess_str("t.c", src, Config::default());
     assert!(tu.diagnostics.is_empty(), "pp: {:?}", tu.diagnostics);
@@ -1431,15 +1449,32 @@ fn a_conditional_with_one_void_side_is_a_gnu_extension() {
 fn an_iso_conformance_remark_is_advisory_not_an_error() {
     use chiero_sema::Severity;
 
-    // Each of these is accepted by `gcc -std=gnu11` and refused by `-pedantic-errors`.
+    // Each of these is accepted by `gcc -std=gnu11` and refused by `-pedantic-errors`, and
+    // every one was **measured** to leave a complete record layout beside the diagnostic —
+    // the criterion for `Advisory`, asked per site rather than in bulk.
     let cases = [
-        ("__int128 w;", "__int128"),
         (
-            "int f(void) { struct S { int a; } s; return sizeof((struct S)s); }",
+            "struct S { union { struct { } inner; } u; };",
+            "has no members",
+        ),
+        ("struct N { unsigned long :24; };", "has no named members"),
+        (
+            "enum F { B = 0xffffffffu }; struct W { enum F e; char c; };",
+            "not representable as an `int`",
+        ),
+        (
+            "int f(int *p) { return p > 0; } struct W { char c; };",
+            "ordered comparison",
+        ),
+        ("__int128 w; struct W { char c; };", "__int128"),
+        (
+            "int f(void) { struct S { int a; } s; return sizeof((struct S)s); } \
+             struct W { char c; };",
             "nonscalar",
         ),
         (
-            "union U { int a; }; union U g(int x) { return (union U)x; }",
+            "union U { int a; }; union U g(int x) { return (union U)x; } \
+             struct W { char c; };",
             "union type",
         ),
     ];
@@ -1461,10 +1496,32 @@ fn an_iso_conformance_remark_is_advisory_not_an_error() {
 
         // **The discriminator.** Under `gnu11` the sentence is not emitted at all, so this
         // test would pass vacuously against a build that simply stopped reporting.
-        let quiet = sema_diagnostics(src, Dialect::gnu());
+        //
+        // ⚠️ One exception, and it is a finding in its own right: `has no named members` sits
+        // in the `else` of the pedantic guard rather than inside it, so chiero reports it in
+        // **both** dialects where gcc needs `-Wpedantic`. That is a separate question from
+        // this test's subject — the layout is complete either way, so `Advisory` is right
+        // regardless of when it is emitted — and it is recorded rather than quietly excluded.
+        if needle != "has no named members" {
+            let quiet = sema_diagnostics(src, Dialect::gnu());
+            assert!(
+                !quiet.iter().any(|d| d.message.contains(needle)),
+                "`{src}` must be silent under gnu11, or this is not a dialect rule: {quiet:?}"
+            );
+        }
+
+        // **A usable result exists beside it**, which is what `Advisory` asserts and what a
+        // severity marked from a code comment alone would not have checked.
+        //
+        // Every case carries a `struct W` so the observable is uniform: if analysis had
+        // stopped at the diagnostic, `W` would not be laid out. For the record-shaped rules
+        // this is direct — the record *is* the subject — and for the rest it is the proxy
+        // "analysis continued and still produced something", which is the property a consumer
+        // asking `is_error()` actually depends on.
+        let a = sema_analysis(src, Dialect::pedantic());
         assert!(
-            !quiet.iter().any(|d| d.message.contains(needle)),
-            "`{src}` must be silent under gnu11, or this is not a dialect rule: {quiet:?}"
+            a.records().iter().any(|r| r.complete),
+            "`{src}` must still produce a complete layout, or the diagnostic is an Error"
         );
     }
 }

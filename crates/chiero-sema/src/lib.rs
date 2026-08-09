@@ -3358,10 +3358,10 @@ impl Cx<'_> {
             // Pedantic-only, measured: `struct S { union { struct { } inner; } u; };` is
             // accepted by `gcc -std=gnu11`, refused by `-pedantic-errors`.
             if self.dialect.pedantic {
-                self.error(span, format!("{named} has no members"));
+                self.advisory(span, format!("{named} has no members"));
             }
         } else if !members.iter().any(|&m| names_something(self, m)) {
-            self.error(span, format!("{named} has no named members"));
+            self.advisory(span, format!("{named} has no named members"));
         }
         if name.is_some() {
             self.in_progress.pop();
@@ -3625,7 +3625,7 @@ impl Cx<'_> {
             // enumerator values to range of `int`"). VPP relies on it in 336 of
             // `vnet`'s 348 findings.
             if self.dialect.pedantic {
-                self.error(
+                self.advisory(
                     blame,
                     "an enumerator's value is not representable as an `int`",
                 );
@@ -7244,7 +7244,7 @@ impl Cx<'_> {
                 };
                 if !equality && null {
                     if self.dialect.pedantic {
-                        self.error(span, "ordered comparison of a pointer with integer zero");
+                        self.advisory(span, "ordered comparison of a pointer with integer zero");
                     }
                 } else if !(equality && null) {
                     // **Name the operand that is actually there.** This arm fires whenever
