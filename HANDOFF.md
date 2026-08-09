@@ -1819,6 +1819,20 @@ typing the paths ever would.
 > a `grep -l` matching a JSON field's *name* instead of its value, and `-> void` eaten as a
 > shell flag. **When the subject is another tool, list its output and read it.**
 >
+> ⚠️ **And twice, something worse than a false zero: a commit message describing edits the commit
+> did not contain.** `af788cb` first — a python block asserted four anchors and wrote only at the
+> end, so one bad anchor discarded three good ones. The rule went into §11.0 (*write after each
+> edit*), the very next commit repeated it in a different way, and **that** one was a message
+> written in the same shell block as the edit, before its `NOT FOUND` could be read.
+>
+> **The structural fix, not the resolution:** an edit that can fail and the commit that describes
+> it **must not share a shell block**. Read the outcome, then write the message.
+>
+> 📌 **The single highest-yield habit of the session**, if a fresh context keeps only one thing:
+> *state the number you expect before you measure, then let the measurement contradict you.*
+> Every correction in the table above came that way, and three led straight to a defect — the
+> backwards `void` filter, 5o's wrong `Miss` arm, and 35.6 GB of dominator sets.
+>
 > ### 🆕 Suggested first moves, in order
 >
 > 1. **Run the fast gates.** `./check.sh` is ~4 min and now covers six of CI's ten commands
@@ -3408,6 +3422,15 @@ not an anecdote.*
   said only "the new code agrees with the old on the cases somebody thought of". The evidence
   that counted was a property test against the *definition* of dominance — with an oracle too
   slow to ship, which is exactly what a property test's oracle should be.
+
+- **An edit that can fail and the commit that describes it must not share a shell block.**
+  Twice in one hour a commit message described changes that were not in the file. The first: a
+  python block asserted four anchors and wrote only at the end, so one bad anchor discarded
+  three good ones — fixed by writing after *each* edit. The second happened **immediately
+  after**, in a different way: the edit printed `NOT FOUND` in the same block as the `git
+  commit`, so the message was already written by the time the failure was visible. **The rule
+  that survives both is structural, not attentive**: read the outcome, then write the message.
+  Resolving to be careful is what failed the second time.
 
 - **A missing input is exposure, not breakage — measure the consequence.** "198 plugin units
   lack include paths the harness passes" is a fact; "those cannot preprocess" is a guess wearing
