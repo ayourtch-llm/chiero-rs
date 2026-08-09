@@ -1331,6 +1331,39 @@ is closest to the work actually done. 6/6 green at 1.7 s, and tightening parse's
 its real 4.1x fails as it should. **Raising ceilings until a gate stops failing produces a gate
 that cannot fail** — the outcome this project keeps refusing.
 
+### 7.29 The verifier's dominator sets — 35.6 GB, and the arithmetic I did not believe
+
+`dominators` seeded every block with a copy of *every block in the function*, so the initial
+state alone is O(B²). On a 96 000-block function:
+
+| | before | after |
+|---|---|---|
+| time | 27 940 ms | **3 043 ms** (9.2x) |
+| peak RSS | **35 628 MB** | **494 MB** (72x) |
+
+**The sets were never needed.** Their only consumer asks one question — *does `db` dominate
+`at_block`?* — which an idom tree answers by walking up, with no allocation. So the
+representation is Cooper–Harvey–Kennedy immediate dominators plus a `dominates` walk, O(B).
+
+⚠️ **I nearly talked myself out of it.** B² × 4 bytes came to ~37 GB, which "obviously" could
+not be happening without an OOM, so I went looking for the guard that made it fine. There is no
+guard; the number was right. **Checking beat disbelieving** — one `VmHWM` sample settled it, and
+it also corrected a block count I had published as ~24 576 when it is 96 000. Two numbers wrong
+in the same claim, both in the direction of *understating* the defect.
+
+📌 **A representation swap under a load-bearing rule needs evidence the old tests cannot give**,
+because every dominance test in `verifier.rs` was written against the implementation being
+replaced. Three independent checks:
+
+- `crates/chiero-cir/tests/dominance_property.rs` — 400 random CFGs (DAGs plus back edges),
+  checking the verifier's verdict against the **definition**: delete the def block, is the use
+  still reachable? 218 usable cases, **123 rejected and 95 accepted**, so both verdicts are
+  exercised rather than one. Mutating `dominates` to always hold fails it on case 3.
+- the pinned 40: **38/38 comparable envelopes byte-identical**, `findings=21` unchanged.
+- `./check.sh` GREEN 2316 across 281 suites.
+
+📌 **`find-bugs` pays this twice** (§7.28), so the saving lands twice on that path.
+
 ### 7.28 An engine size axis without z3 — and the scan it found was not the suspected one
 
 Five `blocks.iter().find(|b| b.id == …)` sites were recorded as an unmeasured shape, three of
@@ -2379,13 +2412,7 @@ longer sits between a fresh context and the live work.
    program of §7.28 for the engine. Every one of the nine was found that way; **none** was found
    by the grep. §11.0 carries the sampling recipe and its two traps.
 
-   ⏭️ **The live lead, and it is now the biggest single cost in the pipeline:
-   `verify::dominators`.** 4 of 8 samples at 98 304 statements, **4 of 4** at n=32 000 on the
-   engine axis, and `find-bugs` pays it **twice** (§7.28). Iterative dataflow with explicit
-   dominator *sets*: `sorted_ids.clone()` per block is O(B²) in memory alone — ~24 576 blocks at
-   98k statements, ~600M entries. ⚠️ **Not a scan-to-set swap**: the fix is Cooper–Harvey–Kennedy
-   immediate dominators, a real algorithm change inside the component whose job is catching
-   wrong CIR. Full history in [HANDOFF-ARCHIVE.md](HANDOFF-ARCHIVE.md) under `8c`.
+   ✅ **CLOSED 2026-08-09 — and it was a memory bomb, not merely a slow pass.** See §7.29.
 
 
 5h. 🆕 **The dominant finding class on `vnet/` is a false positive, and its cause is
@@ -3251,6 +3278,18 @@ not an anecdote.*
   the tempting explanation was "gdb stretches the timeline, so the offsets are wrong". Measured
   instead: **53.5 s under gdb against 53.3 s native.** The instrument was fine and the
   arithmetic was wrong — the opposite of the comfortable answer, and one timing settled it.
+
+- **When arithmetic says something absurd, measure it rather than explain it away.** B² × 4
+  bytes came to 37 GB for one function, which could not be happening — so the search was for the
+  guard that made it fine. There was none: **peak RSS 35.6 GB**, confirmed by one `VmHWM` sample.
+  The disbelief also hid a second error, a block count published as 24 576 that is 96 000. *Both*
+  mistakes understated the defect, which is the direction that keeps a defect alive.
+
+- **When you replace an implementation, the tests written against it are not evidence.** Every
+  dominance rejection in `verifier.rs` ran through the code being swapped out, so passing them
+  said only "the new code agrees with the old on the cases somebody thought of". The evidence
+  that counted was a property test against the *definition* of dominance — with an oracle too
+  slow to ship, which is exactly what a property test's oracle should be.
 
 ### 11.1 About tests and what they can see
 
