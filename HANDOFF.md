@@ -1779,7 +1779,7 @@ typing the paths ever would.
 >    findings about the gates themselves. Prefer the untouched concrete items: **032 contract
 >    18's replay corpus**, still with no `observed` entry (the probe is committed; firing it
 >    re-runs cmake and invalidates every published VPP number, so do it deliberately);
->    **`InstKind::Call` carrying no result type**, a CIR change across 135 sites; and the two
+>    **`InstKind::Call` carrying no result type** — ⚠️ **not "135 sites"**, that was mentions; it is **3 production constructions** plus ~110 mechanical test fixtures, and the payoff is one line in `verify.rs`. See the item; and the two
 >    `vnet/` finding classes, which are policy questions rather than defects. **5j is
 >    diagnosed and half-closed** — both discards are explained at the site and both directions
 >    of the gap are measured and pinned; what is left is the API change, and it is still gated
@@ -3578,8 +3578,27 @@ typing the paths ever would.
 
 6. **`InstKind::Call` carries no result type**, so an indirect call's result width is whatever
    candidate ran. The arity and parameter-type filters cut the wildest cases and cannot close it;
-   the engine survives the rest by degrading. The real fix is a CIR change — **135 sites**
-   construct `InstKind::Call`, and the text format needs syntax for it.
+   the engine survives the rest by degrading. The real fix is a CIR change.
+
+   ⚠️ **"135 sites construct `InstKind::Call`" was wrong, and it is the sentence that kept this
+   item unstarted.** Measured 2026-08-09 — 135 is the count of *mentions*, most of them pattern
+   matches, and 113 are in `chiero-exec`, which executes CIR and constructs none. The real shape:
+
+   | | |
+   |---|---|
+   | production **constructions** | **3** — `chiero-lower/src/lib.rs:3484`, and the text parser's two spellings at `text.rs:1015` and `:1111` |
+   | production matches to update | `text.rs:1889` (printer), `verify.rs:341/726/800`, `chiero-exec` 3, `chiero-opt` 5 |
+   | test fixtures | ~110, of which **82 are in `chiero-exec/tests/step.rs`** — mechanical, and the bulk of the work |
+
+   📌 **And the payoff is one line.** `verify.rs:726` reads
+   `InstKind::Call { dst: Some(d), .. } => vec![(*d, CTy::Void)]` — the verifier types every
+   call's result as `Void` because there is nothing else to say. That line becoming the declared
+   type *is* the fix; everything else is plumbing to let it.
+
+   ⚠️ **Do not reach for a side table** (`Module::call_result_ty: IndexMap<InstId, CTy>`) to
+   avoid the fixture churn. It would spare ~110 mechanical edits and create a second source of
+   truth for one fact, which is §11.0's top lesson with four instances behind it. The field is
+   right and the fixtures are its price.
 
 7. ~~### **`MemFault::BadRange`**~~ — **CLOSED 2026-08-07.** See §7's entry. The two stated
    options were both wrong because the premise was: the probes did not need an *objectless*
