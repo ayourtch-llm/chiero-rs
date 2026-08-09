@@ -108,6 +108,24 @@ five-minute experiment is worse than no contingency.
   packages inheriting the SPDX field (`chiero-probe` was added 2026-08-08). Left for the first publish: the texts are not inside each
   crate's tarball and no manifest has a `description`.
 
+### 3.1 Building VPP here — the interpreter cmake picks is not the one your shell has
+
+`make build` dies at configure with *"The `ply` Python3 package is not installed"* even though
+it **is** installed: cmake finds `/home/ubuntu/.local/bin/python3.11` (3.11.14, no `ply`) while
+`/usr/bin/python3` is 3.12 and has it. One fact, two readers.
+
+Fix without touching the environment — `vpp_cmake_args` is `?=` in
+`build-data/packages/vpp.mk`, so a value from the environment survives and the makefile's `+=`
+still appends the arguments the build needs:
+
+```
+export vpp_cmake_args="-DPython3_EXECUTABLE=/usr/bin/python3"
+```
+
+⚠️ **A failed configure does not damage the baseline** — measured: the first attempt died before
+regenerating anything, and `build.ninja`, the corpus fingerprint and the VPP tree were all
+untouched. A *successful* build does regenerate it (see item 8b).
+
 ## 4. Design digest
 
 > ⚠️ **SUPERSEDED WHERE IT CONFLICTS.** All 24 specs are now written; `docs/specs/` is
@@ -2702,7 +2720,23 @@ longer sits between a fresh context and the live work.
    threading `align` through `Memory::copy` and lifting `align_fault`'s 16-byte bound — an API
    change across two crates, worth doing when `ub-strict` is.
 
-8. **032 contract 18's corpus still has no `observed` entry** and the gate correctly exits 1
+8. 🔶 **032 contract 18 — the corpus has its first `observed` entry (2026-08-09); the gate's
+   *replay* is still a stub.** `3f544b872  test_lldp  observed  lldp: fix TLV validation`.
+   Both halves run: reverting the fix's `src/` diff on HEAD makes
+   `test_lldp_truncated_optional_tlv_bounds` fail and the suite's other three pass; restored to
+   HEAD it is `OK`. **The control is what makes it ground truth** — without it the entry would
+   record a pre-existing failure.
+
+   ⏭️ **What remains is the gate, not the corpus.** `xtask replay-gate` prints
+   `recall 0.0% over 1 observed entry` and `replay not implemented`
+   (`xtask/src/replay_gate.rs:212`). It has to run *selection* over `3f544b872^..3f544b872` and
+   assert `test_lldp` comes out — coverage-driven, so it is a real feature rather than filling
+   in a stub.
+
+   📌 **The expensive half is done and it stayed cheap**: ~12 minutes, not the feared hour, and
+   the tree was restored on every path including the failed first attempt.
+
+   🗄️ *Original entry:* **032 contract 18's corpus still has no `observed` entry** and the gate correctly exits 1
    saying "NOT MEASURED". Method, learned the hard way (§7.1): **revert a historical fix's `src/`
    diff onto HEAD and run the suite** rather than hunting for a commit whose parent happens to
    fail. Two builds and ~40 minutes bought one rejected candidate the other way.
@@ -2723,7 +2757,17 @@ longer sits between a fresh context and the live work.
    when it succeeds**. That is a trade worth making — but knowingly, and with the numbers re-taken
    afterwards, not as a side effect of a wave that was about something else.
 
-8b. 🆕 **The build graph is four `CMakeLists.txt` behind `src/`, and that qualifies every VPP
+8b. ✅ **RESOLVED 2026-08-09 as a side effect of the replay probe** — the build ran, cmake
+   regenerated, and **zero** `CMakeLists.txt` are now newer than `build.ninja` (was four). The
+   qualification below no longer applies to numbers taken after 2026-08-09 21:58.
+
+   ⚠️ **New fingerprint: `sha256:d8e4a04713923a31`** (was `5447e4661663b86c`). The pinned 40 was
+   re-taken against it and is **byte-identical** — 38/38 comparable envelopes, `findings=21`.
+   §7.21's rule says explain that rather than bank it: the fingerprint covers the 1506 generated
+   API headers, and the pinned 40 is `vppinfra/` and `vlib/`, which barely include them. **The
+   corpus moved in a part this instrument does not reach.**
+
+   🗄️ *Original entry:* **The build graph is four `CMakeLists.txt` behind `src/`, and that qualifies every VPP
    number in this file.** Measured 2026-08-08: `build.ninja` was generated at 23:31:38 on
    2026-08-05 and the tree moved 22 seconds later. Checked rather than feared — `vnet/sfdp`, the
    subsystem those changes add, **is** in the database with 21 entries, so no subsystem is hidden.
