@@ -112,14 +112,15 @@ fn one_big_function(n: usize) -> String {
 /// | stage | 1024→4096, first measured | after the fixes |
 /// |---|---|---|
 /// | parse | 3.8x | 4.0x — linear throughout |
-/// | sema | 6.3x | 7.0x |
+/// | sema | 6.3x | **4.4x — near linear** |
 /// | verify | 6.7x | 6.9x |
-/// | lower | **11.2x** | **7.7x** |
+/// | lower | **11.2x** | **5.7x** |
 ///
 /// Two O(n²) scans came out of lowering the day this gate was built: `emit` scanned every
 /// block to find the current one on **every instruction**, and `reachable_from` used a `Vec`
-/// with `contains` plus a per-block `find`. A third came out of the verifier the same day. A 32 768-statement function went
-/// **22.7 s → 5.9 s**. That is a real limit and it is
+/// with `contains` plus a per-block `find`. **Six came out in all** — two in lowering, two in
+/// the verifier's `check_structural_identity`, two in sema's scope lookups. A 32 768-statement
+/// function went **22.7 s → 3.8 s**. That is a real limit and it is
 /// §9.1's open item; this gate exists so it cannot quietly get worse first. The ceilings are
 /// the measured value with room for a loaded machine, and every one is *below* 16x, so a stage
 /// that becomes outright quadratic at these sizes fails here.
@@ -130,12 +131,13 @@ fn max_ratio_per_4x(stage: &str) -> f64 {
     match stage {
         // The one stage that is genuinely linear, so it is held to it.
         "parse" => 6.0,
-        "sema" => 10.0,
+        // 4.4x measured once the scope lookups were indexed — near linear.
+        "sema" => 7.0,
         // 6.9x measured after `check_structural_identity`'s two scans became sets.
         "verify" => 9.0,
-        // **7.7x measured after the 2026-08-09 fixes**, down from 11.2x. The ceiling moves with
+        // **5.7x measured after the 2026-08-09 fixes**, down from 11.2x. The ceiling moves with
         // it: a ratchet that keeps yesterday's slack cannot see tomorrow's regression.
-        _ => 10.0,
+        _ => 9.0,
     }
 }
 

@@ -1615,6 +1615,15 @@ enum Meaning {
 struct ScopedTypes {
     entries: Vec<(Symbol, TyId)>,
     marks: Vec<usize>,
+    /// Where each name's declarations sit in `entries`, innermost last.
+    ///
+    /// **`get` used to walk `entries` backwards on every lookup**, which is a scan of every
+    /// name in scope per use — O(uses × names), and one function body holds them all. Found by
+    /// the scale gate (§7.27): this and `ScopedMeanings::declare` were 2 of 7 samples on a
+    /// 32 768-statement function. The stacks are kept in step by `insert` and `leave`, and
+    /// `leave` pops exactly the entries it truncates, so the total bookkeeping is one push and
+    /// one pop per declaration however deep the scopes nest.
+    at: IndexMap<Symbol, Vec<usize>>,
 }
 
 impl ScopedTypes {
@@ -1624,20 +1633,31 @@ impl ScopedTypes {
 
     fn leave(&mut self) {
         let mark = self.marks.pop().unwrap_or(0);
+        // **In reverse**, so each name's stack pops its own most recent entry. Forward order
+        // would still remove the right *count* per name and is only accidentally equivalent;
+        // reverse order is the one that is obviously right.
+        for (name, _) in self.entries[mark..].iter().rev() {
+            if let Some(v) = self.at.get_mut(name) {
+                v.pop();
+            }
+        }
         self.entries.truncate(mark);
     }
 
     fn insert(&mut self, name: Symbol, ty: TyId) {
         self.entries.push((name, ty));
+        self.at
+            .entry(name)
+            .or_default()
+            .push(self.entries.len() - 1);
     }
 
     /// Innermost wins, so a shadow is found before the name it shadows.
     fn get(&self, name: &Symbol) -> Option<&TyId> {
-        self.entries
-            .iter()
-            .rev()
-            .find(|(n, _)| n == name)
-            .map(|(_, t)| t)
+        self.at
+            .get(name)
+            .and_then(|v| v.last())
+            .map(|i| &self.entries[*i].1)
     }
 }
 
@@ -1645,6 +1665,11 @@ impl ScopedTypes {
 struct ScopedMeanings {
     names: Vec<(Symbol, Meaning)>,
     marks: Vec<usize>,
+    /// Where each name's declarations sit in `names`, innermost last — the same index
+    /// `ScopedTypes` carries and for the same reason: `declare` scanned the whole innermost
+    /// scope on every declaration, and at file scope or in one long function body that scope
+    /// is the entire program.
+    at: IndexMap<Symbol, Vec<usize>>,
 }
 
 impl ScopedMeanings {
@@ -1654,6 +1679,11 @@ impl ScopedMeanings {
 
     fn leave(&mut self) {
         let mark = self.marks.pop().unwrap_or(0);
+        for (name, _) in self.names[mark..].iter().rev() {
+            if let Some(v) = self.at.get_mut(name) {
+                v.pop();
+            }
+        }
         self.names.truncate(mark);
     }
 
@@ -1671,11 +1701,16 @@ impl ScopedMeanings {
     /// against the first rather than the second.
     fn declare(&mut self, name: Symbol, meaning: Meaning) -> Option<Meaning> {
         let start = self.marks.last().copied().unwrap_or(0);
-        let was = self.names[start..]
-            .iter()
-            .find(|(n, _)| *n == name)
-            .map(|(_, m)| *m);
+        // **The first declaration of `name` in this scope, not the most recent** — the doc
+        // above says a third declaration must report against the second, and `find` from the
+        // front is what gave that. The index stores positions in order, so the answer is the
+        // first one at or past `start`; `partition_point` finds it without walking the rest.
+        let was = self.at.get(&name).and_then(|v| {
+            let i = v.partition_point(|p| *p < start);
+            v.get(i).map(|p| self.names[*p].1)
+        });
         self.names.push((name, meaning));
+        self.at.entry(name).or_default().push(self.names.len() - 1);
         was
     }
 }
