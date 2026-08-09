@@ -1836,23 +1836,41 @@ typing the paths ever would.
 >
 > ### 🆕 The standing gates, with their exact invocations
 >
-> All three are `#[ignore]`d — they need VPP, gcc, or both — so `./check.sh` never runs them and
-> a fresh session will not discover them by accident.
+> **Five now**, all `#[ignore]`d — they need VPP, gcc, or both — so `./check.sh` never runs them
+> and a fresh session will not discover them by accident. ⚠️ Two were added on 2026-08-09 and
+> were **invisible here for a day**, which is §9.2's failure mode with the file's own warning
+> pointed at itself: an instrument that is committed but not discoverable is one nobody runs.
 >
 > ```sh
-> # what chiero SAYS: 1967 VPP TUs under VPP's own flags AND its own -march. 23 min (1358 s
-> # measured 2026-08-08, up from 1184 s — the persona join is what added the 15%).
-> # Metrics: 0 diagnosed, 818 380 190 tokens, 8 personas, 0 failed probes.
+> # what chiero SAYS: 1967 VPP TUs under VPP's own flags AND its own -march. ~23 min.
+> # Metrics 2026-08-09: 1967/1967, 0 panicked, 0 diagnosed, 8 personas, 818 391 162 tokens.
+> # ⚠️ The token count is DETERMINISTIC (two byte-identical runs) — see the lead below about
+> # the +10 972 against the 2026-08-08 baseline.
 > cargo test -p chiero-vpp --test preprocess_corpus -- --ignored --nocapture
 >
 > # what chiero BELIEVES vs gcc: predefine definedness AND value. ~0.1 s. Expect 0 gaps.
 > cargo test -p chiero-vpp --test persona_gap -- --ignored --nocapture
 >
 > # whether cost SCALES: gcov native ingest, two input shapes, n up to 12800. ~5 s.
-> # ✅ PASSES as of 2026-08-08 — the first time. `line` 6.2-7.0x, `onelin` 4.7-5.8x against the
-> # 8.0x threshold (4x is linear, 16x quadratic). It passes; it is NOT linear — see §9.1.
+> # 2026-08-09, five runs: `line` 4.1-4.7x (linear), `onelin` 4.1-6.4x, against 8.0x.
+> # ⚠️ `onelin` is the binding constraint now, not `line`; 6.4x is noise, not a regression.
 > cargo test -p chiero-gcov --test growth -- --ignored --nocapture
+>
+> # 🆕 whether LAYOUT is right on shapes VPP does not contain: generated records vs gcc, with
+> # clang as tiebreak. ~30 s. Found three `layout` defects in three runs (§7.20).
+> # Expect: 585 records over 300 seeds, 0 DISAGREE, 0 refused, a few `matched clang`.
+> cargo test -p chiero-sema --test generated_layout -- --ignored --nocapture
+>
+> # 🆕 whether CONSTANT FOLDING is right: generated integer constant expressions, graded by
+> # `_Static_assert` so there is no output to parse. ~2 s. Expect 300/300 agree, 0 WRONG.
+> cargo test -p chiero-sema --test generated_const_eval -- --ignored --nocapture
 > ```
+>
+> **Not `#[ignore]`d, so `./check.sh` covers it — but worth knowing it exists**, because it is
+> the only channel that asks the question in the dialect chiero ships in:
+> `every_program_gnu11_gcc_accepts_silently_is_silent` in `chiero-sema/tests/generated_silence.rs`.
+> Its sibling runs `-pedantic-errors` and therefore *skips* every gnu-only construct, so the two
+> partition the corpus rather than sharing it.
 >
 > ⚠️ **2026-08-09: the corpus gate's token count moved with nothing to move it, and that is an
 > open lead.** Re-run after the `from_specifier` parser change (the standing rule: run it when
@@ -3616,6 +3634,7 @@ they lived only in scratch") and it happened again anyway.
 | `tests/corpus/vpp-findings/march_probe.sh` | ✅ committed 2026-08-08 — lowers VPP's 384 `-march=x86-64-v3/v4` units with and without their own `-march`, reporting the definition delta, any diagnostic, and **`EMPTY` for a unit that lowered nothing** (a clean run over six lines of nothing is not a pass). `STRIDE=1` for all 384 |
 | `tests/corpus/vpp-findings/api_staleness.py` | ✅ committed 2026-08-08 — which of VPP's 1049 generated API headers are older than the `.api` they come from. Exits 1 on drift; `--fix` regenerates with `vppapigen` rather than `ninja`, whose target re-runs cmake and rewrites the `build.ninja` every VPP measurement reads |
 | `tests/corpus/vpp-findings/probe.sh` | ✅ **REBUILT and committed 2026-08-07.** The 7-second five-TU probe that replaces 2-hour sweeps — measured 7.3 s, all five `clean`. `REALCC=true` by default, so it asks what *chiero* makes of the build's flags without compiling. ⚠️ Its rebuild note: the object path **cannot** be constructed from the source path (CMake names an object after its position in the object library, so `src/vlib/main.c` is `…/vlib_objs.dir/main.c.o`) — match `-c <source>` in one `ninja -t commands all` dump, 63 ms for all 2945 |
+| `crates/chiero-sema/tests/generated_const_eval.rs` | ✅ committed 2026-08-09 — the fifth standing gate. Generated integer constant expressions graded by `_Static_assert`, so there is no output to parse. `#[ignore]`d, ~2 s. **An honest zero on chiero (300/300)** — its value is that `const_evaluator_reuse.rs` asks gcc *nothing*, and constant folding decides array bounds, bit-field widths, enumerators and case labels |
 | `crates/chiero-sema/tests/generated_layout.rs` | ✅ committed 2026-08-09 — the fourth standing gate. Generated record shapes vs gcc, **clang as tiebreak**, `#[ignore]`d, ~1 min. Found the prefix-attribute `layout` defect on its first run (§7.20). Writes no oracle: it reuses `harness::assert_agrees_with_cc` |
 | `tests/corpus/replay/replay_probe.sh` | ✅ **REBUILT and committed 2026-08-08**, and to the *newer* method: reverts a fix's `src/` diff onto HEAD rather than checking out two revisions. Refuses a dirty tree, refuses an unknown commit, restores on every exit path including SIGINT; `--check` proves the mechanics with no build. ⚠️ A real run re-runs cmake — see §9.1 item 8 |
 | `rev5` (20 fixtures), `replayprobe` (13) | ❌ **LOST.** |
