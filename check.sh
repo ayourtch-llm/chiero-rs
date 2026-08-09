@@ -49,6 +49,19 @@ fi
 out=$(cargo test --workspace 2>&1)
 rc=$?
 echo "$out" | grep -E "^test result: FAILED|^error(\[|:)" | head -20
+# **The assertion, not just the suite.** This printed the failing suite and nothing else, so a
+# test that flaked once inside a full run could not be diagnosed afterwards — the detail was in
+# `$out` the whole time and was thrown away. cargo groups the panic text and the `left:`/`right:`
+# values under `failures:`, so that section is what a reader needs.
+if [ $rc -ne 0 ]; then
+  detail=$(echo "$out" | sed -n '/^failures:$/,$p')
+  shown=$(echo "$detail" | head -40)
+  echo "$shown" | sed 's/^/  /'
+  total=$(echo "$detail" | wc -l)
+  if [ "$total" -gt 40 ]; then
+    echo "  … $((total - 40)) more lines of failure detail (re-run the named suite for all of it)"
+  fi
+fi
 passed=$(echo "$out" | grep -E "^test result: ok" | awk -F'[ ;]' '{p+=$4} END {print p+0}')
 failed=$(echo "$out" | grep -E "^test result: FAILED" | awk -F'[ ;]' '{f+=$6} END {print f+0}')
 suites=$(echo "$out" | grep -cE "^test result:")
