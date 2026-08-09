@@ -608,3 +608,64 @@ fn unused_macro_has_no_sites() {
     let e = interner.lookup_macro("h.h", "UNUSED").expect("interned");
     assert_eq!(index.sites(e).count(), 0);
 }
+
+/// **010 contract 18** — cooking N translation units costs one TU's tables plus the index,
+/// not the sum of all N.
+///
+/// The contract states the property as peak memory "asserted against a recorded high-water
+/// mark". This asserts the **mechanism that makes it true**, with counters, which is this
+/// project's standing preference: a high-water bound silently stops being able to fail when
+/// the machine or the allocator changes, and a memory gate that cannot fail is worse than
+/// none. `CIRCUIT_STARTS` says the same thing one crate over — *"a counter, not a clock"*.
+///
+/// Two counts, and they must move in opposite directions:
+///
+/// - **entities must not scale with N.** `intern_macro` keys on `(file, name, line)`, so the
+///   same header macro seen by 100 TUs is one `MacroEntity`. This is the half that breaks if
+///   the index copies per-TU tables instead of resolving eagerly (010 §6.2).
+/// - **sites must scale with N**, because the expansions *are* the data. Without this the test
+///   passes on an index that retained nothing — the failure mode a "bounded memory" assertion
+///   is most likely to have.
+///
+/// Rust already forbids the crudest violation: `cook_tu` takes `&SourceMap`, so the index
+/// cannot hold one. What remains testable is the copying, and that is what this measures.
+#[test]
+fn cooking_a_hundred_tus_does_not_scale_the_entity_table() {
+    let mut interner = GlobalInterner::new();
+    let mut index = CookedExpansionIndex::new();
+
+    // One TU first, to establish the per-TU cost that must *not* be multiplied.
+    cook_tu(&mut interner, &mut index, "tu000.c", 10);
+    let after_one = interner.macro_count();
+    assert!(after_one > 0, "the fixture must intern something");
+
+    for i in 1..100u32 {
+        cook_tu(
+            &mut interner,
+            &mut index,
+            &format!("tu{i:03}.c"),
+            10 + i % 7,
+        );
+    }
+    index.finalize(&mut interner);
+
+    // **The bound.** Every TU includes the same `vppinfra/vec.h` and expands the same macro,
+    // so the entity table is a property of the *tree*, not of how many TUs were fed through it.
+    assert_eq!(
+        interner.macro_count(),
+        after_one,
+        "100 TUs sharing one header macro must intern it once; a table that grew with N is the \
+         index copying per-TU data, which is exactly the cost 010 c18 bounds"
+    );
+
+    // **The discriminator.** Sites must have accumulated, or the assertion above is satisfied
+    // by an index that kept nothing.
+    let m = interner
+        .lookup_macro("vppinfra/vec.h", "ADD1")
+        .expect("the shared macro is interned");
+    assert_eq!(
+        index.sites(m).count(),
+        100,
+        "one expansion site per TU — the expansions are the data and must not be deduplicated"
+    );
+}
