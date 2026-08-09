@@ -1516,6 +1516,45 @@ predicate now.
 never trusted as a count of defects, and that is the only reason the last two were looked at
 rather than assumed fixed.
 
+#### 7.20b The fix blinded the corpus that found it — and the second run found a second defect
+
+⚠️ **The most transferable thing in this section.** The generator emitted record attributes
+only in the **prefix** position. The fix above made that position correctly *ignored* — so from
+that commit onward chiero ignored those attributes, gcc ignored them, the two agreed, and the
+gate's entire `packed`/`aligned` dimension was **testing nothing**. It went on printing 241
+agreements, and the reach test went on asserting `packed >= 40` while not one of those
+attributes packed anything.
+
+**Counting a construct is not counting a test of it.** The reach assertion was true and
+meaningless at the same time — the same shape as a probe that reports zero because it *cannot*
+report non-zero, arrived at from the opposite direction: a probe reporting a healthy number
+because it cannot report a *failure*.
+
+All three positions are emitted now and counted apart (`139 prefix (ignored), 109 middle, 137
+postfix`), the prefix among them, because the ignored case is the regression the fix installed
+and it needs a guard of its own.
+
+**With the attributes finally reaching records, the next run found a second defect:** a
+zero-width bit-field in a **union**. In a struct a `:0` flushes the allocation unit; in a union
+every member starts at offset 0, so there is nothing to flush and a `:0` declares no member.
+chiero carried the bit cursor across union members:
+
+| | chiero | gcc | clang |
+|---|---|---|---|
+| `union U { short a:14; int :0; };` | **4** | 2 | 2 |
+| `union U { int :0; short a:14; };` | 2 | 2 | 2 — *leading was already right* |
+
+so a fix repairing only the trailing case would have passed a test written one way round. Both
+orders are pinned, and the discriminator is stronger than either number: with the `:0` and
+without must be the *same union*.
+
+📌 **The three `MATCHED ONE` rows are also one cause, and it was read rather than assumed.**
+`__attribute__((aligned(N)))` on a member whose natural alignment exceeds N: gcc lowers it
+(`void *` at `aligned(4)` → 12/4), clang does not (16/8), and chiero is on clang's side — which
+is the side **gcc's own manual documents**: *"the aligned attribute can only increase the
+alignment; to decrease it you need packed as well"*. Measured gcc disagreeing with documented
+gcc. Worth knowing before anyone "fixes" chiero to match a `gcc -S` experiment.
+
 ### 7.5 How to check the workspace is green — `./check.sh`
 
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
@@ -1590,6 +1629,7 @@ This has now paid out three times in a row, each time on the first run after a w
 | **the per-TU persona join** — the corpus gate stopped preprocessing 1967 units as one compiler | one crate + one wave, 23 min to re-measure | **+26M tokens, 3.3% more of VPP visible**, 0 diagnosed throughout — and the yield was a *number*: 8 distinct target flag-sets where I had written 5 in four places. A `-march` value is not a flag-set (`-mtune`, `-mprefer-vector-width=512`, `-maes`, four units with none, one naming `-march` twice). One `ninja -t compdb` pipe would have said so at any point |
 | **a new *kind* of layout corpus: generated records instead of VPP headers** (`chiero-sema/tests/generated_layout.rs`) | one generator, ~1 min per run | **a real `layout` defect on the first run: an attribute written before `struct` was treated as the record's own.** `__attribute__((packed)) struct S { char a; int b; }` came out 5 bytes with `b` at offset 1 where gcc and clang both say 8 and 4 — a wrong *offset*, so every field access into such a record was wrong. **120 of 232 records contradicted → 0 of 242.** ⚠️ **VPP contains not one instance**, so the 10 248-assertion VPP gate was structurally incapable of finding it — §8.3's trap, paid out exactly as written. It reuses `assert_agrees_with_gcc` rather than writing a second oracle |
 | *the residue of that run, read rather than counted* | free | **two causes, not one, and neither was a chiero defect.** `aligned(4)` on a `void *` member: **gcc and clang disagree with each other** (12/4 against 16/8) and chiero matches clang — so the gate asks the second compiler before calling anything a defect, and `MATCHED ONE` is its own row. The 7 refusals were chiero *correctly* diagnosing C11 6.7.2.1p8 (a record with no named member is UB; gcc warns under `-Wpedantic`). **§7.6's rule held again: a shared message is not a shared cause** — 120 was 119 + 1 + 7, and only the 119 was a bug |
+| **the same gate again, after noticing the fix had blinded it** — attributes in all three positions, not just the one | one wave | **a second `layout` defect: a zero-width bit-field in a *union*.** `union U { short a:14; int :0; }` was 4 bytes where gcc and clang both say 2 — the bit cursor carried across union members and `:0` rounded it to the `int`'s 32. ⚠️ **The previous wave's fix had made its own corpus vacuous**: the generator emitted `packed`/`aligned` only in the prefix position, which the fix correctly made *ignored*, so chiero and gcc agreed about nothing and the reach test went on asserting `packed >= 40` while none of them packed anything. **A fix can blind the corpus that found it** |
 | **reading a gate's own tolerance list as a corpus** — the generated differential suite's `KNOWN_GAPS` | one census, minutes | **the ledger was entirely dead: 0 of 4 entries matched anything across 600 programs**, and one was provably stale — it excused a float-comparison gap that closed two hundred waves ago, and its own text said *"this entry is what will fail when they land"*. It did not fail, because **a one-directional ratchet only stops a list growing; nothing stops it going stale**, and a stale entry reads exactly like a live one. ⚠️ **A false zero on the way in**: the census keyed on a `d_`/`f_` naming convention the generator does not have and read 0 float comparisons where there are **57 of 200** |
 | **the same class, three more instances** — every allowlist/excuse table in the repo, read backwards | one grep + one review | `xtask` **`ALLOWED_VERTICAL_EDGES`**/`FRONTEND_USING_VERTICALS` — all live today, but the file *records the failure already happening once* (an edge "declared and unused"), so the guard went in; **`persona_gap`'s `DELIBERATE` — five of six entries excused nothing** while its doc claimed *"every entry is a difference the gate really sees on every run"*, the only instance whose claim was **false today**; `ASAN_CLASSES` already had a real liveness floor (`seen >= 3`) and needed nothing; `SIMPLECPP_SKIP` is *"carried, not obeyed"* — a label, not a suppression. **4 found, 3 fixed, 2 honest zeros** |
 | *not a widening* — **asking a reviewer "does this shape exist elsewhere"** rather than only "is this right" | one fable subagent | it named the `persona_gap` instance *and* found the fix's own weakness: the new liveness check was **unreachable logic**, not merely a vacuous assertion — with the list empty a polarity flip survived the whole suite, because the mutation evidence had been gathered by mutating the **data** and then left in a commit message. **Mutate the code that will still be there, not the input you can revert** |
@@ -1783,7 +1823,7 @@ typing the paths ever would.
 > **None of them was visible to the pp-gate**, which has reported 0 findings for weeks: none is
 > about preprocessing *syntax*. A gate that has been green for weeks is an untested surface.
 >
-> **State: 2026-08-09 — `./check.sh` GREEN at 2287 across 278 suites**, fmt and clippy clean.
+> **State: 2026-08-09 — `./check.sh` GREEN at 2288 across 278 suites**, fmt and clippy clean.
 > Up from 2281/277 at the previous session's end. Both fast gates re-run and unchanged
 > (`persona_gap` 0 gaps; `growth` `line` 6.3x / `onelin` 4.8x against the 8.0x threshold);
 > the VPP layout gate re-run after the sema change and unchanged at 2238 records / 10248
@@ -1796,7 +1836,9 @@ typing the paths ever would.
 > cargo test -p chiero-sema --test generated_layout -- --ignored --nocapture
 > ```
 >
-> `242 records | 241 agree | 0 DISAGREE | 1 matched clang where gcc differs | 0 refused`.
+> `222 records | 219 agree | 0 DISAGREE | 3 matched clang where gcc differs | 0 refused`.
+> **It has now found two `layout` defects in two runs**, the second only after the first fix was
+> noticed to have made the gate's whole attribute dimension vacuous.
 > It exists because layout was graded only by 17 hand fixtures and 22 VPP header seeds, and
 > **VPP contains not one prefix-attributed record**, so the 10 248-assertion VPP gate could
 > never have seen the bug. See the yield table's two new rows and §7.20.
