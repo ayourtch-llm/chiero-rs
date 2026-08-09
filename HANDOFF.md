@@ -3792,12 +3792,26 @@ typing the paths ever would.
    enough"* is a reasonable question to ask again, and the next asker should get the measurement
    instead of repeating it.
 
-6. ✅ **CLOSED 2026-08-09 — both halves.** The direct half needed no CIR change (`Callee::Direct`
+6. 🔶 **PARTLY CLOSED 2026-08-09 — the CIR change landed; the payoff did not.** The direct half needed no CIR change (`Callee::Direct`
    makes the type derivable); the indirect half is `Callee::Indirect { target, ret }`, text
-   syntax `call %5 -> i32(args)`, 020 updated. **`require_ptr`'s `CTy::Void` exemption is
-   deleted** — the check it disabled has been off since the verifier was written. Verified on
-   real input: `vppinfra/format.c` lowers to 184 418 lines, exit 0, its two indirect calls
-   carrying `-> void` and `-> ptr`. The scope estimate held exactly: 22 mechanical sites, 3
+   syntax `call %5 -> i32(args)`, 020 updated. ⚠️ **The claimed payoff was wrong and is reverted.** I deleted
+   `require_ptr`'s `CTy::Void` exemption saying "nothing reaches here as `Void` now"; an
+   adversarial review refuted it. `rvalue_type_in` records `Void` for any operand not yet
+   *resolved*, and the type pass walks blocks in **textual order**, so a module whose dominator
+   is listed later — legal, since 020 §8 rule 1 is about dominance — got a **false rejection
+   that flipped when the blocks were reordered**. `require_ty` and `require_int` kept their
+   exemptions all along, documented "skips unresolved values (recorded as `Void`), which is a
+   known gap", three functions below the comment I wrote claiming the opposite.
+   **What has to happen first: make "unknown" unrepresentable** — absent from the map rather
+   than `Void` — after which all three exemptions are genuinely dead.
+   `a_value_defined_in_a_later_listed_block_is_not_typed_void` guards it and reproduces the
+   false positive if the exemption is deleted again.
+   ⚠️ **And the engine still ignores `ret`.** Its only consumers are the verifier and the
+   printer; `exec::indirect`'s candidate filter still checks arity and parameter shape only, so
+   §7.6's class — a candidate of the right arity and the wrong return width — is **not** closed.
+   Wiring `ret` into that filter is the remaining work and the item's original motivation.
+   Verified on real input: `vppinfra/format.c` lowers to 184 418 lines, exit 0, its two indirect
+   calls carrying `-> void` and `-> ptr`. The scope estimate held exactly: 22 mechanical sites, 3
    needing judgement, 1 spec edit. ⚠️ Two of the three were decided by **reading a fixture's own
    comment** — one said "the call site believes it called a pointer-returning function" while my
    blanket `Int(32)` said otherwise, and the verifier caught the contradiction. The entry below
