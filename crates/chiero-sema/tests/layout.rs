@@ -649,3 +649,84 @@ fn an_enum_without_one_keeps_its_implied_representation() {
         &[("e", 0), ("c", 4)],
     );
 }
+
+/// **`_Alignof` of a typedef name must see the alignment the typedef carries.**
+///
+/// `declared_align` already walks a syntactic type node and consults `typedef_aligns` — its own
+/// doc says why it exists: *"in `typedef int A __attribute__((aligned(16))); A x;` the
+/// declarator `A x` carries no attribute at all, and the alignment has to come from the name it
+/// uses."* The `_Alignof` arm never asked it. It resolves the operand to a `TyId` and calls
+/// `align_of_ty`, which is the *underlying* type — the typedef name, and everything attached to
+/// it, is gone by then.
+///
+/// So the alignment was right wherever a declaration used the typedef and wrong wherever a
+/// program asked about it. Measured against gcc:
+///
+/// | | gcc | chiero was |
+/// |---|---|---|
+/// | `typedef __attribute__((aligned(16))) struct A {char a;} A_t;` | 16 | 1 |
+/// | `typedef struct B {char a;} B_t __attribute__((aligned(16)));` | 16 | 1 |
+/// | `typedef int I_t __attribute__((aligned(16)));` | 16 | 4 |
+///
+/// The third is the case `typedef_aligns` was built for, which is the useful part of the
+/// finding: the map was right and only one of its two readers existed.
+///
+/// Found by the adversarial review of the severity work (§9.1 5n), and **pre-existing** — the
+/// `from_specifier` fix narrowed it from "the record itself was 16", which was worse.
+#[test]
+fn alignof_a_typedef_sees_the_typedefs_own_alignment() {
+    let cases = [
+        (
+            "typedef __attribute__((aligned(16))) struct A { char a; } A_t;",
+            "A_t",
+        ),
+        (
+            "typedef struct B { char a; } B_t __attribute__((aligned(16)));",
+            "B_t",
+        ),
+        ("typedef int I_t __attribute__((aligned(16)));", "I_t"),
+    ];
+    for (decl, name) in cases {
+        assert_eq!(
+            alignof_with(decl, &format!("_Alignof({name})")),
+            Some(16),
+            "`_Alignof({name})` — gcc says 16"
+        );
+    }
+
+    // **The discriminators.** The *record* keeps its own alignment (gcc: `_Alignof(struct A)`
+    // is 1), so the fix must not push the attribute onto the type it is written beside; and a
+    // typedef with no attribute must be unchanged.
+    assert_eq!(
+        alignof_with(
+            "typedef __attribute__((aligned(16))) struct A { char a; } A_t;",
+            "_Alignof(struct A)"
+        ),
+        Some(1),
+        "the record is not over-aligned; only the typedef name is"
+    );
+    assert_eq!(
+        alignof_with("typedef int P_t;", "_Alignof(P_t)"),
+        Some(4),
+        "a typedef with no attribute keeps its underlying alignment"
+    );
+}
+
+/// Fold `_Alignof(<name>)` with `prelude` in scope, through sema's own constant evaluator.
+fn alignof_with(prelude: &str, expr: &str) -> Option<i128> {
+    let (parsed, e) = harness::expression_with_prelude(prelude, expr);
+    let names = harness::names_of(&parsed);
+    let mut diags = Vec::new();
+    let v = chiero_sema::const_eval(
+        &parsed.ast,
+        e,
+        &names,
+        &TargetConfig::x86_64_linux(),
+        &mut diags,
+    );
+    assert!(diags.is_empty(), "`{expr}` must fold cleanly: {diags:?}");
+    match v {
+        Some(chiero_sema::ConstVal::Int(i)) => Some(i),
+        other => panic!("`{expr}` did not fold to an integer: {other:?}"),
+    }
+}
