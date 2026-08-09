@@ -110,8 +110,27 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match run(&args) {
         Ok(text) => {
-            println!("{text}");
-            ExitCode::SUCCESS
+            // **A closed pipe is not an error.** `println!` panics on `EPIPE`, so
+            // `chiero cir big.c | head` answered a routine `head` with a rustc-internal
+            // path and a backtrace note, and exited 101. Every operation prints an
+            // envelope and a VPP TU's is megabytes, so `| head`, `| less` and `| grep -m1`
+            // are how these are read.
+            //
+            // Written by hand rather than fixed with `signal(SIGPIPE, SIG_DFL)`, which
+            // would need `libc`: 001 §4 keeps this tree linking nothing, and one match arm
+            // is a smaller price than a dependency for a behaviour this local.
+            use std::io::Write as _;
+            let mut out = std::io::stdout().lock();
+            match writeln!(out, "{text}").and_then(|()| out.flush()) {
+                Ok(()) => ExitCode::SUCCESS,
+                // The reader left. That is the reader's business and not a failure of
+                // the analysis, which had already finished.
+                Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("chiero: writing the result: {e}");
+                    ExitCode::FAILURE
+                }
+            }
         }
         Err(Fault::Usage(m)) => {
             eprintln!("chiero: {m}\n\n{USAGE}");
