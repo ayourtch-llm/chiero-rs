@@ -2885,8 +2885,19 @@ longer sits between a fresh context and the live work.
    when it succeeds**. That is a trade worth making — but knowingly, and with the numbers re-taken
    afterwards, not as a side effect of a wave that was about something else.
 
-8d. 🆕 **Point the measurement harness at the compile database instead of a hand-kept flag
-   list** (§7.30). `builddb` already parses one and is used by nothing that produces a published
+8d. 🔶 **Point the measurement harness at the compile database instead of a hand-kept flag list**
+   (§7.30). ✅ **The capability landed 2026-08-09**: `cargo run -p xtask -- compile-flags --db
+   <db> <source>` prints what the build actually passes, reading a database and never running
+   one. ⏭️ **What remains is flipping `measure.sh` over to it**, which re-takes the plugin sweep.
+
+   📌 **It already reports two things the harness never passed.** Every unit carries
+   `-march=x86-64-v2 -mtune=generic` — the archive records that **7 of 11 failed plugin entries
+   were exactly this**, `__SSE4_2__` undefined so `clib_crc32c_with_init` never defined. ⚠️ That
+   is the **parked** `-march` item; reported, not started. And `vnet/ip/ip4_forward.c` has
+   **four** multiarch variants, each with its own `-DCLIB_MARCH_VARIANT`, so "the flags for a
+   file" is 1:N and the command prints every one.
+
+   *Original entry:* `builddb` already parses one and is used by nothing that produces a published
    number. **198 of 935 plugin C units (21%) are exposed to include paths `measure.sh` never
    passes**, and a 32-file random sample says **~16% actually fail because of it** — on the
    order of 30 files, reported as chiero's failure when they are the harness's (§7.30).
