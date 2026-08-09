@@ -1130,9 +1130,13 @@ fn require_ptr(
     span: Span,
     out: &mut Vec<VerifyError>,
 ) {
+    // **No `Void` exemption.** It existed because `defined_by` typed every call's result
+    // `Void`, so exempting it was the only way pointer-returning calls did not all report —
+    // and it made every *misuse* of a call result unreportable too. Both call kinds carry a
+    // type now, so nothing reaches here as `Void` and the exemption is dead: removing it
+    // leaves the whole suite green, and a real VPP translation unit still verifies.
     if let Some(t) = resolve(o, types)
         && t != CTy::Ptr
-        && t != CTy::Void
     {
         err(
             out,
