@@ -2765,6 +2765,37 @@ fn generated_programs_agree_with_gcc() {
             .collect::<Vec<_>>()
             .join("\n")
     );
+
+    // **And the ratchet runs the other way too, which is the half that was missing.**
+    //
+    // The check above fails on a refusal with no entry. Nothing failed on an *entry with no
+    // refusal* — so an entry outlives the gap it describes, silently, and the ledger becomes
+    // a description of a past state that reads exactly like a description of this one. That
+    // is the suppression file its own header warns about, arrived at from the other side.
+    //
+    // The first entry predicted its own removal in so many words — *"this entry is what will
+    // fail when they land"* — and float comparisons landed, and it did not fail: an entry
+    // that matches nothing is never consulted. Measured before this assertion was written:
+    // **57 of the 200 programs contain a float comparison and 0 refuse.**
+    //
+    // So a gap entry has to still be happening. If it is not, the gap closed and the entry
+    // is a claim about chiero that is no longer true.
+    let dead: Vec<&str> = KNOWN_GAPS
+        .iter()
+        .map(|(p, _)| *p)
+        .filter(|p| !refused.iter().any(|(_, m)| m.contains(p)))
+        .collect();
+    assert!(
+        dead.is_empty(),
+        "{} KNOWN_GAPS entr(ies) matched no refusal in this batch. An entry that fires \
+         nowhere is a claim about chiero that nothing checks — either the gap closed and the \
+         entry should go, or the corpus stopped reaching it and that is the finding.\n{}",
+        dead.len(),
+        dead.iter()
+            .map(|p| format!("  {p}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
     assert!(
         defects.is_empty(),
         "{} generated program(s) disagree with gcc. First:\nseed {}\n{}\n{:#?}",
