@@ -1,3 +1,6 @@
+//! Covers: **012 contract 22** — conformance against two independent compilers over a
+//! preprocessor test corpus. This gate *is* that contract; it was cited nowhere, so
+//! `xtask contract-coverage` counted it uncited while being the thing itself.
 //! Preprocessor conformance over simplecpp's `testsuite/` — **gcc and clang are the oracle**.
 //!
 //! Every corpus in this repo so far is real VPP code. VPP exercises macros as people write

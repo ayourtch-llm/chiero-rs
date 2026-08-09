@@ -1,3 +1,6 @@
+//! Covers: **012 contract 23** (the feature queries answer as the persona and say when they
+//! are guessing) and **012 contract 24** (`__GNUC_PREREQ(4,9)` under the baked persona).
+//! Both were tested here and cited nowhere.
 //! `__has_attribute` / `__has_builtin` — 012 §4, and the persona they answer for.
 //!
 //! chiero's predefine set is an **impersonation of the build compiler**, not a self-report:

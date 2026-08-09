@@ -1,3 +1,7 @@
+//! Covers: **012 contract 20** — a `##` that arrives by substitution is not the paste
+//! operator. C11 6.10.3.3p4's worked example (`hash_hash`/`mkstr`/`in_between`/`join`) is
+//! below; the citation was missing, so `xtask contract-coverage` reported this contract as
+//! uncited while it had been fully tested all along.
 //! C11 6.10.3.3: **a `##` that arrives by substitution is not the paste operator.**
 //!
 //! The operator is identified in a macro's *replacement list*, at definition time. A `##` that

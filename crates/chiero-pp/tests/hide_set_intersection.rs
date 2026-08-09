@@ -1,3 +1,6 @@
+//! Covers: **012 contract 21** — the invocation hide set intersects at the closing paren.
+//! `f(2)(9)` yielding `2*9*g`, and the object-like `g` variant, are below; the citation was
+//! missing, so the coverage gate counted this contract as uncited.
 //! C99 6.10.3.4p2: **the hide set of an invocation intersects at the closing paren.**
 //!
 //! When a function-like macro's name comes out of an earlier expansion but its argument list

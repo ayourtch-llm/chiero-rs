@@ -1,4 +1,7 @@
-//! Covers: 014 contracts 1, 2, 3, 4, 5, 6, 7, 8, 10.
+//! Covers: 014 contracts 1, 2, 3, 4, **4b**, 5, 6, 7, 8, 10.
+//!
+//! 014 contract 4b — a record that declares a `:0` says so via `has_zero_width_bitfield` —
+//! is asserted below and was cited nowhere, so the coverage gate counted it as untouched.
 //!
 //! **Every layout in this file is checked twice**: once against the number 014 §8 states,
 //! and once against gcc. The second check is the one that matters, and 014 §7 says why —
