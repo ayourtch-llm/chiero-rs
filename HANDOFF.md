@@ -1633,7 +1633,7 @@ at from the analysis side.
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
 three xtask gates were red: a crate whose test *binary* fails to build emits no `test result`
 line at all, so counting successes cannot detect a missing success. `./check.sh` keys on
-cargo's exit status and prints the failing suites first. Current: **2307 passed, 279 suites** (2026-08-09).
+cargo's exit status and prints the failing suites first. Current: **2309 passed, 279 suites** (2026-08-09).
 
 ⏱️ **It now takes over an hour per leg**, and that is the session's dominant cost — see §9's
 note on the corpus. `conversions` and `semantics` are ~55 s each, the two VPP gates ~60 s, and
@@ -3758,36 +3758,41 @@ typing the paths ever would.
    threading `align` through `Memory::copy` and lifting `align_fault`'s 16-byte bound — an API
    change across two crates, worth doing when `ub-strict` is.
 
-5o. 🆕 **The sweep's `SEVERITY MISMATCH` bucket over-reports now that advisories exist** —
-   the **fourth** consumer of the diagnostic/severity distinction, after `lower()`,
-   `chiero layout` and the generated channels, and the only one that feeds *published numbers*.
+5o. ✅ **CLOSED 2026-08-09 — and the re-take the item demanded is what caught the fix's own
+   defect.** `Outcome::Advised` exists, `(Warned, Advised)` is `Agree`, and the two-file
+   reproduction that printed `SEVERITY MISMATCH — 1 sema: signed overflow` prints `agree 1`.
 
-   `xtask/src/sweep.rs:74` reads `(Outcome::Warned(_), _) => Bucket::SeverityMismatch`: it keys
-   on **gcc's** outcome and ignores chiero's severity. Its own comment states the intent exactly
-   — *"gcc warned and chiero diagnosed: they agree on the code, not on how loudly to say so"* —
-   and that was right when every chiero diagnostic was a refusal. It is wrong now: when gcc
-   warns and chiero emits an **advisory**, both warn and both produce a value. That is
-   agreement, reported as a mismatch, under a heading that says *"chiero refused"* when chiero
-   did not.
+   ⚠️ **The first `(Diagnosed, Advised)` arm was wrong and the numbers said so.** I filed it as
+   `Miss` — *chiero produced a value where gcc would not build, so chiero is missing a rule* —
+   and the VPP re-take moved **255 of 1552 files** under a heading reading "chiero is missing a
+   rule". `BothRefused`'s own doc had the answer: gcc refusing on a real tree almost always
+   means the flags are wrong for that file, so **gcc never judged the C**, and that holds
+   whatever chiero's severity was. It is the exact inflation that bucket was split off to
+   prevent, reached from the other direction. Now `BothRefused`.
 
-   Reproduced 2026-08-09 on a two-file tree:
+   Two more the item did not predict. The sema site **returned early on any diagnostic**, so an
+   advisory would have hidden a lowering `NotRun` behind the milder verdict — it looks for an
+   *error* anywhere now, not merely the first diagnostic. And two labels went stale the instant
+   the taxonomy moved: "agree, both clean" is no longer both clean, "both refused" is not both
+   refusing. Leaving them would have been this item's own defect a second time.
 
-       SEVERITY MISMATCH — gcc warned, chiero refused; both saw it
-             1  sema: signed overflow in a constant expression
+   📌 **The item's scope estimate was wrong in the safe direction.** It said the over-report
+   "needs a signed-overflowing *constant expression* — rare in VPP", having measured only the
+   `gnu` dialect. Under the **pedantic** dialect the sweep runs by default, the ISO conformance
+   remarks all fire: **255 of VPP's 1552 files have a chiero advisory as their only diagnostic.**
 
-   gcc exits 0 with `-Woverflow`; chiero folds to the same value and advises. Nothing disagreed.
+   **Re-taken numbers** (`xtask sweep --tree vpp/src` with the build's own `-I`/`-D`, pedantic):
 
-   **The fix is a taxonomy change, which is why it was recorded rather than done:** `Outcome`
-   carries only `Diagnosed(String)`, so the sweep cannot tell an advisory from an error. It
-   needs an `Advised` variant (the site already holds the `SemaDiagnostic`, so `is_error()` is
-   in reach) and a `(Warned, Advised) => agreement` arm. ⚠️ These buckets are what §7.6's
-   measurements are counted in, so changing them silently would make old and new sweep numbers
-   incomparable — do it in a wave that re-takes the numbers, and say which.
+   | findings | misses | agree | gcc refused | severity mismatch | tool gaps |
+   |---|---|---|---|---|---|
+   | 0 | 0 | 6 | 1390 | 0 | 156 |
 
-   📌 Scope, measured not guessed: only `Cx::wrap`'s signed-overflow advisory fires under the
-   `gnu` dialect the sweep uses. The other nine advisory sites are ISO remarks, dialect-gated
-   off. So the over-report needs a signed-overflowing *constant expression* — rare in VPP, and
-   the reason this is a correctness point about the taxonomy rather than an urgent number.
+   **No bucket count moved**, since every advisory-only file pairs with a gcc refusal — so old
+   sweep numbers stay comparable. The report now prints a `chiero advised: N — gcc warned … gcc
+   clean … gcc refused …` line, so a reader recovers the pre-change totals from a *new* run
+   rather than trusting a commit message. ⚠️ Its test passed on the first run and the mutation
+   swapping two of its three counts **survived** — one file per category cannot detect an
+   ordering. Distinct 1/2/3 now, mutation verified fatal.
 
 5p. ✅ **CLOSED 2026-08-09 — `chiero-diff`'s `parsed_cleanly` ignores sema, and that is
    correct.** Filed as a question, answered by measurement within the hour. Found by completing the consumer audit rather
@@ -3827,7 +3832,8 @@ typing the paths ever would.
    enough"* is a reasonable question to ask again, and the next asker should get the measurement
    instead of repeating it.
 
-6. 🔶 **PARTLY CLOSED 2026-08-09 — the CIR change landed; the payoff did not.** The direct half needed no CIR change (`Callee::Direct`
+6. ✅ **CLOSED 2026-08-09 — both halves.** (Was "partly closed": the CIR change landed hours
+   before the engine did, and the payoff was not where the item said it would be — see §7.22.) The direct half needed no CIR change (`Callee::Direct`
    makes the type derivable); the indirect half is `Callee::Indirect { target, ret }`, text
    syntax `call %5 -> i32(args)`, 020 updated. ⚠️ **The claimed payoff was wrong and is reverted.** I deleted
    `require_ptr`'s `CTy::Void` exemption saying "nothing reaches here as `Void` now"; an
@@ -4367,6 +4373,20 @@ not an anecdote.*
   `dst.is_some()`, not "uses the result", and lowering gives every call a `dst`. The added
   filter cut nothing on the corpus. **The neighbour was the defect**, and nothing but reading it
   while editing next to it would have surfaced it.
+
+- **A prediction that fails is the measurement working.** Twice in one session. The pinned-40
+  census said "6 indirect sites"; it was 56, and the file it scored `0` turned up in the
+  results. Item 5o said the over-report needed a shape "rare in VPP"; the re-take moved **255
+  of 1552 files**, and asking why revealed the *fix's* new classification arm was wrong, not
+  the estimate. **Both errors were invisible until a number contradicted a sentence** — which
+  is the argument for writing the sentence down first, and for re-taking numbers even when the
+  change "obviously" cannot move them.
+
+- **A taxonomy change ages every label attached to it, and the labels are the report.** Adding
+  `Advised` made "agree, both clean" no longer both clean and "both refused" not both refusing,
+  in the same edit that fixed a heading for saying "chiero refused" when chiero had not. A
+  heading that has quietly stopped being true is the same defect as the one being fixed; look
+  for the others *in the same commit*, because nothing will fail when they go stale.
 
 ### 11.1 About tests and what they can see
 
