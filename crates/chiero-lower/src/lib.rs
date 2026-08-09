@@ -160,7 +160,7 @@ use chiero_cir::{
     Volatility,
 };
 use chiero_sema::{Conversion, FloatKind, Ty, TyId, TypedId, TypedNode};
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 
 /// The function currently being built.
 struct FnState {
@@ -188,6 +188,12 @@ struct FnState {
     variadic: bool,
     allocas: Vec<AllocaDecl>,
     blocks: Vec<Block>,
+    /// Where each block sits in `blocks`. **`emit` runs once per instruction and used to
+    /// scan every block to find the current one**, which is O(instructions x blocks) and both
+    /// grow with the function — 4 of 7 stack samples of one 32 768-statement function were in
+    /// that scan. Kept in step at the only two places `blocks` changes shape: `new_block`
+    /// pushes, and `finish_blocks` retains and then rebuilds this.
+    block_at: IndexMap<BlockId, usize>,
     /// Where each block's *terminator* came from, when it came from source at all.
     ///
     /// A side table rather than a field on `Block` — see `set_term_at` for why. Consumed and
@@ -332,6 +338,7 @@ impl Lowerer<'_> {
             gcov_lines: Default::default(),
             span: fs.span,
         });
+        fs.block_at.insert(id, fs.blocks.len() - 1);
         id
     }
 
@@ -343,11 +350,8 @@ impl Lowerer<'_> {
         let cur = self.fs().cur;
         let generated = self.generated_depth > 0;
         let fs = self.fs();
-        let b = fs
-            .blocks
-            .iter_mut()
-            .find(|b| b.id == cur)
-            .expect("current block exists");
+        let at = *fs.block_at.get(&cur).expect("current block exists");
+        let b = &mut fs.blocks[at];
         b.insts.push(Inst {
             kind,
             span,
@@ -1417,6 +1421,7 @@ impl Lowerer<'_> {
             variadic,
             allocas: Vec::new(),
             blocks: Vec::new(),
+            block_at: IndexMap::new(),
             entry: BlockId(0),
             cur: BlockId(0),
             locals: IndexMap::new(),
@@ -1654,6 +1659,16 @@ impl Lowerer<'_> {
             .collect();
         let keep = self.reachable_from(roots);
         self.fs().blocks.retain(|b| keep.contains(&b.id));
+        // Positions moved, so the index is stale. Rebuilt rather than left: a stale entry here
+        // would append an instruction to the wrong block, which is silent and wrong rather
+        // than loud and wrong.
+        let fs = self.fs();
+        fs.block_at = fs
+            .blocks
+            .iter()
+            .enumerate()
+            .map(|(i, b)| (b.id, i))
+            .collect();
         let ret = self.fs().ret.clone();
         let value = match &ret {
             CTy::Void => None,
@@ -1716,15 +1731,28 @@ impl Lowerer<'_> {
     }
 
     /// The blocks reachable from `roots`, roots included.
-    fn reachable_from(&mut self, roots: Vec<BlockId>) -> Vec<BlockId> {
-        let mut seen: Vec<BlockId> = vec![];
+    ///
+    /// **Sets and an index, not vectors and scans.** This was `Vec` + `contains` for `seen` and
+    /// a `blocks.iter().find()` per block, so it was O(B²) twice over, and the caller's
+    /// `retain(|b| keep.contains(&b.id))` made it three times. Item 5b's shape, and the scale
+    /// gate (§7.27) is what made it visible: a stack sample of one 32 768-statement function
+    /// landed here. Measured 2026-08-09 — the same class the CIR verifier carried twice.
+    fn reachable_from(&mut self, roots: Vec<BlockId>) -> IndexSet<BlockId> {
+        // Built once. Looking a block up by id used to be a linear scan *inside* the walk.
+        let at: IndexMap<BlockId, usize> = self
+            .fs()
+            .blocks
+            .iter()
+            .enumerate()
+            .map(|(i, b)| (b.id, i))
+            .collect();
+        let mut seen: IndexSet<BlockId> = IndexSet::new();
         let mut work = roots;
         while let Some(id) = work.pop() {
-            if seen.contains(&id) {
+            if !seen.insert(id) {
                 continue;
             }
-            seen.push(id);
-            let Some(b) = self.fs().blocks.iter().find(|b| b.id == id) else {
+            let Some(b) = at.get(&id).map(|i| &self.fs().blocks[*i]) else {
                 continue;
             };
             match &b.term {

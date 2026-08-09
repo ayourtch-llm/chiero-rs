@@ -109,14 +109,16 @@ fn one_big_function(n: usize) -> String {
 ///
 /// Measured 2026-08-09 on `one_big_function`, ratio per 4x step (linear is 4x, quadratic 16x):
 ///
-/// | stage | 256→1024 | 1024→4096 | 4096→16384 |
-/// |---|---|---|---|
-/// | parse | 3.2x | 3.8x | 4.2x — linear |
-/// | sema | 4.7x | 6.3x | 11.1x |
-/// | verify | 5.9x | 6.7x | 13.2x |
-/// | lower | 5.4x | 11.2x | **18.6x — worse than quadratic** |
+/// | stage | 1024→4096, first measured | after the fixes |
+/// |---|---|---|
+/// | parse | 3.8x | 4.0x — linear throughout |
+/// | sema | 6.3x | 7.0x |
+/// | verify | 6.7x | 7.3x |
+/// | lower | **11.2x** | **7.7x** |
 ///
-/// Lowering one 16 384-statement function takes **5.2 s**. That is a real limit and it is
+/// Two O(n²) scans came out of lowering the day this gate was built: `emit` scanned every
+/// block to find the current one on **every instruction**, and `reachable_from` used a `Vec`
+/// with `contains` plus a per-block `find`. A 32 768-statement function went **22.7 s → 7.9 s**. That is a real limit and it is
 /// §9.1's open item; this gate exists so it cannot quietly get worse first. The ceilings are
 /// the measured value with room for a loaded machine, and every one is *below* 16x, so a stage
 /// that becomes outright quadratic at these sizes fails here.
@@ -129,8 +131,9 @@ fn max_ratio_per_4x(stage: &str) -> f64 {
         "parse" => 6.0,
         "sema" => 10.0,
         "verify" => 10.0,
-        // 11.2x measured; the ceiling is under the 16x that would make it plainly quadratic.
-        _ => 14.0,
+        // **7.7x measured after the 2026-08-09 fixes**, down from 11.2x. The ceiling moves with
+        // it: a ratchet that keeps yesterday's slack cannot see tomorrow's regression.
+        _ => 10.0,
     }
 }
 
