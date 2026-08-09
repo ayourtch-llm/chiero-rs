@@ -141,6 +141,54 @@ fn a_zero_width_bitfield_starts_a_new_allocation_unit() {
     );
 }
 
+/// **Contract 4, in a union — where a zero-width bit-field must do nothing at all.**
+///
+/// Found by `generated_layout.rs`, and it graduates here because a generated finding that
+/// stays in the generator is one seed away from not being tested.
+///
+/// In a *struct* a `:0` flushes the allocation unit, which is what the fixture above pins.
+/// In a **union** there is no unit to flush: every member starts at offset 0, and a `:0`
+/// declares no member, so it can contribute neither size nor alignment. chiero was carrying
+/// the bit cursor across union members, so `short m1:14` left it at 14, `int :0` rounded it
+/// to 32, and the union came out **4 bytes where gcc and clang both say 2**.
+///
+/// The discriminator is the pair: with the `:0` and without it must be the same union. That
+/// is a stronger statement than any single number, because it is false for every version of
+/// the bug — the whole defect is the `:0` changing something.
+#[test]
+fn a_zero_width_bitfield_in_a_union_contributes_nothing() {
+    // `int :0` names a 4-byte unit and the union's widest real member is 2 bytes, so a
+    // implementation that let it contribute would say 4.
+    check("union U { short a:14; int :0; };", "U", 2, 2, &[]);
+    // Ordering must not matter either: leading `:0` was already right, and a fix that only
+    // repaired the trailing case would pass a test written one way round.
+    check("union U { int :0; short a:14; };", "U", 2, 2, &[]);
+    // With a wider trailing member, so the union's size comes from a real member and the
+    // `:0` sits between two of them.
+    check(
+        "union U { unsigned short a; short b:14; int :0; unsigned short c:4; signed char d; };",
+        "U",
+        2,
+        2,
+        &[("a", 0), ("d", 0)],
+    );
+
+    // **The discriminator.** Remove the `:0` and nothing may change.
+    let with = parse(
+        "union U { short a:14; int :0; };",
+        TargetConfig::x86_64_linux(),
+    );
+    let without = parse("union U { short a:14; };", TargetConfig::x86_64_linux());
+    let (aw, rw) = layout_of(&with, "U");
+    let (ao, ro) = layout_of(&without, "U");
+    assert_eq!(
+        (aw.layout(rw).size, aw.layout(rw).align),
+        (ao.layout(ro).size, ao.layout(ro).align),
+        "a zero-width bit-field declares no member; in a union it has no allocation unit to \
+         flush either, so it must change nothing"
+    );
+}
+
 /// **Contract 5.** A bit-field that would straddle an allocation unit boundary is placed
 /// per gcc's rules — and the cross-check is against gcc, not against my arithmetic.
 ///

@@ -166,18 +166,38 @@ const SCALARS: &[Scalar] = &[
     },
 ];
 
+/// Where a record's attributes were written.
+///
+/// The three are **not** interchangeable, and that is the whole point of tracking it: gcc and
+/// clang apply `Middle` and `Postfix` to the record and ignore `Prefix` entirely. A generator
+/// that emits only one of them tests one third of the rule.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum AttrPos {
+    /// No attribute on this record.
+    None,
+    /// `__attribute__((packed)) struct S {…};` — **ignored** by both compilers.
+    Prefix,
+    /// `struct __attribute__((packed)) S {…};` — applied.
+    Middle,
+    /// `struct S {…} __attribute__((packed));` — applied.
+    Postfix,
+}
+
 /// One generated translation unit: the records to define, in dependency order, and the tags
 /// worth putting to the oracle.
 struct Unit {
     src: String,
     /// `(tag, is_union)` for every record defined, outermost last.
     tags: Vec<(String, bool)>,
+    /// Where each record's attributes were written, parallel to `tags`.
+    positions: Vec<AttrPos>,
 }
 
 struct Gen {
     rng: Rng,
     out: String,
     tags: Vec<(String, bool)>,
+    positions: Vec<AttrPos>,
     next_id: usize,
 }
 
@@ -187,6 +207,7 @@ impl Gen {
             rng: Rng::new(seed),
             out: String::new(),
             tags: Vec::new(),
+            positions: Vec::new(),
             next_id: 0,
         }
     }
@@ -210,15 +231,47 @@ impl Gen {
         // internal padding and drops member alignment to 1; `aligned(n)` raises the record's
         // own alignment. VPP uses `packed` 112 times on wire formats, where a wrong offset
         // means every parsed field is wrong.
-        let mut attrs = String::new();
+        // ⚠️ **All three positions, because two of them are where the attribute does
+        // anything.** The first version of this generator emitted only the prefix — and the
+        // defect it found was that chiero *honoured* the prefix, which gcc and clang ignore.
+        // The moment that was fixed, every `packed` and `aligned` this generator wrote became
+        // inert: chiero ignored it, gcc ignored it, and the two agreed about nothing at all.
+        // The gate would have gone on reporting 241 agreements with its whole attribute
+        // dimension vacuous, and the reach test would have gone on counting `packed >= 40`
+        // while none of them packed anything. **A fix can blind the corpus that found it** —
+        // the same shape as a probe that reports zero because it cannot report non-zero.
+        //
+        // So a position is chosen per record: prefix keeps the *ignored* case under test,
+        // which is the regression the fix installed; middle and postfix are where the
+        // attribute reaches the record and the arithmetic is exercised.
+        let mut attr_list = String::new();
         let packed = self.rng.chance(3);
         if packed {
-            attrs.push_str("__attribute__((packed)) ");
+            attr_list.push_str("__attribute__((packed)) ");
         }
         if self.rng.chance(4) {
             let n = *self.rng.pick(&[2u32, 4, 8, 16, 32]);
-            attrs.push_str(&format!("__attribute__((aligned({n}))) "));
+            attr_list.push_str(&format!("__attribute__((aligned({n}))) "));
         }
+        let position = if attr_list.is_empty() {
+            AttrPos::None
+        } else {
+            *self
+                .rng
+                .pick(&[AttrPos::Prefix, AttrPos::Middle, AttrPos::Postfix])
+        };
+        let (prefix, middle, postfix) = match position {
+            AttrPos::None => (String::new(), String::new(), String::new()),
+            AttrPos::Prefix => (attr_list.clone(), String::new(), String::new()),
+            AttrPos::Middle => (String::new(), attr_list.clone(), String::new()),
+            // A postfix attribute goes after the closing brace, before the `;`.
+            AttrPos::Postfix => (
+                String::new(),
+                String::new(),
+                format!(" {}", attr_list.trim_end()),
+            ),
+        };
+        self.positions.push(position);
 
         let n_members = 1 + self.rng.below(5);
         let mut members = String::new();
@@ -308,8 +361,9 @@ impl Gen {
         if named == 0 {
             members.push_str("  int named;\n");
         }
-        self.out
-            .push_str(&format!("{attrs}{kw} {tag} {{\n{members}}};\n"));
+        self.out.push_str(&format!(
+            "{prefix}{kw} {middle}{tag} {{\n{members}}}{postfix};\n"
+        ));
         self.tags.push((tag.clone(), is_union));
         tag
     }
@@ -321,6 +375,7 @@ fn unit(seed: u64) -> Unit {
     Unit {
         src: g.out,
         tags: g.tags,
+        positions: g.positions,
     }
 }
 
@@ -498,6 +553,7 @@ fn the_generator_reaches_what_the_vpp_and_hand_corpora_cannot() {
     let (mut zero_width, mut unnamed, mut packed, mut aligned_member, mut nested, mut unions) =
         (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
     let mut bitfield_after_zero = 0usize;
+    let (mut prefix, mut middle, mut postfix) = (0usize, 0usize, 0usize);
 
     for seed in 0..400u64 {
         let u = unit(seed);
@@ -523,6 +579,14 @@ fn the_generator_reaches_what_the_vpp_and_hand_corpora_cannot() {
         if u.src.contains("__attribute__((aligned(") {
             aligned_member += 1;
         }
+        for pos in &u.positions {
+            match pos {
+                AttrPos::Prefix => prefix += 1,
+                AttrPos::Middle => middle += 1,
+                AttrPos::Postfix => postfix += 1,
+                AttrPos::None => {}
+            }
+        }
         if u.tags.len() > 1 {
             nested += 1;
         }
@@ -543,6 +607,24 @@ fn the_generator_reaches_what_the_vpp_and_hand_corpora_cannot() {
         "a `:0` only means something if a member follows it: {bitfield_after_zero}"
     );
     assert!(packed >= 40, "packed records: {packed}");
+    // ⚠️ **The counts that matter are the two positions where an attribute does something.**
+    // `packed >= 40` above went on passing after the prefix fix while every one of those
+    // attributes had become inert — chiero ignored it, gcc ignored it, and the gate scored an
+    // agreement about nothing. Counting a construct is not counting a *test* of it.
+    eprintln!("attribute positions: {prefix} prefix (ignored), {middle} middle, {postfix} postfix");
+    assert!(
+        middle >= 30,
+        "`struct __attribute__((packed)) S {{…}}` — the position that applies: {middle}"
+    );
+    assert!(
+        postfix >= 30,
+        "`struct S {{…}} __attribute__((packed));` — the other position that applies: {postfix}"
+    );
+    assert!(
+        prefix >= 30,
+        "the ignored position must stay under test too — it is the regression the fix \
+         installed: {prefix}"
+    );
     assert!(aligned_member >= 40, "aligned attributes: {aligned_member}");
     assert!(nested >= 40, "nested records: {nested}");
     assert!(unions >= 20, "unions: {unions}");
