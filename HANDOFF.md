@@ -3350,7 +3350,12 @@ typing the paths ever would.
    lesson paid for the next wave immediately. The other three unexplained discards are noise
    (`chiero-diff`'s loop index, `chiero-pp`'s matched `(` token, `chiero-cir`'s explained-below `t`).
 
-5m. 🆕 **`chiero layout` ignores sema diagnostics entirely** — found by the 2026-08-09 review,
+5m. ✅ **CLOSED 2026-08-09 — `chiero layout` applies the same rule `lower` does**: errors refuse
+   the TU, advisories are printed and do not. Six lines, identical in shape to the path ten
+   lines above it — which was the point, since the two frontend entries had different answers
+   to one question and one of them was "do not ask". The entry is kept below for the reasoning.
+
+5m-orig. 🗄️ **`chiero layout` ignored sema diagnostics entirely** — found by the 2026-08-09 review,
    **pre-existing**, not from that session's changes. `chiero-cli/src/frontend.rs`'s second
    frontend path never looks at `analysis.diagnostics` at all, so a TU containing a hard error
    (an undeclared name) still produces a layout report stamped **`proven — this holds for all
