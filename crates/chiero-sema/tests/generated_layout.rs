@@ -243,6 +243,46 @@ impl Gen {
         format!("R{}", self.next_id)
     }
 
+    /// Emit an enum definition and return its tag.
+    ///
+    /// **The construct 014 contract 10 owns, and the one a real defect landed on.** An enum's
+    /// underlying type is `int` unless a value requires wider — *or* unless the declaration
+    /// names one, which `enum E : unsigned char` does and which chiero parsed and threw away
+    /// until 2026-08-08 (`layout` was wrong on 22 VPP sites and said `proven`). Both gcc 13.3
+    /// and clang 18 accept the spelling under `-std=gnu11` and agree on all three shapes:
+    ///
+    ///     struct { enum E : unsigned char e; char c; }   2/1
+    ///     struct { enum Eplain e; char c; }              8/4
+    ///     struct { enum Ewide { A = 0x100000000 } e; … } 16/8
+    ///
+    /// so the member's size and alignment are a three-way discriminator that a generated
+    /// record can grade and no hand fixture in this project puts inside a struct.
+    fn enum_ty(&mut self) -> String {
+        self.next_id += 1;
+        let tag = format!("E{}", self.next_id);
+        match self.rng.below(3) {
+            // A declared underlying type — the 5k shape.
+            0 => {
+                let u = *self
+                    .rng
+                    .pick(&["unsigned char", "short", "unsigned short", "long"]);
+                self.out
+                    .push_str(&format!("enum {tag} : {u} {{ {tag}_A = 1 }};\n"));
+            }
+            // Plain: `int`-sized unless a value forces wider.
+            1 => {
+                self.out
+                    .push_str(&format!("enum {tag} {{ {tag}_A = 1 }};\n"));
+            }
+            // A value past `int`, which widens the underlying type (contract 10).
+            _ => {
+                self.out
+                    .push_str(&format!("enum {tag} {{ {tag}_A = 0x100000000 }};\n"));
+            }
+        }
+        tag
+    }
+
     /// Emit one record and return its tag.
     ///
     /// `depth` bounds nesting. A nested record is emitted **first**, as its own top-level
@@ -328,8 +368,17 @@ impl Gen {
                     named += 1;
                     prev_was_bitfield = false;
                 }
+                // An enum member. Its width is whatever 014 contract 10 decided, so this
+                // grades the underlying-type rule through the enclosing record's size and
+                // alignment rather than by asking sema what it chose.
+                2 if depth > 0 => {
+                    let e = self.enum_ty();
+                    members.push_str(&format!("  enum {e} {name};\n"));
+                    named += 1;
+                    prev_was_bitfield = false;
+                }
                 // An array. The element count stays small so `sizeof` stays printable.
-                2 => {
+                2 | 7 => {
                     let s = *self.rng.pick(SCALARS);
                     let n = 1 + self.rng.below(4);
                     members.push_str(&format!("  {} {name}[{n}];\n", s.c));
@@ -616,6 +665,7 @@ fn the_generator_reaches_what_the_vpp_and_hand_corpora_cannot() {
     let (mut prefix, mut middle, mut postfix) = (0usize, 0usize, 0usize);
     let mut wide_align = 0usize;
     let mut int128_bitfield = 0usize;
+    let (mut enum_declared, mut enum_plain, mut enum_wide) = (0usize, 0usize, 0usize);
     let mut aligned_member_in_packed = 0usize;
 
     for seed in 0..400u64 {
@@ -634,6 +684,18 @@ fn the_generator_reaches_what_the_vpp_and_hand_corpora_cannot() {
             }
             if t.contains(':') && !t.contains(" :") && seen_zero {
                 bitfield_after_zero += 1;
+            }
+        }
+        for l in u.src.lines() {
+            if !l.starts_with("enum ") {
+                continue;
+            }
+            if l.contains(" : ") {
+                enum_declared += 1;
+            } else if l.contains("0x100000000") {
+                enum_wide += 1;
+            } else {
+                enum_plain += 1;
             }
         }
         if u.src.contains("long double") || u.src.contains("__int128") {
@@ -700,6 +762,18 @@ fn the_generator_reaches_what_the_vpp_and_hand_corpora_cannot() {
         wide_align >= 40,
         "records with a 16-byte-aligned member: {wide_align}"
     );
+    // **All three enum shapes, because they are a three-way discriminator.** A generator that
+    // only emitted the plain one would grade nothing about contract 10, and the declared
+    // underlying type is the shape that was silently discarded until 2026-08-08.
+    assert!(
+        enum_declared >= 10,
+        "`enum E : unsigned char` — the shape that was wrong on 22 VPP sites: {enum_declared}"
+    );
+    assert!(enum_plain >= 10, "plain `int`-width enums: {enum_plain}");
+    assert!(
+        enum_wide >= 10,
+        "an enumerator past `int`, which widens the underlying type: {enum_wide}"
+    );
     assert!(
         int128_bitfield >= 10,
         "a 128-bit bit-field allocation unit, which no other corpus reaches: {int128_bitfield}"
@@ -717,7 +791,8 @@ fn the_generator_reaches_what_the_vpp_and_hand_corpora_cannot() {
         "attribute positions: {prefix} prefix (ignored), {middle} middle, {postfix} postfix; \
          {wide_align} records with a 16-byte-aligned member, {int128_bitfield} with a \
          128-bit bit-field unit, {aligned_member_in_packed} with a member `aligned` beside \
-         a `packed`"
+         a `packed`; enums {enum_declared} declared-underlying / {enum_plain} plain / \
+         {enum_wide} widened"
     );
     assert!(
         middle >= 30,
