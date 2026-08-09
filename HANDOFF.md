@@ -3704,8 +3704,8 @@ typing the paths ever would.
    off. So the over-report needs a signed-overflowing *constant expression* — rare in VPP, and
    the reason this is a correctness point about the taxonomy rather than an urgent number.
 
-5p. 🆕 **`chiero-diff`'s `parsed_cleanly` ignores sema — a *question*, not a demonstrated
-   defect, and the distinction is deliberate.** Found by completing the consumer audit rather
+5p. ✅ **CLOSED 2026-08-09 — `chiero-diff`'s `parsed_cleanly` ignores sema, and that is
+   correct.** Filed as a question, answered by measurement within the hour. Found by completing the consumer audit rather
    than stumbling on it: there are exactly **four** production readers of sema diagnostics
    (`chiero-cli/frontend.rs` twice, `chiero-diff`, `xtask/sweep.rs`, plus sema's own internals),
    and this is the only one that never looks.
@@ -3720,11 +3720,26 @@ typing the paths ever would.
    then produce a confident wrong `size`, and the flag that exists to widen the set would not
    fire, because the parser was silent.
 
-   ⚠️ **Not reproduced, and that is why it is a question.** `records()` skips `!complete`
-   records, which may already exclude the reachable cases — establishing it needs a fixture with
-   a sema error and a still-`complete` record whose layout is wrong. **5o was reproduced on a
-   two-file tree before being written down; this was not, and the two should not be read the
-   same way.**
+   ✅ **ANSWERED the same day, and the answer is no — `parsed_cleanly` is already sufficient.**
+   The dangerous combination would be a *sema* error plus a still-`complete` record whose layout
+   is wrong. Measured over four shapes:
+
+   | shape | where it fails |
+   |---|---|
+   | `int f(void){return nope;}` + a clean `struct S` | sema errors, `S` is `complete=true size=8 align=4` — **the correct layout**, so nothing is wrong to widen for |
+   | `struct S{ UnknownT m; char c; };` | **parse**: `unknown type name` |
+   | `typedef UnknownT MyT; struct S{ MyT m; … };` | **parse** |
+   | `struct S{ UnknownT m[4]; … };` | **parse** |
+
+   **The errors that could corrupt a record's layout are parse errors**, because C cannot parse a
+   member declaration without knowing whether the name is a type — and `parsed_cleanly` covers
+   parse. A sema-only error leaves the records it did resolve correct. So the flag's scope is
+   right as written, and the doc line "the preprocessor and the parser were both silent" is not
+   an oversight but the whole reachable set.
+
+   📌 Kept as a closed entry rather than deleted: *"is this conservative flag conservative
+   enough"* is a reasonable question to ask again, and the next asker should get the measurement
+   instead of repeating it.
 
 6. **`InstKind::Call` carries no result type**, so an indirect call's result width is whatever
    candidate ran. The arity and parameter-type filters cut the wildest cases and cannot close it;
