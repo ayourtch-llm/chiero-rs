@@ -3622,10 +3622,17 @@ typing the paths ever would.
      `grep -rE '^[[:space:]]*[a-z_0-9 ]+:[[:space:]]*0[[:space:]]*;'` over all of `src/` returns
      **zero** files (measured while explaining why the pinned-40 retake could not move, §7.21).
 
-   **So the only consumer that would benefit cannot reach the construct**, and the instrument
-   that would grade a fix already exists and already passes on the non-`:0` case. Reopen it if a
-   *different* corpus starts producing `:0` — the generated layout gate emits 56 of them per 400
-   seeds, so that corpus could grade a fix tomorrow if anyone wanted one. A record declaring a
+   **So the only consumer that would benefit cannot reach the construct.**
+
+   ✅ **And the grading path is already built, which was worth checking rather than asserting.**
+   The first version of this entry named the generated *layout* gate as the corpus that could
+   grade a fix; that was the wrong instrument — it compares sizes and offsets, not proposals.
+   The right one is `floor_diff.py`, and measured directly: of 400 generated records **305
+   contain a `:0`, and chiero proposes for exactly 0 of them.** They are silently skipped today
+   for want of a proposal, and the moment one is emitted all 305 flow into the permutation
+   oracle and get graded. **A fix would arrive with 305 checks behind it on the first run** —
+   nobody has to build anything first, which is the only part of "worth doing" that was
+   genuinely unknown. A record declaring a
    zero-width bit-field still gets no padding number, because a `:0`-terminated run's cost depends
    on where the run is placed and this arithmetic sums constants. Closing it needs the run's
    allocation unit in the field description — `Field` would carry `unit_bits`, and the ideal
