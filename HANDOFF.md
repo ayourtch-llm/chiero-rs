@@ -4034,9 +4034,11 @@ not an anecdote.*
   match. They are **complete** (`lex_cached` has exactly two exits and each increments exactly
   one, so hits + misses = calls), so the verdict stands at six counters, five sound. But *the
   audit for narrow measurement was itself narrowly scoped*, which is the joke the class keeps
-  telling. ⚠️ One nuance left unmeasured rather than asserted: a hit that must be `relocated`
-  counts the same as a free hit, so `cache_stats` cannot distinguish them — harmless for 011
-  c13's warm-vs-cold claim, unquantified for anything finer.
+  telling. ✅ **And the nuance left unmeasured got measured:** a hit that must be `relocated` counts
+  the same as a free hit, so `cache_stats` cannot distinguish them — and on a real TU
+  (`vppinfra/format.c` with `-I src`, which lexes ~3 MB of includes) **relocating hits are
+  zero**. Include guards mean a cached file is re-requested at the same `start_pos` or not at
+  all. So the conflation is harmless in practice, not merely harmless for 011 c13.
 
 - **A counter that omits a term is not a smaller measurement, it is a wrong one** — and a wrong
   one that agrees with the fix you already made is the worst kind, because it retires the
@@ -4062,6 +4064,13 @@ not an anecdote.*
   pinned-40 came back byte-identical after a session that changed layout, alignment and
   diagnostics — necessarily, since VPP contains zero instances of every shape that changed. That
   run was a control, not a check, and reading it as confirmation would have been the whole error.
+
+- ⚠️ **Mechanical: piping a chiero command to `head` makes it exit 101, which reads as a panic.**
+  Rust's `println!` panics on `EPIPE`, so `chiero cir … | head -3` reports exit 101 while
+  `chiero cir … > file` reports 0. This matters here because the project *asserts exit codes* —
+  the advisory-diagnostic tests compare chiero's against gcc's — and a measurement taken through
+  a pipe would be measuring the pipe. **Redirect, never pipe, when the exit code is the subject.**
+  Caught by re-running before reporting a phantom panic in the CLI.
 
 - ⚠️ **Mechanical: never key a scripted edit or a grep on prose or on multi-token source text.**
   Four failures in one session, all the same cause — `cargo fmt` had reflowed the anchor. Three
