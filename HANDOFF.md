@@ -2727,11 +2727,25 @@ longer sits between a fresh context and the live work.
    HEAD it is `OK`. **The control is what makes it ground truth** — without it the entry would
    record a pre-existing failure.
 
-   ⏭️ **What remains is the gate, not the corpus.** `xtask replay-gate` prints
-   `recall 0.0% over 1 observed entry` and `replay not implemented`
-   (`xtask/src/replay_gate.rs:212`). It has to run *selection* over `3f544b872^..3f544b872` and
-   assert `test_lldp` comes out — coverage-driven, so it is a real feature rather than filling
-   in a stub.
+   ⏭️ **What remains is the gate, not the corpus** — and the recipe is scouted, not guessed.
+   `xtask replay-gate` prints `recall 0.0% over 1 observed entry` and `replay not implemented`
+   (`xtask/src/replay_gate.rs:212`). The missing input is **per-test coverage**, and VPP can
+   produce it:
+
+   | step | command | note |
+   |---|---|---|
+   | 1 | `make test-cov TEST=test_lldp` | builds a gcov tree and runs *only* that suite, so the `.gcda` **is** test_lldp's coverage |
+   | 2 | `chiero select-tests <before.c> <after.c> --coverage <dir> --stem lldp_input` | before/after are `lldp_input.c` at `3f544b872^` and `3f544b872` |
+   | 3 | assert `test_lldp` is in the output | that is contract 18's recall for this entry |
+
+   ✅ **It cannot disturb the baseline**: `test-cov` builds into `build-root/build-vpp_gcov-native`,
+   a *separate* tree from the `build-vpp-native` every published number reads. Verified in
+   `Makefile:600-604`.
+
+   ⚠️ **One entry proves recall, not discrimination.** With only `test_lldp`'s coverage, a
+   selector that returns *everything* also scores 100%. A second suite's coverage — any suite
+   that does **not** touch `lldp_input.c` — is what makes the number mean something, and it
+   should land in the same wave rather than after it.
 
    📌 **The expensive half is done and it stayed cheap**: ~12 minutes, not the feared hour, and
    the tree was restored on every path including the failed first attempt.
