@@ -459,3 +459,58 @@ fn a_zero_width_bit_field_makes_the_field_list_partial_rather_than_the_number_wr
         "a record chiero could not judge is not a record with nothing to find: {v}"
     );
 }
+
+/// **A translation unit sema refused must not produce a layout report stamped `proven`.**
+///
+/// `chiero layout`'s frontend path never looked at `analysis.diagnostics` at all — not for
+/// errors, not for advisories — so a TU containing an undeclared name still produced a padding
+/// proposal marked **`proven — this holds for all inputs (Exact)`** and exited 0, with the
+/// diagnostic never printed.
+///
+/// That contradicts the module's own header ("Every stage's diagnostics are a refusal") and,
+/// since the severity work, the policy `lower()` implements ten lines above it. Pre-existing —
+/// found by the adversarial review of that work, which is the more useful kind of finding: the
+/// change did not cause it, it made the inconsistency untenable.
+///
+/// ⚠️ **`proven` is the word that makes this worse than a missing diagnostic.** 041 §3's
+/// proposal is arithmetic over a record's members; a record whose type resolution failed can
+/// still be laid out, and the arithmetic then holds for a struct the program does not have.
+#[test]
+fn layout_refuses_a_translation_unit_sema_could_not_analyse() {
+    let dir = std::env::temp_dir().join(format!("chiero-layout-refuse-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let run = |name: &str, src: &str| {
+        let c = dir.join(name);
+        std::fs::write(&c, src).expect("write");
+        std::process::Command::new(env!("CARGO_BIN_EXE_chiero"))
+            .arg("layout")
+            .arg(&c)
+            .output()
+            .expect("run chiero")
+    };
+
+    let bad = run(
+        "bad.c",
+        "struct S { char a; int b; };\nint f(void) { return undeclared_name; }\n",
+    );
+    assert!(
+        !bad.status.success(),
+        "sema refused this TU; a layout report over it cannot be `proven`.\nstdout: {}",
+        String::from_utf8_lossy(&bad.stdout)
+    );
+
+    // **The discriminator.** The same record without the error must still be reported, or the
+    // fix could be "refuse everything".
+    let good = run("good.c", "struct S { char a; int b; };\n");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        good.status.success(),
+        "a clean TU must still produce a report: {}",
+        String::from_utf8_lossy(&good.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&good.stdout).contains('S'),
+        "and the report must actually name the record: {}",
+        String::from_utf8_lossy(&good.stdout)
+    );
+}
