@@ -242,7 +242,7 @@ fn verify_function(m: &Module, f: &Function, out: &mut Vec<VerifyError>) {
     check_reachability(f, out);
     check_switch_cases(f, out);
     check_allocas(f, out);
-    check_ssa_and_types(f, out);
+    check_ssa_and_types(m, f, out);
 }
 
 /// Ids must be unique and resolvable. A duplicate `BlockId` is not a crash but a
@@ -578,7 +578,7 @@ fn check_allocas(f: &Function, out: &mut Vec<VerifyError>) {
 }
 
 /// Rules 1, 5, 6, 7, 11, 12 — everything that needs the per-value type environment.
-fn check_ssa_and_types(f: &Function, out: &mut Vec<VerifyError>) {
+fn check_ssa_and_types(m: &Module, f: &Function, out: &mut Vec<VerifyError>) {
     // Rule 1a: assigned exactly once.
     let mut defs: IndexMap<ValueId, (BlockId, usize)> = IndexMap::new();
     let mut types: IndexMap<ValueId, CTy> = IndexMap::new();
@@ -591,7 +591,7 @@ fn check_ssa_and_types(f: &Function, out: &mut Vec<VerifyError>) {
     }
     for b in &f.blocks {
         for (i, inst) in b.insts.iter().enumerate() {
-            for (dst, ty) in defined_by(inst, &types) {
+            for (dst, ty) in defined_by(m, inst, &types) {
                 if defs.contains_key(&dst) {
                     err(
                         out,
@@ -716,13 +716,34 @@ fn check_phis(f: &Function, out: &mut Vec<VerifyError>) {
     }
 }
 
-fn defined_by(i: &Inst, types: &IndexMap<ValueId, CTy>) -> Vec<(ValueId, CTy)> {
+fn defined_by(m: &Module, i: &Inst, types: &IndexMap<ValueId, CTy>) -> Vec<(ValueId, CTy)> {
     match &i.kind {
         InstKind::Assign { dst, rv } => vec![(*dst, rvalue_type_in(rv, types))],
-        // A call's result type is unknown here (the callee lives in the module, not the
-        // function), so it stays Void — but a *pointer-returning* call is the common
-        // source of pointers in C, so this is recorded as a known gap rather than a
-        // silently-correct answer.
+        // **A direct call's result type is the callee's, and it was one lookup away.** This
+        // read `Void` for every call, explaining that "the callee lives in the module, not the
+        // function" — true of this function's parameters, not of the program. `Callee::Direct`
+        // names a `FuncId` and `Function` carries `ret`, so the module is all that was missing;
+        // `verify_function` already had it.
+        //
+        // The gap's real cost was the **exemption** it forced: `require_ptr` exempts `Void` so
+        // that pointer-returning calls do not all report, and that made every *misuse* of a
+        // call result unreportable too.
+        //
+        // ⚠️ **`Indirect` stays `Void`, and that is not laziness.** `Callee::Indirect` carries
+        // an operand rather than a signature, so there is genuinely nothing to look up — it is
+        // the half that needs a CIR field (§9.1 item 6). Splitting the two is what made the
+        // direct half free of any type change or fixture churn.
+        InstKind::Call {
+            dst: Some(d),
+            callee: Callee::Direct(fid),
+            ..
+        } => vec![(
+            *d,
+            m.funcs
+                .iter()
+                .find(|f| f.id == *fid)
+                .map_or(CTy::Void, |f| f.ret.clone()),
+        )],
         InstKind::Call { dst: Some(d), .. } => vec![(*d, CTy::Void)],
         InstKind::AllocaDyn { dst, .. } => vec![(*dst, CTy::Ptr)],
         InstKind::VaArg { dst, ty, .. } => vec![(*dst, ty.clone())],

@@ -2135,34 +2135,42 @@ fn a_function_with_twelve_thousand_blocks_verifies_promptly() {
 /// free. The second assertion pins that the split is real rather than incidental.
 #[test]
 fn a_direct_calls_result_is_typed_from_the_callees_signature() {
+    // `funcs[0]` is left exactly as `valid_module` builds it: `f` returning `i32`.
     let mut m = valid_module();
-    make_void(&mut m);
-    // `funcs[0]` is the callee; give it an `i32` return so its result is *not* a pointer.
-    m.funcs[0].ret = CTy::Int(32);
-    m.funcs[0].variadic = true;
-    m.funcs[0].blocks[0].term = Terminator::Return(None);
-
-    // The caller: `%9 = call @f0()` then `store i32 0 -> %9`, which is a pointer misuse.
-    let caller = m.funcs.len();
-    let mut g = m.funcs[0].clone();
-    g.id = FuncId(caller as u32);
-    g.variadic = false;
-    g.blocks[0].insts = vec![
-        inst(InstKind::Call {
-            dst: Some(ValueId(9)),
-            callee: Callee::Direct(FuncId(0)),
-            args: vec![],
-        }),
-        inst(InstKind::Store {
-            addr: Operand::Value(ValueId(9)),
-            val: Operand::Const(Const::Int { bits: 32, val: 0 }),
-            ty: CTy::Int(32),
-            align: 4,
-            vol: Volatility::Normal,
-        }),
-    ];
-    g.blocks[0].term = Terminator::Return(None);
+    let g = Function {
+        id: FuncId(1),
+        name: "g".into(),
+        params: vec![],
+        ret: CTy::Void,
+        variadic: false,
+        allocas: vec![],
+        blocks: vec![block(
+            0,
+            vec![
+                // `%9 = call @f()` — an `i32`, not a pointer.
+                inst(InstKind::Call {
+                    dst: Some(ValueId(9)),
+                    callee: Callee::Direct(FuncId(0)),
+                    args: vec![],
+                }),
+                // ...used as a store *address*, which is the misuse.
+                inst(InstKind::Store {
+                    addr: Operand::Value(ValueId(9)),
+                    val: Operand::Const(Const::Int { bits: 32, val: 0 }),
+                    ty: CTy::Int(32),
+                    align: 4,
+                    vol: Volatility::Normal,
+                }),
+            ],
+            Terminator::Return(None),
+        )],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        access_paths: Default::default(),
+        body: Body::Defined,
+        span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
+    };
     m.funcs.push(g);
-
     assert_rejects(&m, VerifyErrorKind::BadPointerOperand);
 }
