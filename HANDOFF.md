@@ -1348,8 +1348,8 @@ its files the harness supplies a strict *superset*: 8 include paths against the 
 2, none missing. The extras could shadow a header, so the CIR was compared — `vppinfra/hash.c`,
 `vlib/node_cli.c`, `vlib/counter.c` are **byte-identical** under real and harness flags.
 
-⚠️ **The plugin sweep is a different story: 198 of 935 plugin C units — 21% — need include
-paths the harness never passes.**
+⚠️ **The plugin sweep is a different story: 198 of 935 plugin C units — 21% — are *exposed*,
+needing include paths the harness never passes.**
 
 | files | missing |
 |---|---|
@@ -1359,10 +1359,26 @@ paths the harness never passes.**
 | 11 | `/usr/include/libnl3` |
 | 8 | two more sets |
 
-Those cannot preprocess under the sweep's flags, so they land as *"chiero cannot read this"* —
-**a harness defect wearing a chiero defect's clothes**. §8.3's plugin-sweep rows ("31 `failed`
-rows resolved to six causes") are exactly where this would hide, and 5f's `--built-only` fixed
-the neighbouring confusion (files nothing builds) without reaching this one.
+⚠️ **"Those cannot preprocess" is what I wrote first, and it was inference stated as fact.**
+Measured instead — 32 of the 198 sampled at random, each run under harness flags and under its
+own real command:
+
+| outcome | files |
+|---|---|
+| **fails under harness flags, passes under the real ones** | **5** — the misattribution |
+| passes either way | 23 — the missing path is never reached |
+| fails either way | 4 — a real chiero limit (`dpdk`), not the harness |
+
+So ~16% of the exposed set, **on the order of 30 files of 935**, not 198 — real, worth fixing,
+and an order of magnitude smaller than the sentence I first wrote. Ready reproductions:
+`linux-cp/lcp_interface.c`, `sfdp_services/acl/cli.c`, `tlspicotls/certs.c`,
+`af_xdp/unformat.c`, `sasc/services/flow-quality/counter.c`.
+
+Those land as *"chiero cannot read this"* — **a harness defect wearing a chiero defect's
+clothes**. §8.3's plugin-sweep rows ("31 `failed` rows resolved to six causes") are where it
+hides, and 5f's `--built-only` fixed the neighbouring confusion (files nothing builds) without
+reaching this one. ⚠️ **Those rows were never kept**, only summarised in prose, so the overlap
+cannot be checked after the fact — §11.3's own lesson, from the wrong side.
 
 ✅ **The fix is not new code, it is using the code that exists**: read the compile database and
 take each unit's own flags. ⚠️ It re-takes the plugin numbers, which is a deliberate spend — but
@@ -2871,15 +2887,17 @@ longer sits between a fresh context and the live work.
 
 8d. 🆕 **Point the measurement harness at the compile database instead of a hand-kept flag
    list** (§7.30). `builddb` already parses one and is used by nothing that produces a published
-   number. **198 of 935 plugin C units (21%) need include paths `measure.sh` never passes**, so
-   they fail to preprocess and are reported as chiero's failure.
+   number. **198 of 935 plugin C units (21%) are exposed to include paths `measure.sh` never
+   passes**, and a 32-file random sample says **~16% actually fail because of it** — on the
+   order of 30 files, reported as chiero's failure when they are the harness's (§7.30).
 
    The pinned 40 is unaffected — checked, not assumed: strict superset, and the CIR is
    byte-identical under real and harness flags for three of its files.
 
    ⚠️ Re-takes the plugin sweep (~65 min) and changes published numbers. Worth it: those numbers
-   are measured under flags VPP does not use. ⏭️ Start by comparing `failed` rows against the
-   198 — if they overlap, the fix converts instrument noise into coverage.
+   are measured under flags VPP does not use. ⏭️ The `failed` rows were never saved, so the
+   overlap cannot be checked historically; §7.30's sample is the evidence, and its five named
+   files are a ready reproduction.
 
 8b. ✅ **RESOLVED 2026-08-09 as a side effect of the replay probe** — the build ran, cmake
    regenerated, and **zero** `CMakeLists.txt` are now newer than `build.ninja` (was four). The
