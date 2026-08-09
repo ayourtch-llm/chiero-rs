@@ -3673,6 +3673,37 @@ typing the paths ever would.
    threading `align` through `Memory::copy` and lifting `align_fault`'s 16-byte bound — an API
    change across two crates, worth doing when `ub-strict` is.
 
+5o. 🆕 **The sweep's `SEVERITY MISMATCH` bucket over-reports now that advisories exist** —
+   the **fourth** consumer of the diagnostic/severity distinction, after `lower()`,
+   `chiero layout` and the generated channels, and the only one that feeds *published numbers*.
+
+   `xtask/src/sweep.rs:74` reads `(Outcome::Warned(_), _) => Bucket::SeverityMismatch`: it keys
+   on **gcc's** outcome and ignores chiero's severity. Its own comment states the intent exactly
+   — *"gcc warned and chiero diagnosed: they agree on the code, not on how loudly to say so"* —
+   and that was right when every chiero diagnostic was a refusal. It is wrong now: when gcc
+   warns and chiero emits an **advisory**, both warn and both produce a value. That is
+   agreement, reported as a mismatch, under a heading that says *"chiero refused"* when chiero
+   did not.
+
+   Reproduced 2026-08-09 on a two-file tree:
+
+       SEVERITY MISMATCH — gcc warned, chiero refused; both saw it
+             1  sema: signed overflow in a constant expression
+
+   gcc exits 0 with `-Woverflow`; chiero folds to the same value and advises. Nothing disagreed.
+
+   **The fix is a taxonomy change, which is why it was recorded rather than done:** `Outcome`
+   carries only `Diagnosed(String)`, so the sweep cannot tell an advisory from an error. It
+   needs an `Advised` variant (the site already holds the `SemaDiagnostic`, so `is_error()` is
+   in reach) and a `(Warned, Advised) => agreement` arm. ⚠️ These buckets are what §7.6's
+   measurements are counted in, so changing them silently would make old and new sweep numbers
+   incomparable — do it in a wave that re-takes the numbers, and say which.
+
+   📌 Scope, measured not guessed: only `Cx::wrap`'s signed-overflow advisory fires under the
+   `gnu` dialect the sweep uses. The other nine advisory sites are ISO remarks, dialect-gated
+   off. So the over-report needs a signed-overflowing *constant expression* — rare in VPP, and
+   the reason this is a correctness point about the taxonomy rather than an urgent number.
+
 6. **`InstKind::Call` carries no result type**, so an indirect call's result width is whatever
    candidate ran. The arity and parameter-type filters cut the wildest cases and cannot close it;
    the engine survives the rest by degrading. The real fix is a CIR change.
