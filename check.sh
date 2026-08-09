@@ -52,6 +52,23 @@ if [ $lints -eq 1 ]; then
     echo "RED (clippy -D warnings): $(echo "$clip" | grep -cE '^error(\[|:)') errors — CI runs this"
     exit 1
   fi
+  # **The no-default-features build**, which nothing else here reaches: `cargo test` builds
+  # with default features, so a break in 003 §3's hard constraint — chiero builds and runs
+  # linking nothing — was invisible to this gate and caught only by CI. ~0.6 s warm.
+  if ! nodef=$(cargo build --workspace --no-default-features 2>&1); then
+    echo "$nodef" | grep -E "^error" | head -20
+    echo "RED (--no-default-features build): CI runs this; the no-link constraint is §3's"
+    exit 1
+  fi
+  # **023 contract 13a**, and the one CI gate with no test behind it: `check_proof_surface`
+  # is called from `xtask/src/main.rs` and nowhere else, so `cargo test` cannot see a
+  # regression in it. ~0.5 s. (`check-deps` and `check-vpp-leak` *are* covered — by
+  # `the_real_workspace_is_clean` and `workspace_has_no_vpp_leaks` — so they stay out.)
+  if ! proof=$(cargo run -q -p xtask -- check-proof-surface 2>&1); then
+    echo "$proof" | head -20 | sed 's/^/  /'
+    echo "RED (check-proof-surface): 023 contract 13a — a proof cannot be forged; CI runs this"
+    exit 1
+  fi
 fi
 
 out=$(cargo test --workspace 2>&1)
