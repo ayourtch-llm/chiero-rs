@@ -4120,8 +4120,8 @@ impl<'m> Engine<'m> {
         );
         let id = match callee {
             Callee::Direct(id) => id,
-            Callee::Indirect { target: op, .. } => {
-                self.indirect(a, s, op, dst, args, span);
+            Callee::Indirect { target: op, ret } => {
+                self.indirect(a, s, op, dst, args, span, ret);
                 return;
             }
         };
@@ -8101,6 +8101,10 @@ impl<'m> Engine<'m> {
     /// Candidates are every defined function whose signature could be called here. A
     /// real resolution against the pointer's value is owed; over-approximating is the
     /// safe direction, and the cap is what keeps it affordable.
+    // Eight, because the declared return type joined the six the call site already had.
+    // Bundling them into a struct would name the same six twice — once at the field and
+    // once at the call — for no reader's benefit.
+    #[allow(clippy::too_many_arguments)]
     fn indirect(
         &mut self,
         a: &mut TermArena,
@@ -8109,6 +8113,10 @@ impl<'m> Engine<'m> {
         dst: Option<ValueId>,
         args: &[Operand],
         span: Span,
+        // The type the *call site* declares for the result (020's `Callee::Indirect::ret`).
+        // Nothing else knows it: CIR pointers are untyped, so a candidate's own `ret` is the
+        // only other signature in play and comparing the two is the point.
+        declared_ret: &CTy,
     ) {
         // **A pointer chiero can resolve is not a pointer chiero cannot resolve.** The
         // unresolvable sibling exists because the candidate list would otherwise be
@@ -8175,10 +8183,10 @@ impl<'m> Engine<'m> {
         //
         // A **variadic** callee matches any arity at or above its named parameters, because
         // that is what calling one means.
-        let wants_value = dst.is_some();
         // Evaluated once, before the candidate scan: `operand` needs the state, and the scan
         // borrows the module out of `self`.
         let arg_vals: Vec<Option<Value>> = args.iter().map(|o| self.operand(a, s, o)).collect();
+        let mut excluded_by_ret = 0usize;
         let all: Vec<FuncId> = self
             .module
             .funcs
@@ -8191,9 +8199,37 @@ impl<'m> Engine<'m> {
                     args.len() == f.params.len()
                 }
             })
-            // A site that uses the result cannot be calling a `void` function, and a site
-            // that discards one may call anything — C lets a value be ignored.
-            .filter(|f| !(wants_value && f.ret == CTy::Void))
+            // **The declared result type rules candidates out.** Until 2026-08-09 the result
+            // was whatever candidate happened to run, because `InstKind::Call` carried no
+            // type; `Callee::Indirect` declares one now, so a candidate returning a
+            // different *width* is not a function this site could have been calling.
+            //
+            // Width, not equality, and deliberately: the parameter filter below already
+            // treats `Ptr` and `Int(64)` as interchangeable because `uword` is everywhere in
+            // VPP, and a return rule stricter than the parameter rule would cut candidates
+            // the same program plainly reaches.
+            //
+            // A `void` *declaration* constrains nothing — C lets any result be discarded —
+            // so every candidate survives there. That replaces the rule this filter used to
+            // carry, `!(wants_value && f.ret == CTy::Void)`, which was **backwards**:
+            // `wants_value` is `dst.is_some()` and lowering assigns a `dst` to every call
+            // including a void one, so at a void-declared site it excluded exactly the
+            // void-returning candidates that belonged there. Four of the six indirect sites
+            // in the pinned-40 corpus are void-declared, and all four were affected. The
+            // intent behind it — a site that really uses an `i32` is not calling a `void`
+            // function — survives as the width comparison, since `void` is 0 bytes wide.
+            .filter(|f| {
+                let keep =
+                    *declared_ret == CTy::Void || size_of_cty(&f.ret) == size_of_cty(declared_ret);
+                // Counted, because it changes what the unresolvable branch may claim: a
+                // candidate chiero *saw and rejected* is not "a function chiero has not
+                // seen", and reporting it as one would send a reader looking for a
+                // definition that is right there in the translation unit.
+                if !keep {
+                    excluded_by_ret += 1;
+                }
+                keep
+            })
             // **And an argument that cannot be this parameter rules the candidate out.**
             //
             // Lowering has already converted each argument to the type the *function
@@ -8255,7 +8291,17 @@ impl<'m> Engine<'m> {
             Fidelity::Unknown,
             AssumptionKind::NoInformation,
             span,
-            "unresolvable callee: the pointer may name a function chiero has not seen",
+            &if excluded_by_ret > 0 {
+                format!(
+                    "unresolvable callee: the pointer may name a function chiero has not \
+                     seen; {excluded_by_ret} defined function(s) were excluded because their \
+                     return type is not the {} this site declares",
+                    chiero_cir::text::ty_name(declared_ret),
+                )
+            } else {
+                "unresolvable callee: the pointer may name a function chiero has not seen"
+                    .to_string()
+            },
         );
         s.status = Status::Terminated(TermReason::Return);
     }

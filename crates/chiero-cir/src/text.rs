@@ -1760,6 +1760,13 @@ fn block_label(_f: &Function, id: BlockId) -> String {
     }
 }
 
+/// The CIR text form of a type — `i32`, `ptr`, `void`. Public because diagnostics outside
+/// this crate quote types at readers, and the text form is the one those readers already
+/// know from `chiero cir` output.
+pub fn ty_name(t: &CTy) -> String {
+    ty(t)
+}
+
 fn ty(t: &CTy) -> String {
     match t {
         CTy::Void => "void".into(),

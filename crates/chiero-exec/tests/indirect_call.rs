@@ -389,7 +389,7 @@ fn an_unresolvable_callee_forks_only_into_candidates_of_the_right_arity() {
 /// it. 015's `zero_at` already records the rule this breaks: *"a source-triggerable panic is the
 /// worst outcome there is because it takes the run and every other finding in it."*
 #[test]
-fn a_comparison_of_mismatched_widths_degrades_the_path_instead_of_aborting() {
+fn a_candidate_whose_return_width_disagrees_with_the_site_is_excluded_and_said_so() {
     let byte_fn = Function {
         id: FuncId(1),
         name: "one_byte".into(),
@@ -477,12 +477,113 @@ fn a_comparison_of_mismatched_widths_degrades_the_path_instead_of_aborting() {
     assert!(!r.states().is_empty());
     // **And it says what it could not do.** A path that silently carried on past a
     // comparison it never made would answer about a program it did not analyse.
+    // Until 2026-08-09 this path *ran* `byte_fn` and then compared its `i8` result against
+    // NULL as a pointer, degrading at the comparison. `Callee::Indirect` declares the site's
+    // return type now, so the candidate is excluded before it runs — and the degradation has
+    // to say that, because "a function chiero has not seen" would be false: chiero saw
+    // `byte_fn`, and chose it.
     assert!(
         r.states().iter().any(|s| s
             .assumptions()
             .iter()
-            .any(|x| x.detail.contains("width") || x.detail.contains("compar"))),
-        "the degradation names the comparison: {:#?}",
+            .any(|x| x.detail.contains("return type") && x.detail.contains("excluded"))),
+        "the degradation names the exclusion: {:#?}",
+        r.states()
+            .iter()
+            .flat_map(|s| s.assumptions().iter().map(|x| x.detail.clone()))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// **A site that declares `void` may call a `void` function.**
+///
+/// Obvious, and chiero got it backwards from the day the filter was written until
+/// 2026-08-09. The rule was `!(wants_value && f.ret == CTy::Void)` — "a site that uses the
+/// result cannot be calling a void function" — and `wants_value` is `dst.is_some()`. But
+/// lowering assigns a `dst` to *every* call including a void one, so `wants_value` was true
+/// at a void call site, and the rule excluded exactly the candidates that belonged there.
+///
+/// Real, not hypothetical: four of the six indirect call sites in the pinned-40 corpus are
+/// `= call %n -> void(...)`, e.g. `vppinfra/bitmap.c`'s `%102937 = call %102936 -> void`.
+/// At every one of them, every void-returning function in the translation unit was ruled
+/// out and only the non-void ones — the wrong ones — were explored.
+///
+/// The observable is the state count: each surviving candidate forks a sibling, and the
+/// unresolvable branch is always present, so one reachable candidate means two states.
+#[test]
+fn a_void_declared_site_may_call_a_void_function() {
+    let noop = Function {
+        id: FuncId(1),
+        name: "noop".into(),
+        params: vec![Param {
+            value: ValueId(0),
+            ty: CTy::Int(32),
+        }],
+        ret: CTy::Void,
+        variadic: false,
+        allocas: vec![],
+        blocks: vec![Block {
+            id: BlockId(0),
+            insts: vec![],
+            term: Terminator::Return(None),
+            gcov_lines: Default::default(),
+            span: Span::DUMMY,
+        }],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Defined,
+        access_paths: Default::default(),
+        span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
+    };
+    let m = Module {
+        funcs: vec![
+            Function {
+                id: FuncId(0),
+                name: "main".into(),
+                params: vec![],
+                ret: CTy::Int(32),
+                variadic: false,
+                allocas: vec![],
+                blocks: vec![Block {
+                    id: BlockId(0),
+                    insts: vec![
+                        i(InstKind::Assign {
+                            dst: ValueId(0),
+                            rv: RValue::Fresh { ty: CTy::Ptr },
+                        }),
+                        // Exactly what lowering emits for `fp (7);` where `fp` returns void:
+                        // a `dst`, and a declared return type of `void`.
+                        i(InstKind::Call {
+                            dst: Some(ValueId(1)),
+                            callee: Callee::Indirect {
+                                target: Operand::Value(ValueId(0)),
+                                ret: CTy::Void,
+                            },
+                            args: vec![i32c(7)],
+                        }),
+                    ],
+                    term: Terminator::Return(Some(i32c(0))),
+                    gcov_lines: Default::default(),
+                    span: Span::DUMMY,
+                }],
+                entry: BlockId(0),
+                attrs: Default::default(),
+                body: Body::Defined,
+                access_paths: Default::default(),
+                span: Span::DUMMY,
+                linkage: chiero_cir::Linkage::External,
+            },
+            noop,
+        ],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(
+        r.states().len(),
+        2,
+        "the void candidate forks a state, and the unresolvable branch is the other: {:#?}",
         r.states()
             .iter()
             .flat_map(|s| s.assumptions().iter().map(|x| x.detail.clone()))
