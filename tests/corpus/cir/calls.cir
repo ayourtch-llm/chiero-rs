@@ -16,7 +16,7 @@ entry:
 func @indirect(%0: ptr, %1: i32) -> i32 {
 entry:
   .line 15
-  %2 = call %0(%1)
+  %2 = call %0 -> i32(%1)
   ret %2
 }
 

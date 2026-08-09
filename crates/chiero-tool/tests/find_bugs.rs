@@ -879,7 +879,7 @@ entry:
   .line 1
   %2 = addrlocal %1
   %3 = load ptr, %0 align 8
-  call %3(%2)
+  call %3 -> void(%2)
   ret 0i32
 }
 

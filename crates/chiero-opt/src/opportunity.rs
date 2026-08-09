@@ -673,7 +673,7 @@ impl Checker for RedundantLoad {
                             (quiet, name)
                         })
                     }
-                    chiero_cir::Callee::Indirect(_) => None,
+                    chiero_cir::Callee::Indirect { .. } => None,
                 };
                 let since = match cleared {
                     Some((true, name)) => Since::ClearedCall(name),

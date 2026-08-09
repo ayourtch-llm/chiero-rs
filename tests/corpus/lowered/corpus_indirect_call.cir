@@ -91,7 +91,7 @@ bb3: ; span 340:802:0
   .seqpoint ; span 428:466:0
   %32 = addrlocal %1 ; span 478:480:0
   %33 = load ptr, %32 align 1 ; span 478:480:0
-  %34 = call %33(7i32) ; span 478:483:0
+  %34 = call %33 -> i32(7i32) ; span 478:483:0
   %35 = addrlocal %3 ; span 470:483:0
   store i32 %34 -> %35 align 4 ; span 470:483:0
   .seqpoint ; span 470:483:0

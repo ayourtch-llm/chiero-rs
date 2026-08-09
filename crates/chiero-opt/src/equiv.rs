@@ -643,7 +643,7 @@ fn observable_inst(
             Some("manipulates a variadic argument list".to_string())
         }
         InstKind::Call { callee, .. } => match callee {
-            Callee::Indirect(_) => Some("makes an indirect call".to_string()),
+            Callee::Indirect { .. } => Some("makes an indirect call".to_string()),
             Callee::Direct(id) => {
                 let Some(f) = m.funcs.iter().find(|f| f.id == *id) else {
                     return Some("calls a function that is not in the module".to_string());

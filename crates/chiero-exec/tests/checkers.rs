@@ -748,7 +748,10 @@ fn event_call_fires_for_an_indirect_callee() {
                 Inst {
                     kind: InstKind::Call {
                         dst: Some(ValueId(1)),
-                        callee: Callee::Indirect(Operand::Value(ValueId(0))),
+                        callee: Callee::Indirect {
+                            target: Operand::Value(ValueId(0)),
+                            ret: CTy::Int(32),
+                        },
                         args: vec![],
                     },
                     span: Span::DUMMY,

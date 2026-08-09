@@ -3457,8 +3457,14 @@ impl Lowerer<'_> {
                 }
                 // Arguments left to right, **then** the call (015 §2.5).
                 let mut ops: Vec<Operand> = args.iter().map(|&a| self.expr(a)).collect();
-                let fid = self.callee_of(*callee);
-                let ret_ty = self.width_of(e);
+                // ⚠️ **A `ret_ty` sat here and was discarded** with a bare `let _ = ret_ty;`
+                // until 2026-08-09 — a near miss, because it was `width_of`, a *bit width*
+                // rather than a type, so it was never quite what an indirect callee needs.
+                // The right value is `cty_of(e)`, the call expression's own CIR type, and it
+                // is the one thing nothing downstream can recover: CIR pointers are untyped
+                // (020 §4.13b), so an indirect callee's result type has to be written here.
+                // The dead `width_of` binding is gone with it.
+                let fid = self.callee_of(*callee, self.cty_of(e));
                 // **The caller owns the slot an aggregate result is written into**
                 // (015 §2). It is allocated here, per call site, so two live results in one
                 // expression are two objects — a single reused scratch buffer would make
@@ -3488,7 +3494,6 @@ impl Lowerer<'_> {
                     },
                     span,
                 );
-                let _ = ret_ty;
                 Operand::Value(dst)
             }
             // An **explicit** cast written in the source. The implicit ones are handled by
@@ -5886,7 +5891,7 @@ impl Lowerer<'_> {
         }
     }
 
-    fn callee_of(&mut self, callee: ExprId) -> Callee {
+    fn callee_of(&mut self, callee: ExprId, ret: CTy) -> Callee {
         // A direct call needs the callee's `FuncId`. Functions are numbered in
         // declaration order, and a name that names no definition in this TU gets a fresh
         // id so the call is still representable.
@@ -5912,7 +5917,7 @@ impl Lowerer<'_> {
                     && (self.fs().locals.contains_key(&sym) || self.globals.contains_key(&sym))
                 {
                     let op = self.expr(callee);
-                    return Callee::Indirect(op);
+                    return Callee::Indirect { target: op, ret };
                 }
                 // Nothing declared this name at all. Rather than inventing a signature the
                 // verifier would then reject, the call goes indirect through an
@@ -5922,11 +5927,14 @@ impl Lowerer<'_> {
                     span: self.ast.expr(callee).span,
                     message: format!("call to undeclared function `{text}`"),
                 });
-                return Callee::Indirect(Operand::Const(Const::Undef(CTy::Ptr)));
+                return Callee::Indirect {
+                    target: Operand::Const(Const::Undef(CTy::Ptr)),
+                    ret,
+                };
             }
         }
         let op = self.expr(callee);
-        Callee::Indirect(op)
+        Callee::Indirect { target: op, ret }
     }
 
     fn target(&self) -> &chiero_sema::TargetConfig {

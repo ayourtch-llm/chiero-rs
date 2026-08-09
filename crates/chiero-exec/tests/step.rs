@@ -2257,7 +2257,10 @@ fn an_indirect_call_forks_per_candidate_plus_one_unresolvable() {
                 }),
                 inst(InstKind::Call {
                     dst: Some(ValueId(1)),
-                    callee: Callee::Indirect(Operand::Value(ValueId(0))),
+                    callee: Callee::Indirect {
+                        target: Operand::Value(ValueId(0)),
+                        ret: CTy::Int(32),
+                    },
                     args: vec![],
                 }),
             ],
@@ -2329,7 +2332,10 @@ fn the_indirect_cap_is_bounded_and_recorded() {
                 }),
                 inst(InstKind::Call {
                     dst: Some(ValueId(1)),
-                    callee: Callee::Indirect(Operand::Value(ValueId(0))),
+                    callee: Callee::Indirect {
+                        target: Operand::Value(ValueId(0)),
+                        ret: CTy::Int(32),
+                    },
                     args: vec![],
                 }),
             ],
@@ -3174,7 +3180,10 @@ fn an_indirect_candidate_executes_its_entry_block() {
                 }),
                 inst(InstKind::Call {
                     dst: Some(ValueId(1)),
-                    callee: Callee::Indirect(Operand::Value(ValueId(0))),
+                    callee: Callee::Indirect {
+                        target: Operand::Value(ValueId(0)),
+                        ret: CTy::Int(32),
+                    },
                     args: vec![],
                 }),
             ],
@@ -3947,7 +3956,10 @@ fn a_function_pointer_with_a_known_target_resolves_to_one_callee() {
                 }),
                 inst(InstKind::Call {
                     dst: Some(ValueId(1)),
-                    callee: Callee::Indirect(Operand::Value(ValueId(0))),
+                    callee: Callee::Indirect {
+                        target: Operand::Value(ValueId(0)),
+                        ret: CTy::Int(32),
+                    },
                     args: vec![],
                 }),
             ],
@@ -9566,7 +9578,10 @@ fn a_function_pointer_through_a_global_resolves_without_forking() {
                 }),
                 inst(InstKind::Call {
                     dst: Some(ValueId(2)),
-                    callee: Callee::Indirect(Operand::Value(ValueId(1))),
+                    callee: Callee::Indirect {
+                        target: Operand::Value(ValueId(1)),
+                        ret: CTy::Int(32),
+                    },
                     args: vec![],
                 }),
             ],

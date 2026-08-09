@@ -744,7 +744,17 @@ fn defined_by(m: &Module, i: &Inst, types: &IndexMap<ValueId, CTy>) -> Vec<(Valu
                 .find(|f| f.id == *fid)
                 .map_or(CTy::Void, |f| f.ret.clone()),
         )],
-        InstKind::Call { dst: Some(d), .. } => vec![(*d, CTy::Void)],
+        // **An indirect call declares its result type**, so this is no longer a gap either.
+        // `require_ptr`'s `CTy::Void` exemption existed for exactly this arm; with both call
+        // kinds typed, a misused call result is now reportable whichever way it was called.
+        InstKind::Call {
+            dst: Some(d),
+            callee: Callee::Indirect { ret, .. },
+            ..
+        } => vec![(*d, ret.clone())],
+        // No `Void` fallback: **both call kinds are typed now**, and clippy proves it —
+        // an arm here is unreachable. `Direct` resolves through the module, `Indirect`
+        // declares its type at the call site.
         InstKind::AllocaDyn { dst, .. } => vec![(*dst, CTy::Ptr)],
         InstKind::VaArg { dst, ty, .. } => vec![(*dst, ty.clone())],
         InstKind::Phi { dst, ty, .. } => vec![(*dst, ty.clone())],
@@ -819,7 +829,7 @@ fn operands_of(i: &Inst) -> Vec<Operand> {
             v.extend(reads.iter().cloned());
         }
         InstKind::Call { callee, args, .. } => {
-            if let Callee::Indirect(o) = callee {
+            if let Callee::Indirect { target: o, .. } = callee {
                 v.push(o.clone());
             }
             v.extend(args.iter().cloned());

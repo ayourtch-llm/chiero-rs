@@ -1222,7 +1222,17 @@ impl<'a> Parser<'a> {
         let callee = if target.starts_with('@') {
             Callee::Direct(self.func_id(target)?)
         } else {
-            Callee::Indirect(self.operand(target)?)
+            // **`call %5 -> i32(args)`.** An indirect callee declares its result type here
+            // because nothing else can supply it: CIR pointers are untyped (020 §4.13b). A
+            // direct callee has no arrow — `Function::ret` already says it, and printing it
+            // twice would be two spellings of one fact.
+            let (t, r) = target
+                .split_once("->")
+                .ok_or_else(|| self.perr("an indirect call needs `-> <ty>` for its result"))?;
+            Callee::Indirect {
+                target: self.operand(t.trim())?,
+                ret: self.ty(r.trim())?,
+            }
         };
         let inner = joined[open + 1..close].trim();
         let args = if inner.is_empty() {
@@ -1892,7 +1902,7 @@ fn print_inst(m: &Module, k: &InstKind, o: &mut String) {
             }
             let c = match callee {
                 Callee::Direct(f) => fname(m, *f),
-                Callee::Indirect(x) => op(x),
+                Callee::Indirect { target, ret } => format!("{} -> {}", op(target), ty(ret)),
             };
             let a: Vec<String> = args.iter().map(op).collect();
             o.push_str(&format!("call {c}({})", a.join(", ")));

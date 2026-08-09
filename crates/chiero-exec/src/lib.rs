@@ -1552,7 +1552,7 @@ impl<'a, 'm> CheckerCtx<'a, 'm> {
                 .find(|f| f.id == *id)
                 .map(|f| &f.name[..])
                 .unwrap_or("<unknown>"),
-            Callee::Indirect(_) => "<indirect>",
+            Callee::Indirect { .. } => "<indirect>",
         }
     }
 }
@@ -3226,7 +3226,7 @@ impl<'m> Engine<'m> {
                     // for VPP at all.
                     InstKind::Call { args, callee, .. } => {
                         args.iter().any(is_addr)
-                            || matches!(callee, Callee::Indirect(o) if is_addr(o))
+                            || matches!(callee, Callee::Indirect { target: o, .. } if is_addr(o))
                     }
                     _ => false,
                 })
@@ -4120,7 +4120,7 @@ impl<'m> Engine<'m> {
         );
         let id = match callee {
             Callee::Direct(id) => id,
-            Callee::Indirect(op) => {
+            Callee::Indirect { target: op, .. } => {
                 self.indirect(a, s, op, dst, args, span);
                 return;
             }

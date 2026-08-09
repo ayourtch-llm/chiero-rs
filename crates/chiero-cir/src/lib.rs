@@ -447,7 +447,19 @@ pub enum OpaqueReason {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Callee {
     Direct(FuncId),
-    Indirect(Operand),
+    /// A call through a function pointer.
+    ///
+    /// **`ret` is carried because nothing else knows it.** `Direct` names a `FuncId` and
+    /// `Function` holds its `ret`, so a direct call's result type is a lookup; CIR pointers
+    /// are untyped (020 §4.13b), so an indirect call's is not recoverable from anything the
+    /// module holds. Putting the type on this variant rather than on `InstKind::Call` keeps
+    /// the fact in exactly one place: a `Direct` call would otherwise carry a second copy of
+    /// the callee's declared return type, which is the duplication §11.0 spends four instances
+    /// warning about.
+    Indirect {
+        target: Operand,
+        ret: CTy,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]

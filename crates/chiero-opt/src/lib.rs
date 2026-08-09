@@ -408,7 +408,7 @@ fn inst_operands(k: &InstKind) -> Vec<Operand> {
         }
         InstKind::SetMem { dst, byte, size } => v.extend([dst.clone(), byte.clone(), size.clone()]),
         InstKind::Call { callee, args, .. } => {
-            if let chiero_cir::Callee::Indirect(o) = callee {
+            if let chiero_cir::Callee::Indirect { target: o, .. } = callee {
                 v.push(o.clone());
             }
             v.extend(args.iter().cloned());

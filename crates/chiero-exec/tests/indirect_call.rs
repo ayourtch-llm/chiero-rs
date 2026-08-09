@@ -70,7 +70,10 @@ fn caller(indirect: bool) -> Module {
             dst: ValueId(0),
             rv: RValue::AddrOfFunc(FuncId(1)),
         }));
-        Callee::Indirect(Operand::Value(ValueId(0)))
+        Callee::Indirect {
+            target: Operand::Value(ValueId(0)),
+            ret: CTy::Int(32),
+        }
     } else {
         Callee::Direct(FuncId(1))
     };
@@ -216,7 +219,10 @@ fn two_arguments_arrive_in_order() {
                         }),
                         i(InstKind::Call {
                             dst: Some(ValueId(1)),
-                            callee: Callee::Indirect(Operand::Value(ValueId(0))),
+                            callee: Callee::Indirect {
+                                target: Operand::Value(ValueId(0)),
+                                ret: CTy::Int(32),
+                            },
                             args: vec![i32c(10), i32c(3)],
                         }),
                     ],
@@ -328,7 +334,10 @@ fn an_unresolvable_callee_forks_only_into_candidates_of_the_right_arity() {
                         }),
                         i(InstKind::Call {
                             dst: Some(ValueId(1)),
-                            callee: Callee::Indirect(Operand::Value(ValueId(0))),
+                            callee: Callee::Indirect {
+                                target: Operand::Value(ValueId(0)),
+                                ret: CTy::Int(32),
+                            },
                             args: vec![i32c(10), i32c(3)],
                         }),
                     ],
@@ -425,7 +434,10 @@ fn a_comparison_of_mismatched_widths_degrades_the_path_instead_of_aborting() {
                         }),
                         i(InstKind::Call {
                             dst: Some(ValueId(1)),
-                            callee: Callee::Indirect(Operand::Value(ValueId(0))),
+                            callee: Callee::Indirect {
+                                target: Operand::Value(ValueId(0)),
+                                ret: CTy::Ptr, // the call site believes it called a pointer-returning function
+                            },
                             args: vec![i32c(10), i32c(3)],
                         }),
                         // `result != NULL`, as C writes it for a function returning a
