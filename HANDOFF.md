@@ -1779,7 +1779,7 @@ typing the paths ever would.
 >    findings about the gates themselves. Prefer the untouched concrete items: **032 contract
 >    18's replay corpus**, still with no `observed` entry (the probe is committed; firing it
 >    re-runs cmake and invalidates every published VPP number, so do it deliberately);
->    **`InstKind::Call` carrying no result type** — ⚠️ **not "135 sites"**, that was mentions; it is **3 production constructions** plus ~110 mechanical test fixtures, and the payoff is one line in `verify.rs`. See the item; and the two
+>    **`InstKind::Call` carrying no result type** — ⚠️ **not "135 sites"**, that was mentions; the direct half is **closed** and the indirect half is **~25 sites** on `Callee::Indirect`, not 110 — the recorded design put the field in the wrong place. See the item; and the two
 >    `vnet/` finding classes, which are policy questions rather than defects. **5j is
 >    diagnosed and half-closed** — both discards are explained at the site and both directions
 >    of the gap are measured and pinned; what is left is the API change, and it is still gated
@@ -3608,8 +3608,27 @@ typing the paths ever would.
    itself — would have created the divergence that was not there.
 
    **What is left is genuinely the indirect half**, which is also where §7.6's finding class
-   lives: `Callee::Indirect` carries an operand rather than a signature, so it needs the field,
-   the text-format syntax, and the ~110 fixtures.
+   lives: `Callee::Indirect` carries an operand rather than a signature.
+
+   🆕 **And it is ~25 sites, not ~110 — because the field belongs on `Callee::Indirect`, not on
+   `Call`.** Measured 2026-08-09: `Callee::Indirect` is mentioned **25 times across 11 files**,
+   ~14 of them production (`chiero-lower` 4, `chiero-exec` 3, `chiero-cir` 4, `chiero-opt` 3).
+   Every direct-call fixture — including the 82 in `step.rs` — is untouched by a change there.
+
+   ⚠️ **The placement is not just cheaper, it is the correct one, and the recorded design was
+   wrong about it.** A field on `Call` would make *direct* calls carry a copy of the callee's
+   `ret` that is already in the module: **two sources of truth for one fact**, which is §11.0's
+   top lesson with four instances behind it, introduced deliberately. On the variant, each
+   `Callee` carries exactly what cannot be derived — nothing for `Direct`, the signature for
+   `Indirect`.
+
+       Callee::Indirect { target: Operand, ret: CTy }
+
+   What it still needs, and none of it is architectural: the variant change and its ~25 sites,
+   text-format syntax for the annotation (parser at `text.rs`, printer at `:1889`) with a
+   round-trip test, and `defined_by`'s `Indirect` arm returning `ret` instead of `Void`. **The
+   `require_ptr` Void exemption can then go**, which is the check that has been switched off for
+   every call result since the verifier was written.
 
    📌 **And the payoff is one line.** `verify.rs:726` reads
    `InstKind::Call { dst: Some(d), .. } => vec![(*d, CTy::Void)]` — the verifier types every
