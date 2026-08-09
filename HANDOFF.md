@@ -1671,7 +1671,7 @@ typing the paths ever would.
 > **None of them was visible to the pp-gate**, which has reported 0 findings for weeks: none is
 > about preprocessing *syntax*. A gate that has been green for weeks is an untested surface.
 >
-> **State: 2026-08-08, second session — `./check.sh` GREEN at 2279 across 277 suites**, fmt and
+> **State: 2026-08-08, second session — `./check.sh` GREEN at 2281 across 277 suites**, fmt and
 > clippy clean, both solver legs. Up from 2257/270 at the first session's end.
 >
 > **This session's closes:** the witness reporting defect (§9.1 5e); the gcov growth gate, which
