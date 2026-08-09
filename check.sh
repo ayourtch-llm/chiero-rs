@@ -70,9 +70,9 @@ if [ $lints -eq 1 ]; then
   # for thirty-five waves before anyone noticed two items numbered `3.`. The file is this
   # project's continuity, §10 asks for it to be updated before every refresh, and *before
   # pushing* is exactly when a broken one would go out. ~0.05 s, and the fix is one line.
-  if ! nums=$(python3 tests/corpus/handoff/numbering.py 2>&1); then
+  if ! nums=$(python3 tests/corpus/handoff/lint.py 2>&1); then
     echo "$nums" | head -10 | sed 's/^/  /'
-    echo "RED (HANDOFF numbering): a repeated or backwards list item — see §9.2"
+    echo "RED (HANDOFF lint): numbering, a cited path, or a code fence — see §9.2"
     exit 1
   fi
   if ! proof=$(cargo run -q -p xtask -- check-proof-surface 2>&1); then
