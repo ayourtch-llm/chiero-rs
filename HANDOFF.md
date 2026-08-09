@@ -2011,6 +2011,14 @@ typing the paths ever would.
 >   `assert old in s` before writing, so a no-op is loud rather than silent; key on a **line
 >   number** or a short unique token rather than on prose, because prose is what `fmt` rewrites;
 >   and **grep for the text you removed** afterwards, not for the test result.
+> - ⚠️ **And the same trap breaks *searches*, which is worse because a search that finds nothing
+>   looks like an answer.** Auditing the project's four measurement counters on 2026-08-09,
+>   `grep 'CONSERVATION_ARC_VISITS.with'` returned only the getter and the reset, and the
+>   conclusion "this counter counts nothing" was a keystroke from being written down. It counts
+>   fine: rustfmt had wrapped the increment so the identifier and `.with(` sit on different
+>   lines. **Grep for the bare identifier, never for an identifier plus punctuation** — and the
+>   only reason this became a corrected sentence rather than a committed one is that the claim
+>   was measured before it was acted on. A search returning nothing is not evidence of absence.
 > - **Ask whether a green test can fail.** Three tests could not, each caught only by mutating.
 >
 > **Open leads, none blocking:** the remaining `pointer-outside-object` policy question; the VPP
