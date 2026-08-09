@@ -12,10 +12,24 @@ TYPES = [("char", 8), ("short", 16), ("unsigned", 32), ("long long", 64)]
 over = same = 0
 for case in range(int(sys.argv[2]) if len(sys.argv) > 2 else 40):
     units = []
-    for i in range(random.randint(2, 5)):
-        kind = random.choice(["scalar", "bits", "bits0"])
+    # **Biased toward records that waste padding, because an unbiased one mostly does not.**
+    # A `padding_waste` proposal only appears when *reordering* recovers something, which needs
+    # several units of differing alignment in a bad order. Measured before this bias: 600 random
+    # records yielded **20 proposals** — the instrument spent 97% of its run generating cases it
+    # then skipped, and its default of 40 checked one or two while printing a clean line.
+    #
+    # The bias is on what is *generated*, never on what is checked: the oracle below is still
+    # gcc's minimum `sizeof` over every permutation of the units.
+    for i in range(random.randint(3, 7)):
+        kind = random.choice(["scalar", "scalar", "bits", "bits0"])
         if kind == "scalar":
-            t = random.choice(["char", "short", "int", "long", "double"])
+            # Alternate wide and narrow. `char, double, char, double` is the shape that wastes
+            # the most and the shape a random draw produces least often.
+            t = (
+                random.choice(["long", "double"])
+                if i % 2
+                else random.choice(["char", "short"])
+            )
             units.append(f"{t} s{i};")
         else:
             t, w = random.choice(TYPES)
