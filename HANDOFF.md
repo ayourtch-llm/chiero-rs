@@ -1625,6 +1625,36 @@ is what found both counterparts, and it is cheaper than the pattern that missed 
 same VPP files for the same reasons. What the sweep cannot currently show is *which* reasons
 overlap, because it keeps one message per side.
 
+### 7.27 The scale gate, and what it found in one run
+
+§7.26 said the missing instrument was a generator with a **controlled size axis**. Built as
+`crates/chiero-lower/tests/scale.rs`, two shapes, and it found something immediately.
+
+Ratio per 4x step on one growing function — linear is 4x, quadratic 16x:
+
+| stage | 256→1024 | 1024→4096 | 4096→16384 |
+|---|---|---|---|
+| parse | 3.2x | 3.8x | 4.2x — **linear** |
+| sema | 4.7x | 6.3x | 11.1x |
+| verify | 5.9x | 6.7x | 13.2x |
+| **lower** | 5.4x | 11.2x | **18.6x — worse than quadratic** |
+
+**Lowering one 16 384-statement function takes 5.2 s.** `many_functions` — growing the *module*
+rather than one CFG — is far better behaved, so the cost is per-function, which is where the
+verifier's earlier dominator quadratic also lived.
+
+⚠️ **Committed as a ratchet, and the test names say so** (`…stays_at_todays_curve`, not
+`…is_subquadratic`). Three of four stages are superlinear now; the gate stops them getting
+worse while the fix is queued. Every ceiling sits below 16x, so a stage turning outright
+quadratic at these sizes fails.
+
+📌 **It was flaky and the fix was not to loosen it.** A single timing at these sizes swings 2x
+— verify measured 6.7x to 12.6x with nothing changed, failing 4 runs in 6. It now takes the
+**minimum of three** per stage: scheduling noise only ever *adds* time, so the smallest sample
+is closest to the work actually done. 6/6 green at 1.7 s, and tightening parse's ceiling below
+its real 4.1x fails as it should. **Raising ceilings until a gate stops failing produces a gate
+that cannot fail** — the outcome this project keeps refusing.
+
 ### 7.26 Why a growth curve over VPP files cannot find 5b's class in the frontend
 
 5c's quadratic was found by sampling, and 5b's audit grep cannot see that shape (§9.1). The
@@ -1738,7 +1768,7 @@ at from the analysis side.
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
 three xtask gates were red: a crate whose test *binary* fails to build emits no `test result`
 line at all, so counting successes cannot detect a missing success. `./check.sh` keys on
-cargo's exit status and prints the failing suites first. Current: **2313 passed, 280 suites** (2026-08-09).
+cargo's exit status and prints the failing suites first. Current: **2315 passed, 281 suites** (2026-08-09).
 
 ⏱️ **It now takes over an hour per leg**, and that is the session's dominant cost — see §9's
 note on the corpus. `conversions` and `semantics` are ~55 s each, the two VPP gates ~60 s, and
@@ -4136,6 +4166,21 @@ typing the paths ever would.
    when it succeeds**. That is a trade worth making — but knowingly, and with the numbers re-taken
    afterwards, not as a side effect of a wave that was about something else.
 
+8c. 🆕 **Lowering is superlinear in the size of one function — 5.2 s for 16 384 statements.**
+   Measured by the new scale gate (§7.27) the day it was built. `lower` costs 18.6x for a 4x
+   input at the top of the curve, *worse* than quadratic; `sema` 11.1x and `verify` 13.2x are
+   superlinear too, and only `parse` is linear. Growing the **module** instead (many small
+   functions) is well behaved, so the cost is per-function.
+
+   ⚠️ **No VPP measurement can see this** — a TU's size there is its header closure and the
+   corpus spans 1.7x (§7.26), so every published frontend number sits at one point on this
+   curve. That also means fixing it moves no published number, and the evidence is the gate.
+
+   The gate is a **ratchet at today's numbers**, so this cannot silently get worse first. Start
+   by sampling `one_big_function(16384)` under `gdb` — that is what named the last two
+   quadratics, and §11.0 carries the invocation and the two traps (take more than one sample;
+   extract the right thread).
+
 8b. 🆕 **The build graph is four `CMakeLists.txt` behind `src/`, and that qualifies every VPP
    number in this file.** Measured 2026-08-08: `build.ninja` was generated at 23:31:38 on
    2026-08-05 and the tree moved 22 seconds later. Checked rather than feared — `vnet/sfdp`, the
@@ -4203,6 +4248,7 @@ they lived only in scratch") and it happened again anyway.
 | `xtask/src/replay_gate.rs` | ✅ committed — `cargo run -p xtask -- replay-gate`, corpus `tests/corpus/replay/corpus.tsv` |
 | `xtask/src/pp_gate.rs` | ✅ committed — `cargo run -p xtask -- pp-gate`, ~2 min. Reads `$SIMPLECPP` (default `/home/ubuntu/simplecpp`, pinned `74a5a63`); gcc and clang are the oracle. §7.11 |
 | `tests/corpus/vpp-findings/march_probe.sh` | ✅ committed 2026-08-08 — lowers VPP's 384 `-march=x86-64-v3/v4` units with and without their own `-march`, reporting the definition delta, any diagnostic, and **`EMPTY` for a unit that lowered nothing** (a clean run over six lines of nothing is not a pass). `STRIDE=1` for all 384 |
+| `crates/chiero-lower/tests/scale.rs` | ✅ committed 2026-08-09 — the **size axis** no other gate has. Two shapes (many functions / one big function), four stages timed apart, minimum of three runs, ~1.7 s. A **ratchet at today's curve**, not a linearity claim: `lower` is already 18.6x per 4x step (§7.27, item 8c). VPP cannot supply this axis — its TUs span 1.7x |
 | `tests/corpus/vpp-findings/compare.py` | ✅ committed 2026-08-09 — diffs two `measure.sh `KEEP=`` directories and **excludes the envelopes chiero marks `nondeterministic_abort`**, naming what it excluded. Two of the pinned 40 hit the wall clock and vary 22/23/24 states between runs of one binary; comparing them measures the machine (§7.24). Use it instead of `cmp` — two envelope claims on 2026-08-09 were inflated by exactly that pair |
 | `tests/corpus/vpp-findings/api_staleness.py` | ✅ committed 2026-08-08, **`--fingerprint` added 2026-08-09** — a content digest of the 1506 generated files, 0.16 s, to pin the half of the corpus `git status` cannot see. Verified stable under `touch` and sensitive to an edit. — which of VPP's 1049 generated API headers are older than the `.api` they come from. Exits 1 on drift; `--fix` regenerates with `vppapigen` rather than `ninja`, whose target re-runs cmake and rewrites the `build.ninja` every VPP measurement reads |
 | `tests/corpus/vpp-findings/probe.sh` | ✅ **REBUILT and committed 2026-08-07.** The 7-second five-TU probe that replaces 2-hour sweeps — measured 7.3 s, all five `clean`. `REALCC=true` by default, so it asks what *chiero* makes of the build's flags without compiling. ⚠️ Its rebuild note: the object path **cannot** be constructed from the source path (CMake names an object after its position in the object library, so `src/vlib/main.c` is `…/vlib_objs.dir/main.c.o`) — match `-c <source>` in one `ninja -t commands all` dump, 63 ms for all 2945 |
@@ -4574,6 +4620,19 @@ not an anecdote.*
   themselves, and chiero had been flagging exactly those two as `nondeterministic_abort` the
   whole time. **The instrument knew; the reader did not ask.** Both conclusions survived and
   both numbers were wrong, which is the cheap version of this mistake.
+
+- **When a timing gate is flaky, make the measurement robust — never raise the ceiling.** The
+  scale gate failed 4 runs in 6 with nothing changed, because one timing at those sizes swings
+  2x. Loosening thresholds until it passed would have produced a gate that cannot fail, which
+  is the outcome every other lesson here is about. **Minimum of k runs** is the fix: scheduling
+  noise only ever adds time, so the smallest sample is closest to the work done. 6/6 green
+  afterwards, and the ceilings stayed where the measurement put them.
+
+- **A corpus can be blind to a whole axis, not just a shape.** Every VPP frontend number this
+  project has published sits at essentially *one point* on the size curve: a TU there is its
+  header closure, 167 source lines becoming 185 000 CIR lines, and the corpus spans 1.7x. Not
+  "the corpus lacks this construct" (§7.21) but "the corpus cannot vary this **dimension**" —
+  and the first gate built with the dimension found a worse-than-quadratic stage in one run.
 
 ### 11.1 About tests and what they can see
 
