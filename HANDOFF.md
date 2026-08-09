@@ -1888,11 +1888,31 @@ typing the paths ever would.
 > | contract | what it asks | verdict |
 > |---|---|---|
 > | **023 c17** | 1, 2 and 8 worker threads give identical `RunResult`s | **the feature does not exist** — `chiero-exec` is single-threaded, no `workers`, no `thread::spawn`, no rayon. Nothing to test; an owner call on whether M1's exit may name it |
-> | **010 c18** | peak memory bounded by *one TU + the index*, not the sum over 100 TUs | ✅ **well formed and buildable.** It is a *structural* claim — a shape, not a number — so it cannot rot the way an absolute bound does. This is the one worth writing |
+> | **010 c18** | peak memory bounded by *one TU + the index*, not the sum over 100 TUs | ✅ **well formed and buildable** — a *shape*, not a number, so it cannot rot the way an absolute bound does. **Scoped 2026-08-09; the design is below.** This is the one worth writing |
 > | **011 c12** | ≥100 MB/s lexing over a 50 MB blob | ⚠️ **ill formed by this project's own rule.** `CIRCUIT_STARTS`' doc states it: *"A counter, not a clock: a wall-clock bound silently stops being able to fail whenever the build gets faster"* — paid for by the verifier's 5-second assertion, which `opt-level = 2` disarmed. A throughput floor is that mistake in spec form. If lexing cost matters, it wants `growth.rs`'s shape: a **ratio** per 4x input |
 >
 > **So one is a missing feature, one is a missing test worth writing, and one is a contract the
 > project has since learned not to write.** Only the middle one is work.
+>
+> 🆕 **010 c18's design, scoped so it can be executed rather than re-scoped.** The API is already
+> the right shape: `CookedExpansionIndex::cook_tu(&mut interner, &sm)` takes the `SourceMap` by
+> reference and the caller drops it, and 010 §6.2's eager resolution is exactly the property
+> under test — `ExpnCtx`/`MacroId` are indices into `sm`, so *not* resolving eagerly would force
+> retention.
+>
+> - **Two arms over the same input, not one absolute number.** Cook N TUs dropping each
+>   `SourceMap`, then cook the same N *retaining* them in a `Vec`. Assert the peak-memory ratio
+>   between the arms is large. A ratio is the form `growth.rs` uses and the form that survives a
+>   different machine; an absolute high-water figure is 011 c12's mistake.
+> - **The high-water mark needs no dependency**: `VmHWM` from `/proc/self/status`, which is
+>   monotonic per process — so the two arms must run as **separate processes** (or the second
+>   arm's peak subsumes the first). A `#[ignore]`d test that re-execs itself with an env var, or
+>   an `xtask`, is the shape that works.
+> - ⚠️ **The trap, and why this was scoped rather than rushed:** an allocator that does not
+>   return freed pages makes the dropping arm look identical to the retaining one, and test
+>   parallelism pollutes a process-wide counter. **Prove the gate can fail before trusting it
+>   green** — retain-the-`SourceMap` is the mutant, and it must produce a visibly different
+>   ratio, or the test is measuring the allocator rather than chiero.
 >
 > ⚠️ **The single uncited M1 contract is 023 contract 17, and it describes a feature that does
 > not exist.** It reads *"with `wall_clock: None`, running with 1, 2 and 8 worker threads
