@@ -1695,3 +1695,64 @@ fn an_advisory_neither_demotes_the_next_diagnostic_nor_hides_an_error() {
         String::from_utf8_lossy(&ok.stderr)
     );
 }
+
+/// **`chiero … | head` must not panic.** Covers 050's premise that the output is read.
+///
+/// Every operation prints an envelope, and the envelopes are large — a VPP translation unit's
+/// CIR is megabytes. So `| head`, `| less` and `| grep -m1` are the *normal* way to read one,
+/// and Rust's `println!` panics on `EPIPE`:
+///
+///     chiero cir vppinfra/format.c -I src | head -3
+///     thread 'main' panicked at .../stdio.rs:1166:9:
+///     failed printing to stdout: Broken pipe (os error 32)
+///     exit 101
+///
+/// A rustc-internal path and a backtrace note, on a closed pipe, from a tool whose stated
+/// audience is a person or an LLM reading its output.
+///
+/// ⚠️ **It also corrupts measurement, which is how it was found.** This suite asserts *exit
+/// codes* — the advisory-diagnostic tests compare chiero's against gcc's — and a run piped to
+/// `head` reports 101 whatever chiero did. The same command redirected to a file exits 0. A
+/// measurement taken through a pipe measures the pipe.
+#[test]
+fn a_closed_pipe_is_not_a_panic() {
+    use std::io::Read;
+    let dir = std::env::temp_dir().join(format!("chiero-epipe-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let c = dir.join("big.c");
+    // Enough output that the writer is still going when the reader leaves.
+    let mut src = String::new();
+    for i in 0..400 {
+        src.push_str(&format!("int f{i}(int x) {{ return x + {i}; }}\n"));
+    }
+    std::fs::write(&c, &src).expect("write");
+
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_chiero"))
+        .arg("cir")
+        .arg(&c)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn chiero");
+
+    // Read a little, then drop the pipe — exactly what `head -3` does.
+    let mut out = child.stdout.take().expect("stdout");
+    let mut buf = [0u8; 64];
+    let _ = out.read(&mut buf);
+    drop(out);
+
+    let done = child.wait_with_output().expect("wait");
+    let stderr = String::from_utf8_lossy(&done.stderr).into_owned();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(
+        !stderr.contains("panicked"),
+        "a closed pipe is an ordinary way to stop reading, not a crash:\n{stderr}"
+    );
+    assert!(
+        done.status.success(),
+        "and it must exit 0, or every exit-code measurement taken through a pipe is wrong \
+         (status {:?})\nstderr: {stderr}",
+        done.status.code()
+    );
+}
