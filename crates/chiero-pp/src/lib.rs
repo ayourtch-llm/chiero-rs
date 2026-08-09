@@ -2553,7 +2553,9 @@ fn expand_va_opt(body: &[Tok], keep: bool, diagnostics: &mut Vec<Diagnostic>) ->
             i += 1;
             continue;
         }
-        let Some(open) = body.get(i + 1).filter(|t| t.text == "(") else {
+        // The `(` itself is only a gate: what follows it is scanned from `i + 1` below, so the
+        // token is matched and not otherwise used.
+        let Some(_open) = body.get(i + 1).filter(|t| t.text == "(") else {
             diagnostics.push(Diagnostic {
                 span: body[i].token.span,
                 message: "`__VA_OPT__` must be followed by `(`".into(),
@@ -2562,7 +2564,6 @@ fn expand_va_opt(body: &[Tok], keep: bool, diagnostics: &mut Vec<Diagnostic>) ->
             i += 1;
             continue;
         };
-        let _ = open;
         let mut depth = 0_usize;
         let mut end = None;
         for (offset, token) in body[i + 1..].iter().enumerate() {

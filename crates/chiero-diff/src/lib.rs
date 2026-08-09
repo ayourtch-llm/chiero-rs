@@ -345,7 +345,7 @@ fn call_arity(tokens: &[String], open: usize) -> Option<usize> {
     let mut depth = 0usize;
     let mut commas = 0usize;
     let mut any = false;
-    for (i, t) in tokens.iter().enumerate().skip(open) {
+    for t in tokens.iter().skip(open) {
         match t.as_str() {
             "(" | "[" | "{" => depth += 1,
             ")" | "]" | "}" => {
@@ -358,7 +358,6 @@ fn call_arity(tokens: &[String], open: usize) -> Option<usize> {
             _ if depth == 1 => any = true,
             _ => {}
         }
-        let _ = i;
     }
     None
 }
