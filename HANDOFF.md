@@ -2966,6 +2966,26 @@ typing the paths ever would.
    | share of the clock | 69% | 44% |
    | worst overall | 7.6x | 5.9x |
 
+   📊 **Five runs after the fix, and the picture inverts — with a consequence for the
+   threshold.** A single run is not a band, and this curve's band is the whole reason §9 says
+   not to tighten:
+
+   | shape | worst per 4x, five runs | was |
+   |---|---|---|
+   | `line` | **4.1 4.7 4.1 4.5 4.5** — max 4.7, and 4.0 *is* linear | the bad one, 8.8x |
+   | `onelin` | 4.3 4.7 5.4 **6.4** 4.1 — max 6.4, band ±1.2x | the good one, 3.4x |
+
+   **`line` is now essentially linear across five runs** — much stronger evidence than the single
+   run the fix was committed on — **and `onelin` is now the binding constraint.** ⚠️ So
+   **"do not tighten the 8.0x threshold" still holds, for a completely different reason than
+   when it was written**: it was `line`'s superlinearity, and it is now `onelin`'s run-to-run
+   noise, which touches 6.4x. Tightening to 7.0x would sit 0.6x from an observed value. **A
+   conclusion outliving its premise is the thing this session kept finding; here the conclusion
+   survived the premise changing, and the reason had to be rewritten under it.**
+
+   📌 And a false alarm pre-empted: a future reader seeing `onelin` at 6.4x should not chase it
+   as a regression. The band above is what one machine produces with nothing changed.
+
    ⚠️ **The counter is why it survived two sessions.** `CYCLES_CELLS` counted the two hoisted
    buffers and not the one still sized per call, so it read *"4.0x, linear"* while the clock
    stayed superlinear — **a wrong measurement that agreed with the fix already made**, which is
