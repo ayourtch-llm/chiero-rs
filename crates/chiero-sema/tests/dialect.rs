@@ -1525,3 +1525,50 @@ fn an_iso_conformance_remark_is_advisory_not_an_error() {
         );
     }
 }
+
+/// **A record with no *named* member is a pedantic rule, and was not gated as one.**
+///
+/// Its sibling two lines above it in `lay_out` — "has no members", for a record with no
+/// members at all — sits inside `if self.dialect.pedantic`. This one sits in the `else`,
+/// outside it, so chiero reported it under `gnu11` where both compilers are silent.
+///
+/// Measured on `struct N { unsigned long :24; };`:
+///
+/// | | |
+/// |---|---|
+/// | `gcc -std=gnu11` | silent, exit 0 |
+/// | `clang -std=gnu11` | silent, exit 0 |
+/// | `gcc -std=gnu11 -Wpedantic` | `warning: struct has no named members [-Wpedantic]` |
+/// | `gcc -std=c11 -pedantic-errors` | the same, as an error |
+///
+/// Found while auditing diagnostic severities: the rule qualified as an advisory whichever
+/// dialect it fired in, so the severity work would have shipped without noticing that *when*
+/// it fires was also wrong. **Two questions about one diagnostic, and answering the first
+/// does not answer the second.**
+#[test]
+fn a_record_with_no_named_member_is_a_pedantic_rule_only() {
+    let src = "struct N { unsigned long :24; };";
+    let needle = "has no named members";
+
+    let strict = sema_messages(src, Dialect::pedantic());
+    assert!(
+        strict.iter().any(|m| m.contains(needle)),
+        "the strict dialect must still report it — this is a gating fix, not a deletion: \
+         {strict:?}"
+    );
+    let gnu = sema_messages(src, Dialect::gnu());
+    assert!(
+        !gnu.iter().any(|m| m.contains(needle)),
+        "gcc -std=gnu11 and clang are both silent here, so chiero must be: {gnu:?}"
+    );
+
+    // **The discriminator.** A record that names something must be silent in *both* dialects,
+    // or the fix could be "stop reporting" rather than "report where gcc does".
+    for d in [Dialect::gnu(), Dialect::pedantic()] {
+        let ok = sema_messages("struct M { int a; };", d);
+        assert!(
+            !ok.iter().any(|m| m.contains(needle)),
+            "a record with a named member is never the subject of this rule: {ok:?}"
+        );
+    }
+}
