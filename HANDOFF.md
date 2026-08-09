@@ -4178,6 +4178,23 @@ not an anecdote.*
   zero**. Include guards mean a cached file is re-requested at the same `start_pos` or not at
   all. So the conflation is harmless in practice, not merely harmless for 011 c13.
 
+- **The record drifts wherever nothing mechanically compares it to the tree — and this project
+  documents obsessively, which did not help.** Five such checks were run on 2026-08-09 and
+  **all five found something**: 020 declared a `conv: CallConv` field whose type exists nowhere;
+  a stray fence in the same spec was rendering 45 lines of normative prose as a code block;
+  §9's START HERE had two items numbered `3.`; six contracts were tested and cited nowhere, so
+  the coverage gate understated itself; and two cited repo paths did not resolve. **None was
+  found by looking for it** — every one surfaced while reading something adjacent for another
+  reason.
+  The costs were asymmetric in a useful way: each *check* was one command, each *defect* had
+  been sitting for weeks or months. Four of the five are now standing in
+  `tests/corpus/handoff/lint.py` (numbering, cited paths, fence balance, spec cross-links) with
+  `xtask contract-coverage` covering the fifth. ⚠️ **What none of them checks is whether the
+  prose is still true** — they catch shapes, not claims, and the day's other four record
+  defects (a stale token figure, a stale "open lead" comment, a stale headline test count, a
+  cause recorded too narrowly) were all *claims*. There is no tool for that; there is only
+  re-reading what you wrote when the thing it describes changes.
+
 - **A counter that omits a term is not a smaller measurement, it is a wrong one** — and a wrong
   one that agrees with the fix you already made is the worst kind, because it retires the
   question. `CYCLES_CELLS` counted the two scratch buffers that had been hoisted and not the one
