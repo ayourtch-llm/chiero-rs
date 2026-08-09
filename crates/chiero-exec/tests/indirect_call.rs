@@ -256,7 +256,9 @@ fn two_arguments_arrive_in_order() {
 /// It also **crashed the process** on real code. Sweeping 92 VPP plugins, `perfmon_init`'s
 /// `(s->init_fn) (vm, s)` forked into a candidate returning `unsigned char`; the caller then
 /// compared that one-byte result against a null pointer and the term arena refused the `Eq`.
-/// The arity filter here is the part CIR can express — `InstKind::Call` carries no result type,
+/// The arity filter here is the part CIR can express — `InstKind::Call`
+/// carried no result type until 2026-08-09 (`Callee::Indirect` has `ret` now; the engine
+/// still does not consult it),
 /// so a candidate with matching arity and a narrower return is still reachable, which is why
 /// the engine must also survive the comparison — the test below.
 #[test]
@@ -376,7 +378,9 @@ fn an_unresolvable_callee_forks_only_into_candidates_of_the_right_arity() {
 
 /// **A comparison chiero cannot make is a degraded path, never an aborted process.**
 ///
-/// `InstKind::Call` carries no result type (020 §4 — the verifier types a call's `dst` as
+/// `InstKind::Call`
+/// carried no result type until 2026-08-09 (`Callee::Indirect` has `ret` now; the engine
+/// still does not consult it) (020 §4 — the verifier types a call's `dst` as
 /// `Void`), so the width of an indirect call's result comes from whichever candidate the engine
 /// entered. An arity filter cannot close that: here the candidate takes two arguments like the
 /// call site and returns one byte, and the caller compares the result against a null pointer.

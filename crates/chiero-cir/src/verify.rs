@@ -729,10 +729,9 @@ fn defined_by(m: &Module, i: &Inst, types: &IndexMap<ValueId, CTy>) -> Vec<(Valu
         // that pointer-returning calls do not all report, and that made every *misuse* of a
         // call result unreportable too.
         //
-        // ⚠️ **`Indirect` stays `Void`, and that is not laziness.** `Callee::Indirect` carries
-        // an operand rather than a signature, so there is genuinely nothing to look up — it is
-        // the half that needs a CIR field (§9.1 item 6). Splitting the two is what made the
-        // direct half free of any type change or fixture churn.
+        // ✅ **`Indirect` carries its type now** (2026-08-09), so both arms are resolved and
+        // neither is a gap. This comment previously said the opposite and sat directly above
+        // the arm that replaced it.
         InstKind::Call {
             dst: Some(d),
             callee: Callee::Direct(fid),
@@ -1130,13 +1129,9 @@ fn require_ptr(
     span: Span,
     out: &mut Vec<VerifyError>,
 ) {
-    // **No `Void` exemption.** It existed because `defined_by` typed every call's result
-    // `Void`, so exempting it was the only way pointer-returning calls did not all report —
-    // and it made every *misuse* of a call result unreportable too. Both call kinds carry a
-    // type now, so nothing reaches here as `Void` and the exemption is dead: removing it
-    // leaves the whole suite green, and a real VPP translation unit still verifies.
     if let Some(t) = resolve(o, types)
         && t != CTy::Ptr
+        && t != CTy::Void
     {
         err(
             out,

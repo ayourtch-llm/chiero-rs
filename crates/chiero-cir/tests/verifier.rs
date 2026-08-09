@@ -2226,3 +2226,91 @@ fn an_indirect_calls_declared_result_type_is_checked() {
     m.funcs.push(g);
     assert_rejects(&m, VerifyErrorKind::BadPointerOperand);
 }
+
+/// **A value defined in a later-listed block still has its type.**
+///
+/// `check_ssa_and_types` builds the type environment in one pass over **textual block order**,
+/// and `rvalue_type_in` records `CTy::Void` for any operand it has not reached yet. So `Void`
+/// in that map means two different things — *genuinely void* and *not resolved yet* — and no
+/// consumer can tell them apart.
+///
+/// Block order is not constrained: 020 §8 rule 1 is about **dominance**, not listing order, and
+/// the textual format is a public input. So a module where `bb2` dominates `bb1` but is listed
+/// after it is legal, and every value in the chain below is a pointer:
+///
+/// ```text
+/// entry: goto bb2
+/// bb1:   %2 = %1;  store i32 7 -> %2      ; listed first
+/// bb2:   %1 = %0;  goto bb1               ; dominates bb1, listed second
+/// ```
+///
+/// ⚠️ **Found by an adversarial review of the commit that deleted `require_ptr`'s `Void`
+/// exemption.** That deletion turned this latent ambiguity into a false *rejection* whose
+/// verdict depended on serialization order — reordering the blocks made it pass. The deletion
+/// is reverted; this test pins the underlying property, which is the thing that has to hold
+/// before the exemption can go: **an unresolved value must not be indistinguishable from a
+/// void one.** The two sibling checks say so already — `require_ty` and `require_int` carry
+/// "skips unresolved values (recorded as `Void`), which is a known gap".
+#[test]
+fn a_value_defined_in_a_later_listed_block_is_not_typed_void() {
+    let mut m = valid_module();
+    let g = Function {
+        id: FuncId(1),
+        name: "g".into(),
+        params: vec![Param {
+            value: ValueId(0),
+            ty: CTy::Ptr,
+        }],
+        ret: CTy::Void,
+        variadic: false,
+        allocas: vec![],
+        blocks: vec![
+            block(0, vec![], Terminator::Goto(BlockId(2))),
+            // Listed before its dominator, which is legal.
+            block(
+                1,
+                vec![
+                    inst(InstKind::Assign {
+                        dst: ValueId(2),
+                        rv: RValue::Use(Operand::Value(ValueId(1))),
+                    }),
+                    inst(InstKind::Store {
+                        addr: Operand::Value(ValueId(2)),
+                        val: Operand::Const(Const::Int { bits: 32, val: 7 }),
+                        ty: CTy::Int(32),
+                        align: 4,
+                        vol: Volatility::Normal,
+                    }),
+                ],
+                Terminator::Return(None),
+            ),
+            block(
+                2,
+                vec![inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::Use(Operand::Value(ValueId(0))),
+                })],
+                Terminator::Goto(BlockId(1)),
+            ),
+        ],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        access_paths: Default::default(),
+        body: Body::Defined,
+        span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
+    };
+    m.funcs.push(g);
+
+    let errs = chiero_cir::verify::verify(&m);
+    let typed: Vec<String> = errs
+        .iter()
+        .filter(|e| e.is_error())
+        .map(|e| e.detail.clone())
+        .collect();
+    assert!(
+        !typed.iter().any(|e| e.contains("Void")),
+        "every value here is a pointer; `Void` in a diagnostic means the pass recorded \
+         `unresolved` and something read it as a type: {typed:?}"
+    );
+}

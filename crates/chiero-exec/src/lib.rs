@@ -8159,12 +8159,19 @@ impl<'m> Engine<'m> {
         // `(s->init_fn) (vm, s)` entered a candidate returning `unsigned char`, and comparing
         // that result against a null pointer aborted the process.
         //
-        // **Arity is the part CIR can check, and it is not the whole signature.**
-        // `InstKind::Call` carries no result type — the verifier types a call's `dst` as
-        // `Void` — and neither the operand nor the site records the pointer's declared
-        // function type, so "returns something this site can use" is not expressible here.
-        // A candidate of the right arity and the wrong return width is still reachable, which
-        // is why `cmp` no longer trusts its operands to agree.
+        // **Arity is the part this filter checks, and it is not the whole signature.**
+        //
+        // ⚠️ **Superseded in part, 2026-08-09, and the remainder is a live gap rather than an
+        // impossibility.** This used to read "`InstKind::Call` carries no result type — the
+        // verifier types a call's `dst` as `Void` … not expressible here". All three clauses
+        // are now false: `Callee::Indirect` carries `ret`, and the verifier types both call
+        // kinds. **The declared return type is available at this site and this filter does not
+        // consult it** — a candidate of the right arity and the wrong return width is still
+        // reachable, which is why `cmp` still does not trust its operands to agree. Wiring
+        // `ret` in here is what would close §7.6's class; see §9.1 item 6.
+        //
+        // The parameter *types* remain unexpressible: CIR pointers are untyped (020 §4.13b),
+        // so nothing records what the pointer's declared function type was.
         //
         // A **variadic** callee matches any arity at or above its named parameters, because
         // that is what calling one means.
