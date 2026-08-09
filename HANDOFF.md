@@ -3811,7 +3811,26 @@ typing the paths ever would.
    than `Void` — after which all three exemptions are genuinely dead.
    `a_value_defined_in_a_later_listed_block_is_not_typed_void` guards it and reproduces the
    false positive if the exemption is deleted again.
-   ⚠️ **And the engine still ignores `ret`.** Its only consumers are the verifier and the
+   🔶 **What remains, and it is a behaviour change rather than a correctness fix.**
+   `exec::indirect` destructures `ret` away (`lib.rs:4123`) and its candidate filter checks
+   arity, parameter shape, and *one* return-type rule — `!(wants_value && f.ret == Void)`.
+   Comparing the **declared** `ret` against each candidate's is a few lines and would exclude
+   the `perfmon_init` class the item was opened on: the comment at `lib.rs:8189` names it, a
+   candidate "returning `unsigned char`" entered where the site expected a pointer.
+   ⚠️ **Three things to settle first, none of them typing:**
+   1. **What counts as compatible?** Exact equality is probably too strict — the *parameter*
+      filter deliberately allows `Ptr` ↔ `Int(64)` because `uword` is everywhere in VPP. The
+      return rule should almost certainly mirror that, and "same size" is the conservative
+      version.
+   2. **It changes findings, so it needs a sweep, not a suite.** Excluding candidates changes
+      which paths run. The pinned 40 and the `vnet/` classes (5h) are the measurement, and
+      §7.21's rule applies — ask what would have to move before believing an unchanged number.
+   3. **`a_comparison_of_mismatched_widths_degrades_the_path_instead_of_aborting` asserts the
+      *current* behaviour on purpose** — that a mismatched candidate degrades rather than
+      aborting. Filtering it out earlier makes that test's premise unreachable. Decide whether
+      the test changes or the filter exempts the case it pins.
+
+   *Original note:* ⚠️ **And the engine still ignores `ret`.** Its only consumers are the verifier and the
    printer; `exec::indirect`'s candidate filter still checks arity and parameter shape only, so
    §7.6's class — a candidate of the right arity and the wrong return width — is **not** closed.
    Wiring `ret` into that filter is the remaining work and the item's original motivation.
