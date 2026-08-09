@@ -1025,6 +1025,8 @@ fn line_counts(f: &NoteFunction, arc_counts: &[u64], blocks: &[u64]) -> Function
     // Scratch for `cycles_count`, allocated once for the whole function.
     let mut cyc_in_bs = vec![false; f.blocks as usize];
     let mut cyc_indeg = vec![0usize; f.blocks as usize];
+    // Sized by arcs rather than blocks, and hoisted here for the same reason as the two above.
+    let mut cyc_cs = vec![0i64; f.arcs.len()];
     let mut graphed: IndexMap<(String, u32), u64> = IndexMap::new();
     // **Membership by index, not by scanning `bs`.** `bs` holds every block on one line, so this
     // was Θ(preds × |bs|) — quadratic in blocks-per-line, which is exactly what a multi-statement
@@ -1062,6 +1064,7 @@ fn line_counts(f: &NoteFunction, arc_counts: &[u64], blocks: &[u64]) -> Function
             arc_counts,
             &mut cyc_in_bs,
             &mut cyc_indeg,
+            &mut cyc_cs,
         ));
         graphed.insert(key.clone(), count);
     }
@@ -1333,17 +1336,38 @@ fn cycles_count(
     // sums to the number of block-lines: linear.
     in_bs: &mut [bool],
     indegree: &mut [usize],
+    // **The third scratch buffer, and it was the whole residual.** `in_bs` and `indegree` were
+    // hoisted here for exactly this reason; `cs` stayed a `vec![0; f.arcs.len()]` allocated and
+    // zeroed on **every call**, and this is called once per line. `line`-shaped input has Θ(n)
+    // lines and Θ(n) arcs, so that is Θ(n²) cells; `onelin` has one line and pays Θ(n) — which
+    // is exactly the asymmetry the curve had been showing all along.
+    //
+    // **No reset is needed and that is a property, not an oversight.** Every index read here or
+    // in `circuit` is a successor of a block in `bs`, and the loop below writes every one of
+    // them before anything reads it: `circuit` recurses only into blocks with `in_bs` set, so it
+    // cannot reach an arc this call did not initialise. A value left behind by a previous line
+    // is therefore unreachable rather than merely unlikely.
+    cs: &mut [i64],
 ) -> u64 {
-    let mut cs: Vec<i64> = vec![0; f.arcs.len()];
+    let mut touched = 0u64;
     for &b in bs {
         for &i in succ.get(b as usize).into_iter().flatten() {
             cs[i] = arc_counts[i].min(i64::MAX as u64) as i64;
+            touched += 1;
         }
     }
+    CYCLES_CELLS.with(|c| c.set(c.get() + touched));
     // **Membership by index, built once.** `bs.contains(&w)` is O(|bs|) and sits in `circuit`'s
     // innermost recursion, so it multiplied an already-quadratic call count — measured at
     // 5 128 004 calls for n=3200 when every block lands on one line (`tests/growth.rs`).
     // Cells *touched* per call, now O(|bs|) rather than O(max block index).
+    // ⚠️ **This counter once omitted `cs` and therefore read linear while the clock did not.**
+    // It counted the two hoisted buffers and not the one still sized by `f.arcs.len()` per call;
+    // adding that term made it 15.9x per 4x on `line` against 4.0x on `onelin`, which is what
+    // located the defect. **A counter that omits a term is not a smaller measurement, it is a
+    // wrong one** — and a wrong one that agrees with the fix you already made is the worst kind.
+    // With `cs` hoisted the term is gone again, honestly this time: what a call now touches is
+    // the arcs out of `bs`, counted where they are written.
     CYCLES_CELLS.with(|c| c.set(c.get() + 2 * bs.len() as u64));
     for &b in bs {
         if let Some(v) = in_bs.get_mut(b as usize) {
@@ -1418,7 +1442,7 @@ fn cycles_count(
             start,
             &mut blocked,
             in_bs,
-            &mut cs,
+            cs,
             &mut count,
         );
     }
