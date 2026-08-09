@@ -331,6 +331,37 @@ pub struct BitField {
 pub struct SemaDiagnostic {
     pub span: Span,
     pub message: String,
+    /// Whether this diagnostic means chiero **could not**, or merely has something to say.
+    ///
+    /// **The distinction is the difference between refusing a file and annotating it.** Every
+    /// consumer used to see one undifferentiated list and treat any entry as a refusal, which
+    /// is right for "this type is unknown" and wrong for "this constant expression overflows
+    /// a signed type" — chiero folds that one to the same value gcc does, and then the CLI
+    /// threw the whole translation unit away. gcc compiles that file with exit 0.
+    ///
+    /// Defaults to [`Severity::Error`] at every construction site, so adding this changed no
+    /// existing behaviour; only the sites explicitly marked [`Severity::Advisory`] moved.
+    pub severity: Severity,
+}
+
+/// What a [`SemaDiagnostic`] means for the analysis that produced it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum Severity {
+    /// chiero could not do something. The result, if any, is not to be trusted.
+    #[default]
+    Error,
+    /// chiero did the thing and has a concern about the program. **A usable result exists**,
+    /// and a consumer that discards it is discarding an analysis it asked for.
+    ///
+    /// Reserved for diagnostics emitted *beside a value*, and each site says why it qualifies.
+    Advisory,
+}
+
+impl SemaDiagnostic {
+    /// Whether this diagnostic invalidates the analysis around it.
+    pub fn is_error(&self) -> bool {
+        self.severity == Severity::Error
+    }
 }
 
 /// 014 §5's typed AST: the syntactic tree with **every implicit conversion made
@@ -922,6 +953,7 @@ impl GlobalTable {
                     diags.push(SemaDiagnostic {
                         span: ast.decl(item).span,
                         message: format!("`{text}` is defined more than once"),
+                        severity: Severity::Error,
                     });
                 }
                 info.defined = true;
@@ -986,6 +1018,7 @@ pub fn analyze_with(
     dialect: chiero_ast::Dialect,
 ) -> Analysis {
     let mut cx = Cx {
+        next_severity: Severity::Error,
         dialect,
         ast,
         target: target.clone(),
@@ -1155,6 +1188,7 @@ impl<'a> ConstEvaluator<'a> {
         // needs the TU's tag table and therefore needs `analyze`; that is a real limit and
         // is why this takes a target rather than pretending sizes are universal.
         Cx {
+            next_severity: Severity::Error,
             // A const-eval helper: no dialect-gated rule is reachable from here, so the strict
             // default is the safe one.
             dialect: chiero_ast::Dialect::pedantic(),
@@ -1216,6 +1250,9 @@ struct IntVal {
 // ---------------------------------------------------------------------------------
 
 struct Cx<'a> {
+    /// Severity for the **next** diagnostic only; reset to `Error` after every emission.
+    /// See [`Cx::advisory`].
+    next_severity: Severity,
     ast: &'a Ast,
     target: TargetConfig,
     names: &'a dyn SymbolText,
@@ -1789,7 +1826,20 @@ impl Cx<'_> {
         self.out.diagnostics.push(SemaDiagnostic {
             span,
             message: message.into(),
+            severity: self.next_severity,
         });
+        self.next_severity = Severity::Error;
+    }
+
+    /// Emit an **advisory**: a concern about the program, beside a value chiero did produce.
+    ///
+    /// Threaded through a one-shot field rather than a second `error`-shaped method because
+    /// `error` is called from 160 places and every one of them would have had to choose.
+    /// The default is [`Severity::Error`], so a site that says nothing keeps saying what it
+    /// always said.
+    fn advisory(&mut self, span: Span, message: impl Into<String>) {
+        self.next_severity = Severity::Advisory;
+        self.error(span, message);
     }
 
     /// Run `f` with diagnostics suppressed, for a **second** resolution of a node the first pass
@@ -4602,10 +4652,20 @@ impl Cx<'_> {
     }
 
     /// Fit `raw` into `ty`, diagnosing **once** if it does not fit.
+    ///
+    /// ⚠️ **Advisory, because a value comes back either way.** The wrapped result is byte for
+    /// byte what gcc and clang fold the same expression to — measured on
+    /// `0x7fffffff + 65535`, which all three answer `-2147418114` and both compilers accept
+    /// with a `-Woverflow` warning and exit 0. Emitting this at `Error` meant `chiero cir`
+    /// refused an entire translation unit it had understood completely, so a file the
+    /// project's own compiler builds could not be analysed at all.
+    ///
+    /// It stays a diagnostic: the program relies on undefined behaviour and a reader should
+    /// be told. What changed is that being told no longer costs them the analysis.
     fn wrap(&mut self, raw: i128, ty: IntVal, span: Span) -> IntVal {
         let fitted = truncate(raw, ty.bits, ty.signed);
         if fitted.v != raw && ty.signed {
-            self.error(span, "signed overflow in a constant expression");
+            self.advisory(span, "signed overflow in a constant expression");
         }
         fitted
     }

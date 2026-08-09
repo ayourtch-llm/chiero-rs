@@ -158,7 +158,18 @@ pub(crate) fn lower(path: &Path, src: &str, f: Frontend) -> Result<chiero_cir::M
         &names,
         dialect,
     );
-    if let Some(d) = analysis.diagnostics.first() {
+    // **An advisory does not cost the caller the analysis.** Sema's diagnostics carry a
+    // severity because "I could not model this" and "I did, and here is a concern about the
+    // program" are different events that shared a list. Stopping on the first entry meant a
+    // signed-overflowing constant expression -- which chiero folds to exactly the value gcc
+    // and clang fold it to -- refused a whole translation unit that gcc compiles with exit 0.
+    //
+    // The concern is still printed. Downgrading a diagnostic is not deleting it, and an
+    // advisory nobody sees is the same as no advisory.
+    for d in analysis.diagnostics.iter().filter(|d| !d.is_error()) {
+        eprintln!("chiero: {}", at(&tu.source_map, d.span, &d.message));
+    }
+    if let Some(d) = analysis.diagnostics.iter().find(|d| d.is_error()) {
         return Err(at(&tu.source_map, d.span, &d.message));
     }
     let lowered = chiero_lower::lower_tu_with_map(&names.0.ast, &analysis, &names, &tu.source_map);
