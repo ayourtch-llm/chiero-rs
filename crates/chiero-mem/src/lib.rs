@@ -1639,6 +1639,12 @@ impl Memory {
         // is a finding rather than a dead process.
         let obj = (size <= MAX_MATERIALIZED_BYTES)
             .then(|| std::sync::Arc::new(MemObject::new(id, kind, size, align, at)));
+        // The invariant `entry`/`entry_mut` binary-search on. `alloc` is the only writer.
+        debug_assert!(
+            self.entries.last().is_none_or(|(prev, _)| *prev < id),
+            "entries must stay sorted by ObjectId: {id:?} after {:?}",
+            self.entries.last().map(|(p, _)| *p)
+        );
         self.entries.push((
             id,
             Entry {
@@ -1659,15 +1665,25 @@ impl Memory {
         id
     }
 
+    /// **Binary search, because these run on every memory access.** They were linear scans of
+    /// `entries`, and a program with N locals has N objects, so reading a local cost O(N) and
+    /// the engine cost O(accesses × objects). Measured 2026-08-09 on an 8000-local function
+    /// with *concrete* conditions — no forking, no solver query — the engine alone took 3.2 s
+    /// and grew **10.3x per 4x** of program; `Memory::entry` was 2 of 3 stack samples.
+    ///
+    /// **Sorted by construction, not by sorting.** `entries` is only ever appended to, never
+    /// removed from, and `alloc` takes its id from a monotonically increasing counter — the
+    /// `debug_assert` there pins that, and `object_ids_are_allocated_in_increasing_order`
+    /// pins it from outside. An index map was the alternative and was rejected: `Memory` is
+    /// cloned on every state fork, so a second container would be paid for on every branch.
     fn entry_mut(&mut self, id: ObjectId) -> Option<&mut Entry> {
-        self.entries
-            .iter_mut()
-            .find(|(i, _)| *i == id)
-            .map(|(_, e)| e)
+        let at = self.entries.binary_search_by_key(&id, |(i, _)| *i).ok()?;
+        Some(&mut self.entries[at].1)
     }
 
     fn entry(&self, id: ObjectId) -> Option<&Entry> {
-        self.entries.iter().find(|(i, _)| *i == id).map(|(_, e)| e)
+        let at = self.entries.binary_search_by_key(&id, |(i, _)| *i).ok()?;
+        Some(&self.entries[at].1)
     }
 
     pub fn set_readonly(&mut self, id: ObjectId) {

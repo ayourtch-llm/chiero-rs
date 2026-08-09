@@ -730,3 +730,38 @@ fn a_refused_bit_write_changes_nothing() {
         r.faults
     );
 }
+
+/// **`Memory::entry` binary-searches `entries`, so the ids must stay sorted.**
+///
+/// The lookup runs on every memory access and used to be a linear scan; with one object per
+/// local, reading a local cost O(objects). It is a binary search since 2026-08-09, which is
+/// correct only while `alloc` hands out increasing ids and nothing removes an entry. That is
+/// true by construction today — `entries.push` in `alloc` is the only writer — and this pins
+/// it from outside, because a future allocator that reused or reordered ids would not fail
+/// loudly: lookups would just start missing objects that are present.
+#[test]
+fn object_ids_are_allocated_in_increasing_order() {
+    let mut m = chiero_mem::Memory::new();
+    let mut ids = Vec::new();
+    for i in 0..64u64 {
+        ids.push(m.alloc(
+            chiero_mem::ObjKind::Stack,
+            8 + i,
+            8,
+            chiero_span::Span::DUMMY,
+        ));
+    }
+    assert!(
+        ids.windows(2).all(|w| w[0] < w[1]),
+        "ids must increase for the binary search to be valid: {ids:?}"
+    );
+
+    // And every object is still findable — the property the ordering exists to serve.
+    for (i, id) in ids.iter().enumerate() {
+        assert_eq!(
+            m.size_of_pub(*id),
+            Some(8 + i as u64),
+            "object {i} ({id:?}) was not found by lookup"
+        );
+    }
+}
