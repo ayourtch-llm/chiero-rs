@@ -1591,13 +1591,49 @@ cover, which is why it was run.
 contain for this number to move.* If the answer is "nothing it has", the run is a control, not
 a check — worth doing, worth recording, and worth not mistaking for confirmation.
 
+### 7.22 The pinned-40 retake that *did* move — and where the movement was hiding
+
+Item 6's engine half, measured before and after with `KEEP` on both legs.
+
+| | before | after |
+|---|---|---|
+| summary line | `cut=2 ok=38 findings=21 exact=0` | **byte-identical** |
+| envelopes differing | — | **5 of 40** |
+| assumptions | 582 | 586 |
+| builtins reached only after | — | `__builtin_ia32_writeeflags_u64`, `_rstorssp`, `_clrssbsy` |
+| reached only before | `__builtin_ia32_lzcnt_u64` | — |
+
+**The summary line said nothing happened and five envelopes disagreed.** This is the case
+`KEEP` was added for (§11.3) and the first time it has paid: §7.21's identical retake was
+genuinely a control, this one was not, and *the two are indistinguishable from the summary
+line alone*. All three newly reached builtins return `void` — the fix stated as a measurement.
+
+⚠️ **`lzcnt_u64` is not a width exclusion.** The new message never fires on this corpus, so
+the width filter — the change the item was actually about — cut **nothing** here. `lzcnt` is
+displaced under `max_indirect`: admitting the candidates that belonged pushes it past the cap.
+A reordering under a fixed budget, not a lost candidate class. Both explanations were on the
+table and the counter settled it; "correctly excluded" was the comfortable one and it was wrong.
+
+📌 **So the width filter is a control on the pinned 40, and the whole measured effect is a
+defect found while pre-registering what the corpus could reach.** The item's stated purpose
+produced no movement; the movement came from reading the filter closely enough to see the rule
+beside the one being added was backwards.
+
+⚠️ **And the pre-registration itself was wrong the first time.** The census said 6 indirect
+sites, 2 non-void. Run with the *sweep's own* include flags it is **56 and 26** — I had used
+`-I src` alone while `measure.sh` supplies the cmake build's generated roots. A file that will
+not preprocess yields little CIR, and I had read that as "few indirect calls". The error was
+caught only because a file the census scored **0** turned up in the results reaching an
+indirect call. **A census only interprets a measurement if it is taken in that measurement's
+configuration** — the same trap `measure.sh`'s own header warns about for `INCLUDES`, arrived
+at from the analysis side.
+
 ### 7.5 How to check the workspace is green — `./check.sh`
 
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
 three xtask gates were red: a crate whose test *binary* fails to build emits no `test result`
 line at all, so counting successes cannot detect a missing success. `./check.sh` keys on
-cargo's exit status and prints the failing suites first. Current: **2191 passed, 257 suites**
-(2026-08-07, after §7.11's seven waves).
+cargo's exit status and prints the failing suites first. Current: **2307 passed, 279 suites** (2026-08-09).
 
 ⏱️ **It now takes over an hour per leg**, and that is the session's dominant cost — see §9's
 note on the corpus. `conversions` and `semantics` are ~55 s each, the two VPP gates ~60 s, and
@@ -1781,11 +1817,10 @@ typing the paths ever would.
 > 3. **Pick a widening (§8.3), or a concrete item from §9.1.** ⚠️ **Layout, diagnostics and the
 >    instruments are mined out for now** — the last several waves there returned zeros, or
 >    findings about the gates rather than the tree. The untouched work, in order of readiness:
->    - **`InstKind::Call`'s indirect half** — ⚠️ *not* "135 sites"; that was a count of mentions.
->      The direct half is **closed** (no CIR change: `Callee::Direct` makes the type derivable),
->      and what remains is **~25 sites** on `Callee::Indirect`, whose payoff is deleting
->      `require_ptr`'s `Void` exemption. The recorded design put the field on `Call`, which would
->      duplicate a fact the module already holds; put it on the variant.
+>    - ~~**`InstKind::Call`'s indirect half**~~ ✅ **closed 2026-08-09, both halves.** Kept here
+>      only for what it cost to believe: "135 sites" was a count of *mentions* and it is what
+>      left the item unstarted for weeks. The engine half's payoff was **not** the filter it
+>      added — that one cuts nothing on the pinned 40 — but the backwards rule beside it (§7.22).
 >    - **032 contract 18's replay corpus**, still with no `observed` entry. The probe is
 >      committed; firing it re-runs cmake and **invalidates every published VPP number**, so it
 >      is a deliberate spend, not a wave.
@@ -3811,24 +3846,20 @@ typing the paths ever would.
    than `Void` — after which all three exemptions are genuinely dead.
    `a_value_defined_in_a_later_listed_block_is_not_typed_void` guards it and reproduces the
    false positive if the exemption is deleted again.
-   🔶 **What remains, and it is a behaviour change rather than a correctness fix.**
-   `exec::indirect` destructures `ret` away (`lib.rs:4123`) and its candidate filter checks
-   arity, parameter shape, and *one* return-type rule — `!(wants_value && f.ret == Void)`.
-   Comparing the **declared** `ret` against each candidate's is a few lines and would exclude
-   the `perfmon_init` class the item was opened on: the comment at `lib.rs:8189` names it, a
-   candidate "returning `unsigned char`" entered where the site expected a pointer.
-   ⚠️ **Three things to settle first, none of them typing:**
-   1. **What counts as compatible?** Exact equality is probably too strict — the *parameter*
-      filter deliberately allows `Ptr` ↔ `Int(64)` because `uword` is everywhere in VPP. The
-      return rule should almost certainly mirror that, and "same size" is the conservative
-      version.
-   2. **It changes findings, so it needs a sweep, not a suite.** Excluding candidates changes
-      which paths run. The pinned 40 and the `vnet/` classes (5h) are the measurement, and
-      §7.21's rule applies — ask what would have to move before believing an unchanged number.
-   3. **`a_comparison_of_mismatched_widths_degrades_the_path_instead_of_aborting` asserts the
-      *current* behaviour on purpose** — that a mismatched candidate degrades rather than
-      aborting. Filtering it out earlier makes that test's premise unreachable. Decide whether
-      the test changes or the filter exempts the case it pins.
+   ✅ **CLOSED 2026-08-09.** The declared `ret` is the filter's rule, and wiring it up found
+   the rule already there pointing the wrong way. `!(wants_value && f.ret == Void)` read as
+   "a site that uses the result cannot be calling a void function", but `wants_value` is
+   `dst.is_some()` and lowering assigns a `dst` to **every** call including a void one — so at
+   a void-declared site it excluded exactly the void-returning candidates that belonged there
+   and explored only the wrong ones. The declared type subsumes the intent (`void` is 0 bytes
+   wide), so one width comparison replaces both rules.
+   The three questions were answered as posed: (1) **same size**, mirroring the parameter
+   filter's deliberate `Ptr` ↔ `Int(64)`; (2) the sweep was run — see §7.22; (3) the test
+   changed, because the mismatch is now caught *before* the candidate runs, which is strictly
+   better than degrading at the comparison — it is
+   `a_candidate_whose_return_width_disagrees_with_the_site_is_excluded_and_said_so`, and it
+   also pins the degradation message, which had to change: "a function chiero has not seen"
+   is false about a candidate chiero saw and rejected.
 
    *Original note:* ⚠️ **And the engine still ignores `ret`.** Its only consumers are the verifier and the
    printer; `exec::indirect`'s candidate filter still checks arity and parameter shape only, so
@@ -4314,6 +4345,28 @@ not an anecdote.*
   were silent no-ops; one produced a false finding. `assert old in s` before writing, key on line
   numbers or a bare identifier, and grep for the text you removed rather than reading the test
   result.
+
+- **A summary line cannot tell a control from a check.** §7.21 and §7.22 are the same three
+  words — `findings=21 exact=0`, byte-identical — and one of them means "the corpus cannot
+  reach this" while the other hides five changed envelopes and a real behaviour change on VPP.
+  Nothing about the number distinguishes them. **The residue is what distinguishes them**, which
+  is why `measure.sh` grew `KEEP`; §7.22 is the first time it paid, and without it the honest
+  report would have been "no change" about a change.
+
+- **A census only interprets a measurement if it is taken in that measurement's configuration.**
+  I pre-registered "6 indirect sites, 2 non-void" and it was **56 and 26** — the census used
+  `-I src` while the sweep supplies the cmake build's generated include roots, and a file that
+  will not preprocess produces little CIR, which reads exactly like a file with few indirect
+  calls. Pre-registering the prediction was right and it is what caught the error, but only
+  because the *result* contradicted it: a file scored `0` turned up reaching an indirect call.
+  A pre-registration taken in the wrong configuration is one more confident number.
+
+- **When a change lands beside an existing rule, read the existing rule.** The whole measured
+  effect of item 6's engine half was not the filter it added but the filter already sitting one
+  line above it, which had been backwards since it was written — `wants_value` meant
+  `dst.is_some()`, not "uses the result", and lowering gives every call a `dst`. The added
+  filter cut nothing on the corpus. **The neighbour was the defect**, and nothing but reading it
+  while editing next to it would have surfaced it.
 
 ### 11.1 About tests and what they can see
 
