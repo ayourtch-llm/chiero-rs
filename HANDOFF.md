@@ -3802,7 +3802,12 @@ typing the paths ever would.
    that flipped when the blocks were reordered**. `require_ty` and `require_int` kept their
    exemptions all along, documented "skips unresolved values (recorded as `Void`), which is a
    known gap", three functions below the comment I wrote claiming the opposite.
-   **What has to happen first: make "unknown" unrepresentable** — absent from the map rather
+   ✅ **Done 2026-08-09, in the right order this time.** `rvalue_type_in` returns `Option<CTy>`
+   and unresolved values are **absent** from the type map, so `Void` means only *void*; then all
+   four exemptions (`require_ptr`, `require_ty`, `require_int`, `select`'s arm check) came out
+   in a second commit. Each restored check was proved by a test written to **fail first** —
+   `store i32 <void>` and `add i32 <void>, 1` both verified clean before and are `WidthMismatch`
+   now. Original note kept: **make "unknown" unrepresentable** — absent from the map rather
    than `Void` — after which all three exemptions are genuinely dead.
    `a_value_defined_in_a_later_listed_block_is_not_typed_void` guards it and reproduces the
    false positive if the exemption is deleted again.
