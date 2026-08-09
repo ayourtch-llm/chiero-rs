@@ -1575,3 +1575,54 @@ void vec_ok (u8x16 *src)
         "a 16-byte vector store into a 16-byte object is in bounds: {ok}"
     );
 }
+
+/// **An advisory diagnostic must not throw away a translation unit chiero understood.**
+///
+/// `chiero cir` stopped at the *first* sema diagnostic at every stage, and `SemaDiagnostic`
+/// had no severity, so "I could not model this" and "I did, and here is a concern" were the
+/// same event. The discriminator is a signed-overflowing constant expression: chiero folds it
+/// to `-2147418114` — byte for byte what gcc and clang fold it to — and then refused the
+/// whole file, which gcc compiles with exit 0 and a `-Woverflow` warning.
+///
+/// Found by auditing the class rather than the site: the identical conflation had already
+/// cost three waves inside test harnesses (a `Gap` filed as a `Discarded`, a pedantic
+/// `__int128` sentence filed as a refusal, and a diagnostic read before a value). This is the
+/// same shape in product code, where it means a file the project's own compiler builds cannot
+/// be analysed at all.
+#[test]
+fn an_advisory_diagnostic_does_not_abort_a_translation_unit() {
+    let dir = std::env::temp_dir().join(format!("chiero-advisory-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let c = dir.join("advisory.c");
+    std::fs::write(
+        &c,
+        "int probe(void) { int a[(0x7fffffff + 65535) ? 4 : 4]; a[0] = 1; return a[0]; }\n",
+    )
+    .expect("write");
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_chiero"))
+        .arg("cir")
+        .arg(&c)
+        .output()
+        .expect("run chiero");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(
+        out.status.success(),
+        "gcc compiles this file with exit 0 and a warning; chiero must not refuse it.\n\
+         stderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("func @probe"),
+        "and it must actually lower the function, not merely exit 0:\n{stdout}"
+    );
+    // **The concern is still reported.** Silencing it would be the opposite defect, and a
+    // worse one: an advisory that nobody sees is the same as no advisory.
+    assert!(
+        stderr.contains("signed overflow"),
+        "the advisory must still be printed — downgrading a diagnostic is not deleting it:\n\
+         {stderr}"
+    );
+}
