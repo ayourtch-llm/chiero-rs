@@ -119,7 +119,37 @@ fn declaration(rng: &mut Rng, n: usize) -> String {
 /// (316), an inferred array length (321) and a `static` local (322). Those are where the rules
 /// are dense enough to catch a legal program by mistake.
 fn historically_awkward(rng: &mut Rng, n: usize) -> String {
-    match rng.below(28) {
+    // **28 → 34: six shapes gcc accepts under `gnu11` and refuses under `-pedantic-errors`.**
+    //
+    // They exist for `every_program_gnu11_gcc_accepts_silently_is_silent`, and adding them was
+    // not optional: with the corpus at 28 that channel was **green over a corpus that could
+    // not reach its own subject**. Reverting the `has no named members` gating fix — a live
+    // defect from the wave before — left it passing. A gate that cannot fire is worse than no
+    // gate, because it is also an argument that the class is covered.
+    //
+    // ⚠️ Every one of these is *skipped* by `every_program_gcc_accepts_is_silent`, which runs
+    // `-pedantic-errors` and therefore discards them as invalid C. The two channels partition
+    // the corpus rather than sharing it, which is the whole reason both exist.
+    match rng.below(34) {
+        // A record whose members are all unnamed. Silent under `gcc -std=gnu11` and clang,
+        // `-Wpedantic` under gcc, an error under `-pedantic-errors`. This is the shape whose
+        // absence let the gating defect survive.
+        28 => format!("struct nn{n} {{ unsigned long :24; }};"),
+        // A record with no members at all — the sibling rule, correctly gated all along, and
+        // here so that a fix to one that broke the other would show.
+        29 => format!("struct em{n} {{ struct {{ }} inner; }};"),
+        // A zero-size array: `-pedantic-errors` says "ISO C forbids zero-size array".
+        30 => format!("struct zs{n} {{ int a; char pad[0]; }};"),
+        // `__int128`, which ISO C does not have and every 64-bit gcc does.
+        31 => format!("static __int128 w{n};"),
+        // A cast to a union type, a GNU extension.
+        32 => format!(
+            "union cu{n} {{ int a; }};\nstatic union cu{n} mk{n}(int x) {{ return (union cu{n})x; }}"
+        ),
+        // A conditional with one void side.
+        33 => format!(
+            "static void vv{n}(void) {{}}\nstatic void cw{n}(int c) {{ c ? vv{n}() : (void)0; }}"
+        ),
         // Wave 307: the same local name in two functions is not a redefinition.
         0 => format!(
             "static int f{n}a(void){{ int v = 1; return v; }}\nstatic int f{n}b(void){{ int v = 2; return v; }}"
@@ -342,4 +372,104 @@ fn every_program_gcc_accepts_is_silent() {
         "only {checked} of {count} programs were legal C ({skipped} skipped); \
          the generator has drifted and this test is measuring almost nothing"
     );
+}
+
+/// **The same invariant in the dialect chiero actually ships in** — and the one the channel
+/// above is structurally unable to ask about.
+///
+/// [`gcc_accepts`] uses `-std=c11 -pedantic-errors`, deliberately: wave 314 established that
+/// half of C's constraint violations are warnings by default, and a channel calibrated to the
+/// default would call them legal. That is right for what it tests, and it has a consequence
+/// nobody had drawn: **a program `-pedantic-errors` rejects is skipped**, so this file could
+/// never see chiero speaking under `gnu11` where gcc is silent.
+///
+/// That gap had a live instance. `struct N { unsigned long :24; };` is an *error* under
+/// `-pedantic-errors` — so skipped here — and silent under `gcc -std=gnu11` and
+/// `clang -std=gnu11`, while chiero reported "has no named members" in both dialects. It was
+/// found by hand, auditing diagnostic severities, which is the way this project keeps finding
+/// things a gate should have.
+///
+/// So: a program **`gcc -std=gnu11` compiles without saying anything** must produce no
+/// error-severity sema diagnostic under [`Dialect::gnu`]. The two channels ask different
+/// questions and neither implies the other — the strict one guards against rejecting ISO C,
+/// this one against out-talking the compiler a project actually uses.
+///
+/// ⚠️ **Advisories are exempt by construction, not by choice.** Under `gnu11` every
+/// dialect-gated remark is already suppressed, so an advisory reaching this channel would
+/// mean a rule that ignores the dialect — which is precisely the defect above. The assertion
+/// is therefore on *all* diagnostics, and the severity filter would be the wrong loosening.
+#[test]
+fn every_program_gnu11_gcc_accepts_silently_is_silent() {
+    let count: u64 = std::env::var("CHIERO_SILENCE_COUNT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(300);
+
+    if gnu11_is_quiet_about("int main(void){return 0;}") != Some(true) {
+        eprintln!("skipping: gcc not usable here");
+        return;
+    }
+
+    let mut checked = 0u64;
+    let mut skipped = 0u64;
+    let mut complaints = Vec::new();
+    for seed in 0..count {
+        let src = program(seed);
+        if gnu11_is_quiet_about(&src) != Some(true) {
+            skipped += 1;
+            continue;
+        }
+        checked += 1;
+        let p = harness::parse_in_dialect(
+            &src,
+            TargetConfig::x86_64_linux(),
+            chiero_ast::Dialect::gnu(),
+        );
+        if !p.analysis.diagnostics.is_empty() && complaints.len() < 5 {
+            complaints.push(format!(
+                "seed {seed}: {:?}\n----\n{src}----",
+                p.analysis
+                    .diagnostics
+                    .iter()
+                    .map(|d| format!("[{:?}] {}", d.severity, d.message))
+                    .collect::<Vec<_>>()
+            ));
+        }
+    }
+
+    eprintln!(
+        "gnu11 channel: checked {checked}, skipped {skipped}, complaints {}",
+        complaints.len()
+    );
+    assert!(
+        complaints.is_empty(),
+        "sema complained about {} program(s) `gcc -std=gnu11` compiles in silence:\n{}",
+        complaints.len(),
+        complaints.join("\n")
+    );
+    assert!(
+        checked * 2 > count,
+        "only {checked} of {count} programs were accepted silently by gnu11 ({skipped} \
+         skipped); the generator has drifted and this channel is measuring almost nothing"
+    );
+}
+
+/// Whether `gcc -std=gnu11` compiles `src` **and says nothing at all**.
+///
+/// Silence rather than exit status, because the whole subject is diagnostics: a program gcc
+/// merely *accepts* may still carry a warning, and chiero repeating that warning would be
+/// agreement rather than a false positive.
+fn gnu11_is_quiet_about(src: &str) -> Option<bool> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("gcc")
+        .args(["-std=gnu11", "-c", "-o", "/dev/null", "-x", "c", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
+    child.stdin.as_mut()?.write_all(src.as_bytes()).ok()?;
+    let out = child.wait_with_output().ok()?;
+    Some(out.status.success() && out.stderr.is_empty())
 }
