@@ -354,6 +354,14 @@ pub enum Severity {
     /// and a consumer that discards it is discarding an analysis it asked for.
     ///
     /// Reserved for diagnostics emitted *beside a value*, and each site says why it qualifies.
+    ///
+    /// Two classes carry it today. **Wrapped arithmetic** — `Cx::wrap` returns the value gcc
+    /// and clang return and remarks that the program relied on undefined behaviour. And
+    /// **ISO conformance remarks**, every one of which is a rule where `gnu11` is silent and
+    /// `-pedantic-errors` speaks: the construct is supported unconditionally and only the
+    /// sentence follows the dialect, so the analysis around it is complete. `is_error()` said
+    /// otherwise for all six, and `is_error()` is what a consumer asks before discarding an
+    /// analysis — `chiero-diff` runs the strict dialect today.
     Advisory,
 }
 
@@ -1068,7 +1076,7 @@ pub fn analyze_with(
     // `items()` is the test, not "declares an object or a function": a `typedef` or a bare
     // `struct S { … };` *is* an external declaration and gcc accepts a unit holding only one.
     if cx.dialect.pedantic && ast.items().is_empty() {
-        cx.error(Span::DUMMY, "ISO C forbids an empty translation unit");
+        cx.advisory(Span::DUMMY, "ISO C forbids an empty translation unit");
     }
     for &item in ast.items() {
         cx.item(item);
@@ -2810,7 +2818,7 @@ impl Cx<'_> {
                         chiero_ast::Builtin::Int128 | chiero_ast::Builtin::UInt128
                     )
                 {
-                    self.error(node.span, "ISO C does not support `__int128` types");
+                    self.advisory(node.span, "ISO C does not support `__int128` types");
                 }
                 let t = self.builtin(b);
                 self.intern(t)
@@ -2876,7 +2884,7 @@ impl Cx<'_> {
                                 .and_then(|n| self.text(n))
                                 .map(|t| format!(" `{t}`"))
                                 .unwrap_or_default();
-                            self.error(node.span, format!("ISO C forbids zero-size array{n}"));
+                            self.advisory(node.span, format!("ISO C forbids zero-size array{n}"));
                         }
                         ArrayLen::Zero
                     }
@@ -6084,7 +6092,7 @@ impl Cx<'_> {
                     && (arm_ty(self, t) == Some(true) || arm_ty(self, Some(e)) == Some(true));
                 if one_void {
                     if self.dialect.pedantic {
-                        self.error(
+                        self.advisory(
                             span,
                             "ISO C forbids a conditional expression with only one void side",
                         );
@@ -9267,7 +9275,7 @@ impl Cx<'_> {
             // folded into the member search below.
             if self.compatible(self.bare(target), self.bare(operand)) {
                 if self.dialect.pedantic {
-                    self.error(span, "ISO C forbids casting nonscalar to the same type");
+                    self.advisory(span, "ISO C forbids casting nonscalar to the same type");
                 }
                 return true;
             }
@@ -9311,7 +9319,7 @@ impl Cx<'_> {
                     .any(|&m| self.compatible(self.bare(m), from) && self.prototypes_agree(m, from))
                 {
                     if self.dialect.pedantic {
-                        self.error(span, "ISO C forbids casts to union type");
+                        self.advisory(span, "ISO C forbids casts to union type");
                     }
                     return true;
                 }
