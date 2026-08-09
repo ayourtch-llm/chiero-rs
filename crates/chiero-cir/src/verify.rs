@@ -602,7 +602,12 @@ fn check_ssa_and_types(m: &Module, f: &Function, out: &mut Vec<VerifyError>) {
                     );
                 } else {
                     defs.insert(dst, (b.id, i));
-                    types.insert(dst, ty);
+                    // Only a *known* type goes in. An unresolved value stays absent, so
+                    // `resolve` answers `None` and the `require_*` checks skip it — instead
+                    // of it arriving as a `Void` they cannot distinguish from a real one.
+                    if let Some(ty) = ty {
+                        types.insert(dst, ty);
+                    }
                 }
             }
         }
@@ -716,7 +721,11 @@ fn check_phis(f: &Function, out: &mut Vec<VerifyError>) {
     }
 }
 
-fn defined_by(m: &Module, i: &Inst, types: &IndexMap<ValueId, CTy>) -> Vec<(ValueId, CTy)> {
+/// The values an instruction defines, each with its type **if that type is known here**.
+///
+/// `None` is "not resolved yet", never "void" — see [`rvalue_type_in`]. The `ValueId` is
+/// returned either way, because the assigned-once check must still see the definition.
+fn defined_by(m: &Module, i: &Inst, types: &IndexMap<ValueId, CTy>) -> Vec<(ValueId, Option<CTy>)> {
     match &i.kind {
         InstKind::Assign { dst, rv } => vec![(*dst, rvalue_type_in(rv, types))],
         // **A direct call's result type is the callee's, and it was one lookup away.** This
@@ -738,10 +747,7 @@ fn defined_by(m: &Module, i: &Inst, types: &IndexMap<ValueId, CTy>) -> Vec<(Valu
             ..
         } => vec![(
             *d,
-            m.funcs
-                .iter()
-                .find(|f| f.id == *fid)
-                .map_or(CTy::Void, |f| f.ret.clone()),
+            m.funcs.iter().find(|f| f.id == *fid).map(|f| f.ret.clone()),
         )],
         // **An indirect call declares its result type**, so this is no longer a gap either.
         // `require_ptr`'s `CTy::Void` exemption existed for exactly this arm; with both call
@@ -750,48 +756,61 @@ fn defined_by(m: &Module, i: &Inst, types: &IndexMap<ValueId, CTy>) -> Vec<(Valu
             dst: Some(d),
             callee: Callee::Indirect { ret, .. },
             ..
-        } => vec![(*d, ret.clone())],
+        } => vec![(*d, Some(ret.clone()))],
         // No `Void` fallback: **both call kinds are typed now**, and clippy proves it —
         // an arm here is unreachable. `Direct` resolves through the module, `Indirect`
         // declares its type at the call site.
-        InstKind::AllocaDyn { dst, .. } => vec![(*dst, CTy::Ptr)],
-        InstKind::VaArg { dst, ty, .. } => vec![(*dst, ty.clone())],
-        InstKind::Phi { dst, ty, .. } => vec![(*dst, ty.clone())],
+        InstKind::AllocaDyn { dst, .. } => vec![(*dst, Some(CTy::Ptr))],
+        InstKind::VaArg { dst, ty, .. } => vec![(*dst, Some(ty.clone()))],
+        InstKind::Phi { dst, ty, .. } => vec![(*dst, Some(ty.clone()))],
         // Unlike a call, an `Opaque` *declares* the type of each output, so these are
         // known rather than a gap.
-        InstKind::Opaque { dsts, .. } => dsts.clone(),
+        InstKind::Opaque { dsts, .. } => dsts.iter().map(|(v, t)| (*v, Some(t.clone()))).collect(),
         _ => Vec::new(),
     }
 }
 
 /// The type an `RValue` produces. `Cmp` yields `Int(1)` regardless of its operand type
 /// — conflating the two is the mistake 020 §8 rule 5 names.
-fn rvalue_type_in(rv: &RValue, types: &IndexMap<ValueId, CTy>) -> CTy {
-    let ot = |o: &Operand| resolve(o, types).unwrap_or(CTy::Void);
-    match rv {
-        RValue::Use(o) => ot(o),
+/// ⚠️ **`None` means *not resolved yet*, and it used to be spelled `CTy::Void`.**
+///
+/// The type environment is built in one pass over textual block order, so an operand defined
+/// in a block listed later is simply not in the map when this runs. Returning `Void` for that
+/// case made the map's `Void` mean two unrelated things — *this value is void* and *I have not
+/// reached its definition* — and no consumer could tell them apart. `require_ptr` was deleted's
+/// exemption on 2026-08-09 on the belief that only the first meaning survived; a review showed
+/// the second still occurs, and a legal module whose dominator is listed later was rejected
+/// with "got Void" while the same module reordered verified clean.
+///
+/// An `Option` makes the distinction unrepresentable-by-mistake: an unresolved value gets no
+/// entry, `resolve` answers `None`, and every `require_*` skips it because they already test
+/// `if let Some(t)`.
+fn rvalue_type_in(rv: &RValue, types: &IndexMap<ValueId, CTy>) -> Option<CTy> {
+    let ot = |o: &Operand| resolve(o, types);
+    Some(match rv {
+        RValue::Use(o) => ot(o)?,
         RValue::Load { ty, .. } => ty.clone(),
         RValue::LoadBits { unit, .. } => unit.clone(),
         RValue::Bin { ty, .. } | RValue::Un { ty, .. } => ty.clone(),
         RValue::Cmp { .. } => CTy::Int(1),
         RValue::Cast { to, .. } => to.clone(),
-        RValue::Select { t, .. } => ot(t),
+        RValue::Select { t, .. } => ot(t)?,
         RValue::PtrAdd { .. }
         | RValue::AddrOfLocal { .. }
         | RValue::AddrOfGlobal { .. }
         | RValue::AddrOfFunc(_) => CTy::Ptr,
-        RValue::Shuffle { a, .. } => ot(a),
-        RValue::InsertLane { v, .. } => ot(v),
-        RValue::ExtractLane { v, .. } => match ot(v) {
+        RValue::Shuffle { a, .. } => ot(a)?,
+        RValue::InsertLane { v, .. } => ot(v)?,
+        RValue::ExtractLane { v, .. } => match ot(v)? {
             CTy::Vector { elem, .. } => *elem,
             other => other,
         },
         RValue::Splat { elem, lanes } => CTy::Vector {
-            elem: Box::new(ot(elem)),
+            elem: Box::new(ot(elem)?),
             lanes: *lanes,
         },
         RValue::Fresh { ty } => ty.clone(),
-    }
+    })
 }
 
 fn const_type(c: &Const) -> CTy {
