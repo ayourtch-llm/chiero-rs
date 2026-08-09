@@ -1091,8 +1091,13 @@ fn check_bits(f: &Function, unit: &CTy, bits: BitRange, span: Span, out: &mut Ve
     }
 }
 
-/// Rule 5. Skips unresolved values (recorded as `Void`), which is a known gap rather
-/// than a claim — see `defined_by`.
+/// Rule 5.
+///
+/// **No `Void` exemption.** It read "skips unresolved values (recorded as `Void`), which is a
+/// known gap" until 2026-08-09, when unresolved stopped being spelled `Void` — it is absent
+/// from the map now, so `resolve` answers `None` and this skips it without an exemption. What
+/// the exemption also suppressed, and no longer does, is a *genuinely* void value used where
+/// bits are required.
 fn require_ty(
     f: &Function,
     o: &Operand,
@@ -1102,8 +1107,9 @@ fn require_ty(
     span: Span,
     out: &mut Vec<VerifyError>,
 ) {
+    // No `Void` exemption — see this function's doc. Unresolved is absent from the map now,
+    // so what remains is a genuinely void value where bits are required, which is malformed.
     if let Some(got) = resolve(o, types)
-        && got != CTy::Void
         && got != *want
     {
         err(
@@ -1127,7 +1133,6 @@ fn require_int(
     out: &mut Vec<VerifyError>,
 ) {
     if let Some(t) = resolve(o, types)
-        && t != CTy::Void
         && !matches!(t, CTy::Int(_))
     {
         err(
@@ -1317,9 +1322,9 @@ fn check_rvalue_types(
         }
         RValue::Select { cond, t: tv, f: fv } => {
             require_ty(f, cond, &CTy::Int(1), types, "select condition", span, out);
+            // Likewise: a `select` between two genuinely void arms is malformed, and
+            // unresolved arms are absent rather than `Void`.
             if let (Some(a), Some(b)) = (resolve(tv, types), resolve(fv, types))
-                && a != CTy::Void
-                && b != CTy::Void
                 && a != b
             {
                 err(
@@ -1448,7 +1453,6 @@ fn check_term_types(
     match &b.term {
         Terminator::Return(Some(o)) => {
             if let Some(t) = resolve(o, types)
-                && t != CTy::Void
                 && t != f.ret
             {
                 err(
