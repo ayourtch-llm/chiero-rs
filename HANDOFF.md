@@ -1744,18 +1744,37 @@ typing the paths ever would.
 > ### 🆕 Suggested first moves after the 2026-08-09 session, in order
 >
 > 1. **Run the two fast gates** (`persona_gap` 0.1 s, `growth` ~5 s). The 23-minute corpus gate is
->    worth it only when something touched the frontend or the persona.
-> 2. **Pick a widening (§8.3), or take a concrete item from §9.1.** The live ones are unchanged
->    and roughly by value: **032 contract 18's replay corpus**, still with no `observed` entry —
->    the probe is built and committed (`tests/corpus/replay/replay_probe.sh`) and §9.1 item 8 says
->    what firing it costs; **5j**, `CopyMem` discarding the alignment the CIR hands it, which is
->    what a `ub-strict` mode will rest on; the two `vnet/` finding classes, which are policy
->    questions rather than defects; and `InstKind::Call` carrying no result type, a CIR change
->    across 135 sites.
+>    worth it only when something touched the frontend or the persona — and that rule was
+>    exercised on 2026-08-09: a parser change triggered it, it came back **1967/1967, 0 panicked,
+>    0 diagnosed, 8 personas**, and its token count is now known to be **deterministic** (two
+>    byte-identical runs).
+> 2. **Pick a widening (§8.3), or take a concrete item from §9.1.** ⚠️ **The layout and
+>    diagnostic surfaces are mined out for now** — the last five waves there returned zeros or
+>    findings about the gates themselves. Prefer the untouched concrete items: **032 contract
+>    18's replay corpus**, still with no `observed` entry (the probe is committed; firing it
+>    re-runs cmake and invalidates every published VPP number, so do it deliberately);
+>    **`InstKind::Call` carrying no result type**, a CIR change across 135 sites; and the two
+>    `vnet/` finding classes, which are policy questions rather than defects. **5j is
+>    diagnosed and half-closed** — both discards are explained at the site and both directions
+>    of the gap are measured and pinned; what is left is the API change, and it is still gated
+>    on `ub-strict` existing.
+> 3. 📌 **The method that paid all day, and the one to reach for first:** *one fact, more than
+>    one reader.* Three instances in one session — `packed` read by `lay_out` and
+>    `record_is_packed` with different filters; alignment read by three arms of which the fix
+>    reached one; and a diagnostic filed as a refusal in four separate places. **When a fix
+>    lands, re-run the original reproduction, not the new test.** A green unit test beside an
+>    unchanged tool is what that class looks like, and it happened here.
 > 3. ⚠️ **Closed 2026-08-09, do not re-open:** the whole **stale-tolerance-list** class — the
 >    generated suite's `KNOWN_GAPS`, `xtask`'s two dependency allowlists, and `persona_gap`'s
 >    `DELIBERATE`. See the yield table's three new rows and §7.19.
-> 4. ⚠️ **Closed in the 2026-08-08 sessions, do not re-open:** the whole persona thread
+> 4. ⚠️ **Closed 2026-08-09, do not re-open:** the stale-tolerance-list class (§7.19); the
+>    prefix-attribute, union `:0` and packed-`:0` layout defects (§7.20, found by the new
+>    generated layout corpus); `SemaDiagnostic::Severity` and the ten advisory sites; the second
+>    silence channel in the gnu11 dialect; `chiero layout` refusing a TU sema refused (5m); and
+>    `_Alignof` of a typedef (5n). **Two of those were defects in that session's own fixes**,
+>    both found by adversarial review — an ambient severity flag that leaked a demotion across
+>    the whole TU, and a fix that reached one reader of three.
+> 5. ⚠️ **Closed in the 2026-08-08 sessions, do not re-open:** the whole persona thread
 >    (`chiero-probe`, the per-TU join, 060 contract 2, the corpus gate's configuration); the gcov
 >    growth gate, which passes for the first time; the witness reporting defect (5e — read its
 >    three corrected claims before trusting a truncated witness); the stale VPP build directory
