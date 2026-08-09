@@ -626,7 +626,7 @@ fn check_ssa_and_types(m: &Module, f: &Function, out: &mut Vec<VerifyError>) {
         }
     }
 
-    let doms = dominators(f);
+    let doms = idoms(f);
     // Rule 3 calls an unreachable block a *warning*, but a predecessor-less block is
     // dominated only by itself, so any use of an entry value inside it would also raise
     // a hard `UseNotDominated` — making "unreachable C code is legal" false for anything
@@ -935,15 +935,60 @@ fn term_operands(t: &Terminator) -> Vec<Operand> {
 /// Same answer, and `verify`'s own suite is what says so: this function decides whether a use
 /// is dominated by its definition, and every dominance rejection in `verifier.rs` goes through
 /// it.
-fn dominators(f: &Function) -> IndexMap<BlockId, Vec<BlockId>> {
-    let ids: Vec<BlockId> = f.blocks.iter().map(|b| b.id).collect();
-    // Unreachable predecessors are excluded from the meet (Cooper-Harvey-Kennedy).
-    // A dead block is dominated by nothing but itself, so meeting `{dead}` into a live
-    // join empties the set and a value defined in entry stops dominating its use — a
-    // hard error on the ubiquitous C shape of dead code falling into a live join.
-    let reachable: std::collections::BTreeSet<BlockId> = reachable_blocks(f).into_iter().collect();
-    // One pass over the blocks, rather than one per block per round.
-    let mut preds: IndexMap<BlockId, Vec<BlockId>> = ids.iter().map(|&b| (b, Vec::new())).collect();
+/// **Immediate dominators (Cooper–Harvey–Kennedy), one parent per block.**
+///
+/// ⚠️ **This returned full dominator *sets* until 2026-08-09, and that was a memory bomb.**
+/// Every block was seeded with a copy of "every block in the function", so the initial state
+/// alone is O(B²): measured on a 96 000-block function, **peak RSS 35.6 GB** — 9.2 billion
+/// `BlockId`s. It survived on a machine with the memory to spare and would kill most.
+///
+/// The sets were never needed. Their single consumer asks one question — *does `db` dominate
+/// `at_block`?* — which an idom tree answers by walking up from `at_block`, O(depth) with no
+/// allocation. So the representation shrank from O(B²) to O(B) and the algorithm went from
+/// iterate-sets-to-fixpoint to CHK's intersect-on-the-idom-tree.
+///
+/// Same answers, and `verifier.rs` is what says so: every dominance rejection there runs
+/// through this, and the previous entry in this comment's history is the reason to be careful —
+/// a 3001-block function took **11.5 s** before the *first* rewrite, and each doubling cost six
+/// times the previous.
+///
+/// Unreachable blocks get no idom, which preserves the old rule exactly: a dead block was
+/// dominated by nothing but itself, so meeting `{dead}` into a live join could not empty the
+/// set and break the ubiquitous C shape of dead code falling into a live join.
+fn idoms(f: &Function) -> IndexMap<BlockId, BlockId> {
+    let reachable = reachable_blocks(f);
+    // Reverse postorder, and its inverse. CHK needs both: the iteration order, and a cheap
+    // "which of these two is closer to entry" for the intersection below.
+    let mut post: Vec<BlockId> = Vec::with_capacity(reachable.len());
+    let mut seen: IndexSet<BlockId> = IndexSet::new();
+    let at: IndexMap<BlockId, usize> = f
+        .blocks
+        .iter()
+        .enumerate()
+        .map(|(i, b)| (b.id, i))
+        .collect();
+    // Iterative DFS, because a 96 000-block chain overflows a recursive one.
+    let mut stack: Vec<(BlockId, usize)> = vec![(f.entry, 0)];
+    seen.insert(f.entry);
+    while let Some((id, k)) = stack.pop() {
+        let ss: Vec<BlockId> = at
+            .get(&id)
+            .map(|i| succs(&f.blocks[*i].term))
+            .unwrap_or_default();
+        if k < ss.len() {
+            stack.push((id, k + 1));
+            let n = ss[k];
+            if reachable.contains(&n) && seen.insert(n) {
+                stack.push((n, 0));
+            }
+        } else {
+            post.push(id);
+        }
+    }
+    let rpo: Vec<BlockId> = post.iter().rev().copied().collect();
+    let order: IndexMap<BlockId, usize> = rpo.iter().enumerate().map(|(i, b)| (*b, i)).collect();
+
+    let mut preds: IndexMap<BlockId, Vec<BlockId>> = rpo.iter().map(|&b| (b, Vec::new())).collect();
     for p in &f.blocks {
         if !reachable.contains(&p.id) {
             continue;
@@ -954,69 +999,64 @@ fn dominators(f: &Function) -> IndexMap<BlockId, Vec<BlockId>> {
             }
         }
     }
-    // **Sorted from the start.** `ids` is the initial "everything" set and the meet below is a
-    // merge, so both sides have to be ordered for the whole loop, not only where it used to be
-    // sorted on the way out.
-    let mut sorted_ids = ids.clone();
-    sorted_ids.sort_unstable();
-    let mut dom: IndexMap<BlockId, Vec<BlockId>> = IndexMap::new();
-    for &b in &ids {
-        dom.insert(
-            b,
-            if b == f.entry {
-                vec![f.entry]
-            } else {
-                sorted_ids.clone()
-            },
-        );
-    }
+
+    let mut idom: IndexMap<BlockId, BlockId> = IndexMap::new();
+    idom.insert(f.entry, f.entry);
+    let intersect = |idom: &IndexMap<BlockId, BlockId>, mut a: BlockId, mut b: BlockId| {
+        // Walk the deeper one up until both sit at the same RPO index.
+        while a != b {
+            while order[&a] > order[&b] {
+                a = idom[&a];
+            }
+            while order[&b] > order[&a] {
+                b = idom[&b];
+            }
+        }
+        a
+    };
     let mut changed = true;
     while changed {
         changed = false;
-        for &b in &ids {
-            if b == f.entry {
-                continue;
+        for &b in rpo.iter().skip(1) {
+            let mut new: Option<BlockId> = None;
+            for &p in &preds[&b] {
+                if !idom.contains_key(&p) {
+                    continue; // not processed yet on the first round
+                }
+                new = Some(match new {
+                    None => p,
+                    Some(cur) => intersect(&idom, cur, p),
+                });
             }
-            let bpreds = &preds[&b];
-            let mut new: Vec<BlockId> = match bpreds.first() {
-                Some(p) => dom[p].clone(),
-                None => vec![], // unreachable block: dominated by nothing but itself
-            };
-            for p in bpreds.iter().skip(1) {
-                new = intersect_sorted(&new, &dom[p]);
-            }
-            if let Err(at) = new.binary_search(&b) {
-                new.insert(at, b);
-            }
-            if dom[&b] != new {
-                dom.insert(b, new);
+            if let Some(n) = new
+                && idom.get(&b) != Some(&n)
+            {
+                idom.insert(b, n);
                 changed = true;
             }
         }
     }
-    dom
+    idom
 }
 
-/// Intersection of two ascending lists, in one pass.
+/// Whether `a` dominates `b`, by walking `b` up the idom tree.
 ///
-/// The thing it replaces — `new.retain(|x| other.contains(x))` — is a linear scan of `other`
-/// for every element of `new`, and `new` starts as every block in the function. Both sides are
-/// already ordered here, which is what makes the merge available for free.
-fn intersect_sorted(a: &[BlockId], b: &[BlockId]) -> Vec<BlockId> {
-    let (mut i, mut j) = (0, 0);
-    let mut out = Vec::with_capacity(a.len().min(b.len()));
-    while i < a.len() && j < b.len() {
-        match a[i].cmp(&b[j]) {
-            std::cmp::Ordering::Equal => {
-                out.push(a[i]);
-                i += 1;
-                j += 1;
-            }
-            std::cmp::Ordering::Less => i += 1,
-            std::cmp::Ordering::Greater => j += 1,
-        }
+/// Unreachable `b` has no entry, so only `a == b` holds — the rule the set form had.
+fn dominates(idom: &IndexMap<BlockId, BlockId>, a: BlockId, b: BlockId, entry: BlockId) -> bool {
+    if a == b {
+        return true;
     }
-    out
+    let mut cur = b;
+    while let Some(&next) = idom.get(&cur) {
+        if next == a {
+            return true;
+        }
+        if next == cur || cur == entry {
+            return false;
+        }
+        cur = next;
+    }
+    false
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1026,7 +1066,7 @@ fn check_dominated(
     at_index: usize,
     op: Operand,
     defs: &IndexMap<ValueId, (BlockId, usize)>,
-    doms: &IndexMap<BlockId, Vec<BlockId>>,
+    doms: &IndexMap<BlockId, BlockId>,
     span: Span,
     out: &mut Vec<VerifyError>,
 ) {
@@ -1045,7 +1085,7 @@ fn check_dominated(
         // Same block: the definition must come first textually.
         di < at_index
     } else {
-        doms.get(&at_block).is_some_and(|d| d.contains(&db))
+        dominates(doms, db, at_block, f.entry)
     };
     if !ok {
         err(
