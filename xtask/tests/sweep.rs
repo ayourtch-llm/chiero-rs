@@ -586,6 +586,51 @@ fn a_parallel_tree_sweep_agrees_with_a_serial_one_in_order() {
     }
 }
 
+/// **An advisory is not a refusal, and the sweep used to report it as one.**
+///
+/// `(Warned(_), _) => SeverityMismatch` keyed on gcc's outcome alone, which was right while
+/// every chiero diagnostic was a refusal. Once sema grew `Severity::Advisory` (2026-08-09),
+/// gcc warning and chiero advising became *agreement* — both warn, both produce a value —
+/// filed under a heading reading "chiero refused", which chiero did not.
+///
+/// Reproduced on a two-file tree: gcc exits 0 with `-Woverflow`, chiero folds to the same
+/// value and advises, and the sweep printed `SEVERITY MISMATCH ... 1 sema: signed overflow`.
+#[test]
+fn an_advisory_beside_a_gcc_warning_is_agreement_not_a_severity_mismatch() {
+    let adv = |m: &str| Outcome::Advised(m.into());
+
+    // The reproduction, as a classification.
+    assert_eq!(
+        classify(
+            &Outcome::Warned("integer overflow in expression".into()),
+            &adv("sema: signed overflow in a constant expression")
+        ),
+        Bucket::Agree,
+        "both warned and both produced a value — nothing disagreed"
+    );
+
+    // An advisory where gcc said nothing is still chiero speaking alone, and still a finding:
+    // chiero remarked on code gcc accepts silently.
+    assert_eq!(classify(&Outcome::Clean, &adv("sema: x")), Bucket::Finding);
+
+    // gcc *refused* and chiero merely advised. Still `BothRefused`: on a real tree gcc's
+    // refusal is almost always the flags being wrong for that file, so gcc never judged the
+    // C and chiero's severity does not change that. Filing it as `Miss` was tried and
+    // measured — it moved **255 of VPP's 1552 files** under a "chiero is missing a rule"
+    // heading where nothing had been tested.
+    assert_eq!(
+        classify(&d("error: x"), &adv("sema: x")),
+        Bucket::BothRefused
+    );
+
+    // The error path is untouched: a refusal beside a gcc warning is still a severity
+    // mismatch, which is the case the bucket was built for.
+    assert_eq!(
+        classify(&Outcome::Warned("w".into()), &d("sema: hard error")),
+        Bucket::SeverityMismatch
+    );
+}
+
 /// **A gcc warning is not gcc accepting.** `gcc_outcome` reads the exit status, so a file gcc
 /// compiled *with warnings* counted as clean and every chiero diagnostic on it was filed as an
 /// over-rejection. Two of the second sweep's findings are exactly that: VPP redefines
@@ -771,10 +816,15 @@ fn chiero_outcome_drops_a_system_header_diagnostic() {
         includes: vec![tmp.clone()],
         ..flags
     };
+    // `Advised`, not `Diagnosed`, since 2026-08-09: `__int128` under `-pedantic` is an ISO
+    // conformance remark, and sema marks those `Severity::Advisory` because the construct is
+    // supported unconditionally and only the sentence follows the dialect. The bucket is
+    // unchanged — `(Clean, Advised)` is still a `Finding` — so no published number moves; what
+    // changed is that the report no longer calls it a refusal.
     assert!(
         matches!(
             xtask::sweep::chiero_outcome(&tu, &with_include, std::slice::from_ref(&elsewhere), &[]),
-            Outcome::Diagnosed(m) if m.contains("__int128")
+            Outcome::Advised(m) if m.contains("__int128")
         ),
         "the rule still fires when the header is not a system header"
     );
@@ -1027,4 +1077,62 @@ fn chiero_outcome_reports_a_translation_unit_it_cannot_lower() {
         xtask::sweep::chiero_outcome(&ok, &flags, &[], &[]),
         Outcome::Clean
     );
+}
+
+/// **The advisory line lets a reader recover the pre-2026-08-09 totals from a new report.**
+///
+/// Changing what a bucket counts makes old and new sweeps incomparable unless the report says
+/// which files moved. `Outcome::Advised` is exactly the set that moved — every one of them was
+/// an `Outcome::Diagnosed` before — so printing them, split by what gcc said, is what keeps the
+/// numbers in §11.2 readable beside a fresh run.
+#[test]
+fn the_report_says_which_files_the_advisory_taxonomy_moved() {
+    use xtask::sweep::{Verdict, report_lines};
+    let v = |chiero: Outcome, gcc: Outcome| Verdict {
+        path: PathBuf::from("t.c"),
+        bucket: classify(&gcc, &chiero),
+        gcc,
+        chiero,
+    };
+    let adv = |m: &str| Outcome::Advised(m.into());
+    // **1, 2 and 3 — distinct on purpose.** With one file in each category a report that
+    // swapped two of the three counts passed this test; the mutation was run and survived.
+    // Equal fixture values cannot detect an ordering, which is the same reason the indirect
+    // call tests use `sub(10, 3)` rather than a symmetric argument pair.
+    let verdicts = vec![
+        v(
+            adv("sema: signed overflow"),
+            Outcome::Warned("overflow".into()),
+        ),
+        v(adv("sema: __int128"), Outcome::Clean),
+        v(adv("sema: __int128 again"), Outcome::Clean),
+        v(adv("sema: x"), d("error: y")),
+        v(adv("sema: y"), d("error: z")),
+        v(adv("sema: z"), d("error: w")),
+        // A plain refusal must not be counted in the advisory line.
+        v(d("sema: hard"), Outcome::Warned("w".into())),
+        v(Outcome::Clean, Outcome::Clean),
+    ];
+    let lines = report_lines(&verdicts, Path::new("/tree"));
+    let line = lines
+        .iter()
+        .find(|l| l.contains("chiero advised"))
+        .unwrap_or_else(|| panic!("no advisory line in:\n{}", lines.join("\n")));
+    assert!(line.contains("gcc warned 1"), "{line}");
+    assert!(line.contains("gcc clean 2"), "{line}");
+    assert!(line.contains("gcc refused 3"), "{line}");
+    assert!(
+        line.contains("advised (was counted as a refusal before 2026-08-09): 6"),
+        "{line}"
+    );
+
+    // And the buckets those three land in, which is the other half of the claim.
+    assert_eq!(verdicts[0].bucket, Bucket::Agree);
+    assert_eq!(verdicts[1].bucket, Bucket::Finding);
+    assert_eq!(verdicts[3].bucket, Bucket::BothRefused);
+    assert_eq!(verdicts[6].bucket, Bucket::SeverityMismatch);
+
+    // **A tree with no advisories prints no line**, so an unchanged report stays unchanged.
+    let plain = report_lines(&[v(Outcome::Clean, Outcome::Clean)], Path::new("/tree"));
+    assert!(!plain.iter().any(|l| l.contains("chiero advised")));
 }

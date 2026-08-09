@@ -32,6 +32,12 @@ pub enum Outcome {
     Clean,
     /// Produced diagnostics — the first is kept for the report.
     Diagnosed(String),
+    /// **Said something and still produced a value.** chiero's sema grew `Severity::Advisory`
+    /// on 2026-08-09; before that every chiero diagnostic was a refusal and this variant would
+    /// have had no members. It is chiero's side of `Warned`, and it is kept apart from
+    /// `Diagnosed` because the two demand opposite readings: a refusal beside a gcc warning is
+    /// a severity question, an advisory beside one is plain agreement.
+    Advised(String),
     /// Could not be run on this file at all: a flag the tool cannot take, a missing include.
     /// **Never silently dropped**, because a silent skip is how a sweep lies about its coverage.
     NotRun(String),
@@ -47,8 +53,12 @@ pub enum Bucket {
     /// gcc refused and chiero was silent — a missing rule. Lower priority: gcc's reason may
     /// need flags this sweep does not pass.
     Miss,
-    /// Both were clean: the file was tested and chiero matched gcc. **The only bucket that is
-    /// evidence of agreement.**
+    /// The file was tested and chiero matched gcc. **The only bucket that is evidence of
+    /// agreement.**
+    ///
+    /// Two shapes since 2026-08-09: both clean, or gcc warned and chiero *advised* — both
+    /// spoke, both produced a value, and nothing disagreed. Before advisories existed this
+    /// meant "both clean" alone, and the heading said so.
     Agree,
     /// Both produced diagnostics. On a real tree this almost always means the *flags* are wrong
     /// for this file — a generated header, a `-D` the build passes — so gcc never judged the C
@@ -71,7 +81,28 @@ pub fn classify(gcc: &Outcome, chiero: &Outcome) -> Bucket {
         // however quietly gcc said it, and gcc and chiero both noticing is agreement about
         // the code — a severity question, not a defect in either.
         (Outcome::Warned(_), Outcome::Clean) => Bucket::Miss,
+        // **Both warned, and both produced a value: nothing disagreed.** This arm has to sit
+        // above the catch-all below, which keyed on gcc's outcome alone and was right only
+        // while chiero had no severity but "refused".
+        (Outcome::Warned(_), Outcome::Advised(_)) => Bucket::Agree,
         (Outcome::Warned(_), _) => Bucket::SeverityMismatch,
+        // chiero advised where gcc *refused*. Filed with `BothRefused`, and the first attempt
+        // filed it as `Miss` — **measured wrong, on 255 of VPP's 1552 files.**
+        //
+        // The reasoning that failed: "chiero produced a value for a file gcc will not build,
+        // so chiero is missing a rule". But this bucket's own doc says why gcc refuses on a
+        // real tree — the *flags* are wrong for that file, a generated header, a `-D` the
+        // build passes — so **gcc never judged the C**, and that is true whatever chiero's
+        // severity was. Calling it a miss puts 255 files under a heading that reads "chiero
+        // is missing a rule" when nothing was tested. That is the exact inflation this
+        // bucket was split off to prevent, arrived at from the other direction.
+        (Outcome::Diagnosed(_), Outcome::Advised(_)) => Bucket::BothRefused,
+        // And an advisory where gcc was silent is chiero speaking alone, which is a finding
+        // however quietly it spoke — the mirror of the `(Warned, Clean) => Miss` rule above.
+        (Outcome::Clean, Outcome::Advised(_)) => Bucket::Finding,
+        // chiero is never the `gcc` side, but the match must be exhaustive and a `_` arm here
+        // is how a later variant gets silently reclassified.
+        (Outcome::Advised(_), _) => Bucket::ToolGap,
         // chiero has no warning level, so its side is never `Warned` today. Handled beside
         // `Diagnosed` rather than left to a `_` arm, so adding one later is a compile error
         // here and not a silent reclassification.
@@ -269,16 +300,29 @@ pub fn chiero_outcome(
     // report one: it suppresses `-pedantic` diagnostics originating in a system header. Without
     // this the strict sweep's last finding was `__int128` inside `/usr/include/linux/types.h`,
     // which no reader could act on and gcc never mentions.
-    if let Some(first) = analysis
+    let visible: Vec<_> = analysis
         .diagnostics
         .iter()
-        .find(|d| !in_system_header(&tu.source_map, d.span, system))
-    {
+        .filter(|d| !in_system_header(&tu.source_map, d.span, system))
+        .collect();
+    // **An error, if there is one anywhere — not merely the first diagnostic.** Taking
+    // `first` would report a file as merely `Advised` whenever an advisory happened to be
+    // emitted before a refusal, which is a severity the file does not have.
+    if let Some(first) = visible.iter().find(|d| d.is_error()) {
         return Outcome::Diagnosed(format!(
             "sema: {}",
             describe(&tu.source_map, first.span, &first.message)
         ));
     }
+    // Advisories alone do **not** return here: sema advised and lowering still runs, so
+    // stopping now would hide a `NotRun` behind the milder verdict. The advisory is carried
+    // and only becomes the answer if everything downstream is clean.
+    let advisory = visible.first().map(|first| {
+        format!(
+            "sema: {}",
+            describe(&tu.source_map, first.span, &first.message)
+        )
+    });
     // **Lowering runs, and a function it gives up on is reported.**
     //
     // The sweep used to stop at sema, so "clean" meant "sema-clean" and every corpus headline
@@ -298,7 +342,10 @@ pub fn chiero_outcome(
             "lower: {}",
             describe(&tu.source_map, first.span, &first.message)
         )),
-        None => Outcome::Clean,
+        None => match advisory {
+            Some(m) => Outcome::Advised(m),
+            None => Outcome::Clean,
+        },
     }
 }
 
@@ -699,6 +746,9 @@ pub fn grouped_rows(
         }
         let msg = match if side { &v.chiero } else { &v.gcc } {
             Outcome::Diagnosed(m) | Outcome::NotRun(m) | Outcome::Warned(m) => m.clone(),
+            // An advisory is text about the code, so it groups with the rest — a reader
+            // wanting to know what chiero says about a tree wants to see it.
+            Outcome::Advised(m) => m.clone(),
             Outcome::Clean => continue,
         };
         // Group by kind; keep the first located text as the example.
@@ -782,11 +832,11 @@ pub fn report_lines(verdicts: &[Verdict], tree: &Path) -> Vec<String> {
         count(Bucket::Miss)
     ));
     out.push(format!(
-        "  agree, both clean:                     {}",
+        "  agree (both clean, or both advisory):  {}",
         count(Bucket::Agree)
     ));
     out.push(format!(
-        "  both refused (usually wrong flags):    {}",
+        "  gcc refused, chiero spoke (bad flags): {}",
         count(Bucket::BothRefused)
     ));
     out.push(format!(
@@ -797,6 +847,31 @@ pub fn report_lines(verdicts: &[Verdict], tree: &Path) -> Vec<String> {
         "  tool gaps (one side could not run):    {}",
         count(Bucket::ToolGap)
     ));
+    // **The advisories, and what gcc said beside each.** Printed rather than folded into the
+    // buckets because this is the line that makes the 2026-08-09 taxonomy change auditable: an
+    // advisory used to be a refusal, so every file counted here landed in a different bucket
+    // before, and the reader can recover the old totals from this line alone. Silence here
+    // would be the same defect the change fixed — a heading that no longer means what it says.
+    let advised = |f: fn(&Outcome) -> bool| {
+        verdicts
+            .iter()
+            .filter(|v| matches!(v.chiero, Outcome::Advised(_)) && f(&v.gcc))
+            .count()
+    };
+    let (a_warn, a_clean, a_diag) = (
+        advised(|g| matches!(g, Outcome::Warned(_))),
+        advised(|g| matches!(g, Outcome::Clean)),
+        advised(|g| matches!(g, Outcome::Diagnosed(_))),
+    );
+    if a_warn + a_clean + a_diag > 0 {
+        out.push(format!(
+            "  chiero advised (was counted as a refusal before 2026-08-09): {} \
+             — gcc warned {a_warn} (now agree, was severity mismatch), \
+             gcc clean {a_clean} (still a finding), \
+             gcc refused {a_diag} (still both-refused: gcc never judged the C)",
+            a_warn + a_clean + a_diag
+        ));
+    }
     // **What was actually tested.** A sweep where gcc refused everything has findings of zero
     // and has learned nothing; saying so here is the difference between a report and a number.
     let tested = count(Bucket::Agree) + count(Bucket::Finding);
@@ -899,6 +974,10 @@ pub fn coverage(verdicts: &[Verdict]) -> Coverage {
             Outcome::Clean => 3,
             // A warning means the file compiled, so every stage was reached.
             Outcome::Warned(_) => 3,
+            // So does an advisory: sema advised and lowering still ran. Counting it as a
+            // *stopped* stage would under-report coverage, which is the one direction this
+            // number must never move on its own.
+            Outcome::Advised(_) => 3,
             Outcome::Diagnosed(m) | Outcome::NotRun(m) => {
                 if m.starts_with("pp:") {
                     0

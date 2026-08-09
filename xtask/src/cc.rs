@@ -86,6 +86,7 @@ pub fn record_line(source: &Path, outcome: &crate::sweep::Outcome, millis: u128)
         crate::sweep::Outcome::Clean => ("clean", String::new()),
         crate::sweep::Outcome::Warned(m) => ("warned", m.clone()),
         crate::sweep::Outcome::Diagnosed(m) => ("diagnosed", m.clone()),
+        crate::sweep::Outcome::Advised(m) => ("advised", m.clone()),
         crate::sweep::Outcome::NotRun(m) => ("not-run", m.clone()),
     };
     format!(
