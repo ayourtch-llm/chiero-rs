@@ -1026,7 +1026,6 @@ pub fn analyze_with(
     dialect: chiero_ast::Dialect,
 ) -> Analysis {
     let mut cx = Cx {
-        next_severity: Severity::Error,
         dialect,
         ast,
         target: target.clone(),
@@ -1196,7 +1195,6 @@ impl<'a> ConstEvaluator<'a> {
         // needs the TU's tag table and therefore needs `analyze`; that is a real limit and
         // is why this takes a target rather than pretending sizes are universal.
         Cx {
-            next_severity: Severity::Error,
             // A const-eval helper: no dialect-gated rule is reachable from here, so the strict
             // default is the safe one.
             dialect: chiero_ast::Dialect::pedantic(),
@@ -1258,9 +1256,6 @@ struct IntVal {
 // ---------------------------------------------------------------------------------
 
 struct Cx<'a> {
-    /// Severity for the **next** diagnostic only; reset to `Error` after every emission.
-    /// See [`Cx::advisory`].
-    next_severity: Severity,
     ast: &'a Ast,
     target: TargetConfig,
     names: &'a dyn SymbolText,
@@ -1827,6 +1822,28 @@ impl Cx<'_> {
     }
 
     fn error(&mut self, span: Span, message: impl Into<String>) {
+        self.diagnose(Severity::Error, span, message);
+    }
+
+    /// Emit an **advisory**: a concern about the program, beside a value chiero did produce.
+    fn advisory(&mut self, span: Span, message: impl Into<String>) {
+        self.diagnose(Severity::Advisory, span, message);
+    }
+
+    /// ⚠️ **Severity is a parameter, and the first version made it ambient one-shot state.**
+    ///
+    /// `advisory` used to set a `next_severity` field and delegate to `error`, which reset it
+    /// after pushing — the argument being that `error` has 160 call sites and none of them
+    /// should have to choose. The flaw is the early return below: `error` is **silent while
+    /// re-resolving** (`quiet > 0`), and it returned *before* the reset. A parameter list is
+    /// re-resolved quietly and an array bound in one reaches `wrap`, so an advisory raised
+    /// there armed the flag and nothing disarmed it. **The next diagnostic emitted anywhere in
+    /// the translation unit was demoted**, across functions, and with the CLI no longer
+    /// stopping on advisories a demoted `Error` reached lowering.
+    ///
+    /// Two private one-line wrappers cost nothing and cannot leak, which is what ambient state
+    /// bought and could not keep.
+    fn diagnose(&mut self, severity: Severity, span: Span, message: impl Into<String>) {
         // **Silent while re-resolving something already resolved.** See `re_resolving`.
         if self.quiet > 0 {
             return;
@@ -1834,20 +1851,8 @@ impl Cx<'_> {
         self.out.diagnostics.push(SemaDiagnostic {
             span,
             message: message.into(),
-            severity: self.next_severity,
+            severity,
         });
-        self.next_severity = Severity::Error;
-    }
-
-    /// Emit an **advisory**: a concern about the program, beside a value chiero did produce.
-    ///
-    /// Threaded through a one-shot field rather than a second `error`-shaped method because
-    /// `error` is called from 160 places and every one of them would have had to choose.
-    /// The default is [`Severity::Error`], so a site that says nothing keeps saying what it
-    /// always said.
-    fn advisory(&mut self, span: Span, message: impl Into<String>) {
-        self.next_severity = Severity::Advisory;
-        self.error(span, message);
     }
 
     /// Run `f` with diagnostics suppressed, for a **second** resolution of a node the first pass
@@ -2903,7 +2908,16 @@ impl Cx<'_> {
                         // The same rule: an explained length is poison whether the fold failed
                         // outright (`1/0`) or produced a wrapped value (`2147483647 + 1`, which
                         // comes out negative and would draw a second complaint about that).
-                        if self.out.diagnostics.len() > before {
+                        //
+                        // ⚠️ **Errors only, and counting *any* diagnostic was a real hole once
+                        // `wrap` became an advisory.** The "second complaint" this guard exists
+                        // to suppress is the negative-length **Error** — and suppressing it was
+                        // harmless only while the overflow was itself an Error that refused the
+                        // file anyway. With the overflow demoted, `int arr[0x7fffffff +
+                        // 0x7fffffff];` produced one advisory, poisoned the length to 0, and
+                        // exited 0 on a translation unit gcc rejects outright. An advisory says
+                        // *a value exists*, which is the opposite of poison.
+                        if self.out.diagnostics[before..].iter().any(|d| d.is_error()) {
                             return self.intern(Ty::Array {
                                 elem: e,
                                 len: ArrayLen::Fixed(0),

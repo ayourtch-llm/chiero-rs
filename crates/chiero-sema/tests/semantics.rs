@@ -3604,12 +3604,42 @@ fn a_failed_constant_fold_keeps_its_explanation() {
         "int f(int n){ switch(n){ case 1 ... 1/0: return 1; } return 0; }",
         "int f(int n){ switch(n){ case 2147483647 + 1: return 1; } return 0; }",
         "int a[1/0];",
-        "int a[2147483647 + 1];",
         "struct S { int b : 1/0; };",
         "enum { X = 1/0 };",
     ] {
         let d = diags(src);
         assert_eq!(d.len(), 1, "one mistake, one report: `{src}` -> {d:?}");
+    }
+
+    // ⚠️ **`int a[2147483647 + 1];` is two facts, not a cascade, and it left the list above.**
+    //
+    // Contract 20's rule is that a *consequence* of a reported mistake is not its own report —
+    // `int a[1/0]` must not add "variably modified type at file scope". This shape is not that.
+    // Measured, both compilers:
+    //
+    //     gcc    warning: integer overflow ... results in '-2147483648' [-Woverflow]
+    //            error: size of array 'a' is negative
+    //     clang  warning: overflow in expression; result is -2147483648
+    //            error: 'a' declared as an array with a negative size
+    //
+    // The overflow is a remark about undefined behaviour and the negative size is the
+    // constraint violation; one is not the other's consequence. chiero said only the first
+    // while the overflow was an Error that refused the file anyway, and demoting it to an
+    // advisory exposed that the second had been **suppressed** rather than absent — the
+    // translation unit then compiled clean where gcc refuses it. So the assertion is now what
+    // gcc does, and it is stronger than the count it replaces: an advisory *and* an error.
+    {
+        let src = "int a[2147483647 + 1];";
+        let d = diags(src);
+        assert_eq!(d.len(), 2, "`{src}` -> {d:?}");
+        assert!(
+            d.iter().any(|m| m.contains("signed overflow")),
+            "the remark about the undefined arithmetic: {d:?}"
+        );
+        assert!(
+            d.iter().any(|m| m.contains("negative")),
+            "and the constraint violation gcc refuses the file for: {d:?}"
+        );
     }
 
     // **Runtime division by zero is not a constraint violation**, so a context that does not
