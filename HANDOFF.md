@@ -1890,6 +1890,21 @@ typing the paths ever would.
 > | **023 c17** | 1, 2 and 8 worker threads give identical `RunResult`s | **the feature does not exist** — `chiero-exec` is single-threaded, no `workers`, no `thread::spawn`, no rayon. Nothing to test; an owner call on whether M1's exit may name it |
 > | **010 c18** | peak memory bounded by *one TU + the index*, not the sum over 100 TUs | ✅ **well formed and buildable** — a *shape*, not a number, so it cannot rot the way an absolute bound does. **Scoped 2026-08-09; the design is below.** This is the one worth writing |
 > | **011 c12** | ≥100 MB/s lexing over a 50 MB blob | ⚠️ **ill formed by this project's own rule.** `CIRCUIT_STARTS`' doc states it: *"A counter, not a clock: a wall-clock bound silently stops being able to fail whenever the build gets faster"* — paid for by the verifier's 5-second assertion, which `opt-level = 2` disarmed. A throughput floor is that mistake in spec form. If lexing cost matters, it wants `growth.rs`'s shape: a **ratio** per 4x input |
+
+> 🆕 **What 011 c12 should say instead, if the owner wants it kept.** *"Lexing cost grows
+> linearly in input size: the time for 4x the bytes is under Nx, measured at several sizes."*
+> That is testable, machine-independent, and cannot be disarmed by a faster build — the three
+> properties the current wording lacks. ⚠️ **It was deliberately not written today**, because
+> writing it and citing `011 contract 12` would claim coverage of text it does not test: the
+> contract says ≥100 MB/s and a ratio says nothing about absolute speed. **A citation is a
+> claim** — six were added today only after reading the test that justified each. Amend the
+> contract first, then the test is honest.
+>
+> 📌 **010 c18 shows the pattern this follows.** Its memory wording had the same weakness, and
+> the fix was to assert the *mechanism* with counters rather than the symptom with a high-water
+> mark — no spec change needed, because the contract named a property (bounded by one TU, not
+> the sum) rather than a number. **011 c12 names a number, which is why it needs the owner and
+> 010 c18 did not.**
 >
 > **So one is a missing feature, one is a missing test worth writing, and one is a contract the
 > project has since learned not to write.** Only the middle one is work.
