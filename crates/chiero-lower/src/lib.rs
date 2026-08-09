@@ -400,12 +400,11 @@ impl Lowerer<'_> {
         if !span.is_dummy() {
             fs.term_spans.push((cur, span));
         }
-        let b = fs
-            .blocks
-            .iter_mut()
-            .find(|b| b.id == cur)
-            .expect("current block exists");
-        b.term = t;
+        // The same index `emit` uses. **This sibling kept the scan when `emit` lost it**, and a
+        // profile of a 98 304-statement function put it at 3 of 8 samples — "one fact, more
+        // than one reader" (§11.0), caught by measuring rather than by remembering.
+        let at = *fs.block_at.get(&cur).expect("current block exists");
+        fs.blocks[at].term = t;
     }
 
     /// Open a scope and emit its `Enter` **here**, on the edge that is entering it.
