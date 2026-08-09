@@ -1822,7 +1822,17 @@ typing the paths ever would.
 >   every TU includes), but their contents are unchanged, so a `touch` or a re-checkout, not an
 >   edit.
 >
-> **So either the count is not deterministic, or the environment moved** (gcc's predefines are
+> ✅ **Answered: the count is deterministic.** A second run at an unchanged tree gave
+> **818 391 162 again, byte-identical**, in 1459 s. So the metric *is* a measurement and the
+> coverage deltas this file records mean what they say — which was the question worth settling.
+> What remains is a smaller, named lead: the +10 972 against the 2026-08-08 baseline is real and
+> unexplained. Excluded so far — chiero (empty diff over the whole preprocessing path), and the
+> tracked VPP content (HEAD unchanged, `git status` clean). The remaining candidates are
+> environmental: gcc's predefines, which the persona probes from `cc` on every run, or a
+> generated file the corpus reads that git does not track.
+>
+> *Original reasoning, kept because the discriminator was the useful part:* **either the count is
+> not deterministic, or the environment moved** (gcc's predefines are
 > the obvious candidate — the persona is probed from `cc` on every run). ⚠️ **This matters more
 > than 0.0013% suggests**: the token *delta* is what this file cites as evidence of coverage
 > ("+26M tokens, 3.3% more of VPP visible"), and a delta is only evidence if the number is a
@@ -3364,7 +3374,16 @@ typing the paths ever would.
    `lower()` implements ten lines above it. The severity work did not cause this; it made the
    inconsistency untenable.
 
-5n. 🆕 **`_Alignof` of a typedef never sees an `aligned` attribute on the typedef.** Also
+5n. ✅ **CLOSED 2026-08-09 — and the fix reached one reader of three.** `_Alignof(A_t)` is 16
+   now, matching gcc, for all three typedef spellings. ⚠️ **The sema fix passed its unit test
+   while `chiero cir` went on emitting the old numbers**: lowering has its own `AlignofType`
+   arm that asks `align_of` on the resolved `TyId` and falls back to sema's fold only if that
+   returns `None` — which it never does for a complete type, so the correct fallback was
+   unreachable. Checking the original reproduction rather than the new test is what caught it,
+   and an end-to-end test now pins the constant in the CIR. **Third time this session one fact
+   had multiple readers disagreeing.** Original entry:
+
+5n-orig. 🗄️ **`_Alignof` of a typedef never saw an `aligned` attribute on the typedef.** Also
    pre-existing. gcc gives `_Alignof(A_t) == 16` for
    `typedef __attribute__((aligned(16))) struct A { char a; } A_t;` and chiero says 1; the
    post-declarator spelling fails the same way. ⚠️ Member layout *through* the typedef is
