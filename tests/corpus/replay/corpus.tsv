@@ -10,9 +10,16 @@
 #             Recorded so the candidate is not lost, and excluded from the figure —
 #             a recall computed over beliefs measures the beliefs.
 #
-# THIS FILE IS EMPTY OF OBSERVED ENTRIES, and the gate says so rather than printing
-# 100% over nothing. 032 §6 calls historical replay "the ground-truth oracle and the
-# one that would catch a real design flaw"; over an empty corpus it is not one.
+# FIRST OBSERVED ENTRY LANDED 2026-08-09. 032 §6 calls historical replay "the
+# ground-truth oracle and the one that would catch a real design flaw"; it is now one,
+# over a corpus of exactly one, which is a start and not a recall figure.
+#
+# How the entry below was established, both halves run:
+#   reverted  `3f544b872`'s src/ diff on HEAD, rebuilt, ran test_lldp ->
+#             test_lldp_truncated_optional_tlv_bounds FAILS ("Optional TLV length must
+#             not exceed the buffer"); the suite's other three tests pass.
+#   control   src/ restored to HEAD, rebuilt, same suite -> that test is OK, exit 0.
+# Without the control the entry would record a pre-existing failure as ground truth.
 #
 # Establishing an entry: build VPP at commit^ and at commit, run the named test at
 # both, confirm it fails then passes. Verified 2026-08-05 that this is possible here
@@ -47,3 +54,4 @@
 #
 # The entry then records the original commit; the diff replayed for selection is
 # still `commit^..commit`, so nothing about what the gate measures changes.
+3f544b872	test_lldp	observed	lldp: fix TLV validation
