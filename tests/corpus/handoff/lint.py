@@ -77,24 +77,43 @@ def fences(path):
     return [f"{n} code fences — an odd count cannot balance"] if n % 2 else []
 
 
+def spec_links(path):
+    """Markdown links between specs must resolve.
+
+    The specs cross-reference each other constantly — `[001 §7](001-architecture.md)` — and a
+    renamed or deleted document would leave a link that reads as authoritative and goes
+    nowhere. Clean when first swept by hand on 2026-08-09; here so it stays that way, which is
+    the whole difference between a check and a memory of a check.
+    """
+    out = []
+    text = open(path).read()
+    for target in sorted(set(re.findall(r"\]\((\d{3}-[a-z-]+\.md)[^)]*\)", text))):
+        if not os.path.exists(os.path.join(SPECS, target)):
+            out.append(f"link target does not exist: {target}")
+    return out
+
+
 def main():
     findings = []
     for check in (numbering, paths_resolve, fences):
         for f in check(HANDOFF):
             findings.append(("HANDOFF.md", f))
-    # The specs get the fence check only: they carry no repo paths in backticks and their
-    # numbered lists *are* the contract ids, which `contract-coverage` already reasons about.
+    # The specs get fences and cross-links. Not numbering: their numbered lists *are* the
+    # contract ids, which `xtask contract-coverage` already reasons about, and 020 restarts
+    # numbering inside `###` subsections by design.
     for name in sorted(os.listdir(SPECS)):
         if name.endswith(".md"):
-            for f in fences(os.path.join(SPECS, name)):
-                findings.append((f"docs/specs/{name}", f))
+            full = os.path.join(SPECS, name)
+            for check in (fences, spec_links):
+                for f in check(full):
+                    findings.append((f"docs/specs/{name}", f))
 
     if findings:
         print(f"{len(findings)} finding(s):")
         for where, what in findings:
             print(f"  {where}: {what}")
         return 1
-    print("HANDOFF.md and docs/specs: numbering, cited paths and fences all consistent")
+    print("HANDOFF.md and docs/specs: numbering, cited paths, fences and spec links all consistent")
     return 0
 
 
