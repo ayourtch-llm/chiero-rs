@@ -1658,6 +1658,37 @@ is closest to the work actually done. 6/6 green at 1.7 s, and tightening parse's
 its real 4.1x fails as it should. **Raising ceilings until a gate stops failing produces a gate
 that cannot fail** — the outcome this project keeps refusing.
 
+### 7.28 An engine size axis without z3 — and the scan it found was not the suspected one
+
+Five `blocks.iter().find(|b| b.id == …)` sites were recorded as an unmeasured shape, three of
+them in `chiero-exec` running on **every execution step**. Measuring settled it, and the answer
+was none of them.
+
+📌 **The instrument is the finding.** An N-local function whose conditions are all **concrete**
+executes many steps over many blocks with *no forking and no solver query*. Every VPP corpus
+conflates chiero's cost with z3's — §7.25 and §7.23 both ended at "the cost is the solver" — and
+this separates them for the first time.
+
+| n | 500 | 2000 | 8000 |
+|---|---|---|---|
+| engine, before | 70 ms | 316 ms | **3246 ms** — 10.3x per 4x step, no z3 |
+| engine, after | 24 ms | 67 ms | **1221 ms** — 2.7x faster |
+
+Three stack samples put **2 in `Memory::entry`**, not in any block lookup. `entry`/`entry_mut`
+were linear scans of `entries`; a program with N locals has N objects, so reading a local cost
+O(objects) and the engine O(accesses × objects). **Eighth instance of this class in a day**, and
+`.find(..)` again.
+
+**Binary search rather than an index map, deliberately:** `Memory` is cloned on every state
+fork, so a second container is paid for on every branch. `entries` is sorted by construction —
+`alloc`'s push is the only writer, ids come from a monotonic counter — pinned by a
+`debug_assert` at the push *and* `object_ids_are_allocated_in_increasing_order` from outside,
+because an allocator that reused ids would not fail loudly: lookups would quietly miss objects
+that are present.
+
+⚠️ **Still 18.2x on the last 4x step**, so something else remains in the engine. One cause, not
+the cause — and there is now an instrument to find the next one.
+
 ### 7.26 Why a growth curve over VPP files cannot find 5b's class in the frontend
 
 5c's quadratic was found by sampling, and 5b's audit grep cannot see that shape (§9.1). The
@@ -1771,7 +1802,7 @@ at from the analysis side.
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
 three xtask gates were red: a crate whose test *binary* fails to build emits no `test result`
 line at all, so counting successes cannot detect a missing success. `./check.sh` keys on
-cargo's exit status and prints the failing suites first. Current: **2315 passed, 281 suites** (2026-08-09).
+cargo's exit status and prints the failing suites first. Current: **2316 passed, 281 suites** (2026-08-09).
 
 ⏱️ **It now takes over an hour per leg**, and that is the session's dominant cost — see §9's
 note on the corpus. `conversions` and `semantics` are ~55 s each, the two VPP gates ~60 s, and
@@ -4224,7 +4255,7 @@ typing the paths ever would.
    |---|---|
    | `verify::dominators` | **4 of 8 samples**, ~half the remaining time. Iterative dataflow with explicit dominator *sets*: `sorted_ids.clone()` per block is O(B²) in memory alone — at 98 304 statements that is ~24 576 blocks and ~600M entries. The fix is Cooper–Harvey–Kennedy idom, a real algorithmic change inside a verifier, **not** a scan-to-set swap |
    | `verify::check_ssa_and_types` | 1 of 8, unexamined |
-   | five more `blocks.iter().find(\|b\| b.id == …)` | `chiero-cir:615`, `chiero-opt:157`, `chiero-exec` 3498 / 4427 / 6959. **The exec three run on every execution step.** ⚠️ Recorded, not fixed: the engine's cost is dominated by z3 on every corpus measured so far, so the shape being present says nothing about the cost. There is no size axis for the engine yet — §7.27's gate covers the frontend only |
+   | five more `blocks.iter().find(\|b\| b.id == …)` | `chiero-cir:615`, `chiero-opt:157`, `chiero-exec` 3498 / 4427 / 6959. ✅ **Measured and cleared** — see §7.28: the engine *is* superlinear without z3, and none of these is why |
 
 8b. 🆕 **The build graph is four `CMakeLists.txt` behind `src/`, and that qualifies every VPP
    number in this file.** Measured 2026-08-08: `build.ninja` was generated at 23:31:38 on
