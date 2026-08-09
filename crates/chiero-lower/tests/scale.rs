@@ -113,7 +113,7 @@ fn one_big_function(n: usize) -> String {
 /// |---|---|---|
 /// | parse | 3.8x | 4.0x — linear throughout |
 /// | sema | 6.3x | **4.4x — near linear** |
-/// | verify | 6.7x | 6.9x |
+/// | verify | 6.7x | **5.3x**, once the dominator sets became CHK idoms |
 /// | lower | **11.2x** | **5.7x** |
 ///
 /// Two O(n²) scans came out of lowering the day this gate was built: `emit` scanned every
@@ -132,12 +132,12 @@ fn max_ratio_per_4x(stage: &str) -> f64 {
         // The one stage that is genuinely linear, so it is held to it.
         "parse" => 6.0,
         // 4.4x measured once the scope lookups were indexed — near linear.
-        "sema" => 7.0,
-        // 6.9x measured after `check_structural_identity`'s two scans became sets.
-        "verify" => 9.0,
+        "sema" => 6.5,
+        // **5.3x** since the dominator sets became CHK idoms (§7.29); was 6.9x before that.
+        "verify" => 7.0,
         // **5.7x measured after the 2026-08-09 fixes**, down from 11.2x. The ceiling moves with
         // it: a ratchet that keeps yesterday's slack cannot see tomorrow's regression.
-        _ => 9.0,
+        _ => 7.5,
     }
 }
 
