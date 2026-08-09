@@ -4198,13 +4198,24 @@ typing the paths ever would.
    per dynamic-extent alloca (latent, same shape, fixed together). **7.876 s → 5.872 s**, so
    **22.671 → 5.872 overall, 3.9x**; `verify`'s ratio 7.3x → 6.9x.
 
-   ⏭️ **Still superlinear**: `sema` 7.0x (`ScopedTypes::get`, `ScopedMeanings::declare` were
-   2 of 7), `verify` 6.9x, `lower` 7.7x. None is linear; the gate is a ratchet at these numbers
-   and `sema` is the untouched one.
+   ✅ **And then sema, the last stage the gate named.** `ScopedTypes::get` walked every name in
+   scope on **every lookup**; `ScopedMeanings::declare` scanned the whole innermost scope on
+   **every declaration**, which at file scope is the entire program. Both carry a name-keyed
+   index now. `sema` 7.0x → **4.4x, near linear**.
 
-   📌 **Five instances of this class in one day** — `emit`, `reachable_from`, the verifier's two,
-   and `parse_model` (5c). **Four of the five are `.find(..)`/`.any(..)`, which item 5b's
-   `.contains(&` audit cannot see.**
+   | | 32 768-statement function | `lower` | `sema` | `verify` |
+   |---|---|---|---|---|
+   | before | **22.671 s** | 11.2x | 6.3x | 6.7x |
+   | after | **3.761 s (6.0x)** | 5.7x | **4.4x** | 6.9x |
+
+   📌 **Seven instances of this one class in a day** — `parse_model` (5c), `emit`,
+   `reachable_from`, the verifier's two, sema's two. **Five of the seven are
+   `.find(..)`/`.any(..)`/`.split(..)`, which item 5b's `.contains(&` audit cannot see**, and
+   two are in `chiero-lower`, a crate its census omits. The audit's number measures neither the
+   class nor the codebase; **sampling under a size axis found all seven.**
+
+   ⏭️ **`verify` at 6.9x is the one still clearly superlinear** — `check_ssa_and_types` and
+   `dominators` each appeared once in the seven-sample profile and neither has been looked at.
 
 8b. 🆕 **The build graph is four `CMakeLists.txt` behind `src/`, and that qualifies every VPP
    number in this file.** Measured 2026-08-08: `build.ninja` was generated at 23:31:38 on
@@ -4669,6 +4680,13 @@ not an anecdote.*
 - **A ratchet must move with the fix.** `lower`'s ceiling went 14.0 → 10.0 the moment the curve
   improved. A gate left at yesterday's slack cannot see tomorrow's regression, and it will look
   green the whole way back.
+
+- **A pass/fail line printed by a command that never ran is worse than no line.** A build
+  failed and the `cargo test` after it in the same block still printed `(no FAILED = green)`,
+  because the pattern matched nothing — which is what "no failures" looks like when there are
+  no results at all. §7.5 has the same rule for cargo (*a crate whose test binary fails to build
+  emits no `test result` line*), learned again from the other end: **check that the thing ran
+  before reading what it said.**
 
 ### 11.1 About tests and what they can see
 
