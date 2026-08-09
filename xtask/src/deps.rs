@@ -285,6 +285,57 @@ fn check_layering(graph: &Graph, out: &mut Vec<Violation>) {
     }
 }
 
+/// **Exemptions that no longer exempt anything** — the allowlists read backwards.
+///
+/// [`check`] asks whether every edge is permitted. This asks whether every permission is
+/// used, which is the question an allowlist never answers about itself. An entry whose edge
+/// has gone is not inert: it re-permits that edge, so a dependency somebody once argued
+/// about can come back with the gate silent and nobody making the decision a second time.
+///
+/// ⚠️ **Deliberately not part of [`check`], and the reason is the fixtures.** `check` is run
+/// over synthetic graphs that exercise one rule each, and none of them contains all six
+/// vertical edges — folding this in would make every fixture report violations it was not
+/// written to have. The question is also only meaningful about the *real* workspace: a
+/// hand-built graph missing an edge says nothing about whether the exemption is stale.
+///
+/// Nor is it folded into [`report`], for the same reason one level up: `report` is itself
+/// exercised on a fixture. The two meet in `main`'s `check-deps`, which is the only place
+/// the graph is known to be the real one.
+pub fn unused_exemptions(graph: &Graph) -> Vec<Violation> {
+    let mut out = Vec::new();
+    for (from, to) in ALLOWED_VERTICAL_EDGES {
+        let present = graph
+            .get(*from)
+            .is_some_and(|deps| deps.iter().any(|d| d == to));
+        if !present {
+            out.push(Violation {
+                rule: "unused-vertical-edge-exemption",
+                detail: format!(
+                    "`ALLOWED_VERTICAL_EDGES` permits `{from}` -> `{to}`, which the \
+                     workspace does not have. Delete the entry, or reintroduce the \
+                     dependency deliberately (001 §4 rule 6)"
+                ),
+            });
+        }
+    }
+    for name in FRONTEND_USING_VERTICALS {
+        let uses_frontend = graph
+            .get(*name)
+            .is_some_and(|deps| deps.iter().any(|d| layer(d) == Some(Layer::Frontend)));
+        if !uses_frontend {
+            out.push(Violation {
+                rule: "unused-frontend-exemption",
+                detail: format!(
+                    "`FRONTEND_USING_VERTICALS` exempts `{name}`, which depends on no \
+                     frontend crate. Delete the entry, or reintroduce the dependency \
+                     deliberately (001 §4 rule 7)"
+                ),
+            });
+        }
+    }
+    out
+}
+
 /// Build the graph for the real workspace from `cargo metadata`.
 ///
 /// Only `chiero-*` members are included; third-party dependencies are irrelevant to

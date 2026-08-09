@@ -113,7 +113,22 @@ fn usage() {
 /// 001 contract 8: exit non-zero when a §4 rule is violated.
 fn check_deps() -> ExitCode {
     match xtask::deps::workspace_graph() {
-        Ok(g) => xtask::deps::report(&g),
+        Ok(g) => {
+            // **The allowlists read backwards, and only here.** `unused_exemptions` asks
+            // whether every permission is still used — a question that is only meaningful
+            // about the real workspace, which is why it is not inside `check` or `report`:
+            // both of those are exercised on synthetic graphs that hold one rule each.
+            let dead = xtask::deps::unused_exemptions(&g);
+            let status = xtask::deps::report(&g);
+            if dead.is_empty() {
+                return status;
+            }
+            eprintln!("\ncheck-deps: {} unused exemption(s)\n", dead.len());
+            for v in &dead {
+                eprintln!("  {v}");
+            }
+            ExitCode::FAILURE
+        }
         Err(e) => {
             eprintln!("error: {e}");
             ExitCode::FAILURE
