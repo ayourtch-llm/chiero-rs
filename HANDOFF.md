@@ -1878,7 +1878,15 @@ typing the paths ever would.
 > ```
 >
 > Measured 2026-08-09: **M1 166/167 cited** (020 44/44, 021 40/40, 022 31/31, 023 25/26,
-> 024 26/26); frontend 118/126 (010 c18, 011 c12, 012 c20–24, 014 c4b uncited).
+> 024 26/26); frontend **124/126** after six contracts that were fully tested and cited nowhere
+> got their citations (012 c20/21/22/23/24, 014 c4b — each read first, since a citation is a
+> claim).
+>
+> ⚠️ **The three that remain uncited are one class, and it is not "untested".** 023 c17 wants
+> worker-thread determinism in a single-threaded engine; 010 c18 wants a recorded peak-memory
+> high-water mark over a 100-TU fixture; 011 c12 wants ≥100 MB/s lexing over a 50 MB blob.
+> **All three describe instruments that do not exist**, so no test can be written for them as
+> written. That is a question about what the specs promise, not a gap in the suite.
 >
 > ⚠️ **The single uncited M1 contract is 023 contract 17, and it describes a feature that does
 > not exist.** It reads *"with `wall_clock: None`, running with 1, 2 and 8 worker threads
