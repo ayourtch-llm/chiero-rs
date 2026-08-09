@@ -1999,6 +1999,23 @@ typing the paths ever would.
 >   every TU includes), but their contents are unchanged, so a `touch` or a re-checkout, not an
 >   edit.
 >
+> ✅ **AND THE CAUSE IS FOUND: the corpus moved, in the half `git status` cannot see.** **32
+> generated files under `build-root/` have mtimes after the 2026-08-08 baseline** — the API
+> headers 5d regenerated that day. §8b already records that **147 of the corpus's 1562 sources
+> are generated** and live under the build directory rather than under `src/`, and the corpus
+> gate reads them.
+>
+> ⚠️ **So "the corpus is content-identical, VPP `HEAD` is unchanged and `git status` is clean"
+> was wrong, and wrong in an instructive way.** It is true of the *tracked* tree and says
+> nothing about a tenth of the corpus. **A clean `git status` is not evidence a corpus is
+> unchanged when part of it is not in git** — the same shape as a grep that matched the wrong
+> thing, one level up.
+>
+> 📌 **The rule for anyone comparing VPP numbers across sessions:** VPP's `HEAD` does not pin the
+> corpus. The generated half is pinned by whenever `vppapigen` last ran, which `api_staleness.py`
+> can report — record that beside any published figure, or two runs of the "same" corpus will
+> differ by ten thousand tokens and look like a chiero change.
+>
 > ✅ **Answered: the count is deterministic.** A second run at an unchanged tree gave
 > **818 391 162 again, byte-identical**, in 1459 s. So the metric *is* a measurement and the
 > coverage deltas this file records mean what they say — which was the question worth settling.
