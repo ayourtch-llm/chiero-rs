@@ -2116,3 +2116,53 @@ fn a_function_with_twelve_thousand_blocks_verifies_promptly() {
         "12001 blocks took {took:?}"
     );
 }
+
+/// **A direct call's result has a type, and the verifier can find it.**
+///
+/// `defined_by` typed *every* call's `dst` as `CTy::Void`, with the reason written beside it:
+/// "the callee lives in the module, not the function". That is true of `defined_by`'s
+/// parameters and not of the program — `Callee::Direct` names a `FuncId` and `Function` carries
+/// `ret: CTy`, so for a direct call the answer was one lookup away the whole time.
+///
+/// The cost of the gap is not the missing type, it is the **exemption it forced**. `require_ptr`
+/// carries `&& t != CTy::Void` so that pointer-returning calls do not all report; that exemption
+/// makes every *misuse* of a call result unreportable too. This test is the case it was hiding:
+/// a call returning `i32` whose result is used as a store address.
+///
+/// ⚠️ **Indirect calls stay `Void` and that is correct here.** `Callee::Indirect` carries an
+/// operand, not a signature, so there genuinely is nothing to look up — that is the half that
+/// needs a CIR field (§9.1 item 6), and splitting it this way is what makes the direct half
+/// free. The second assertion pins that the split is real rather than incidental.
+#[test]
+fn a_direct_calls_result_is_typed_from_the_callees_signature() {
+    let mut m = valid_module();
+    make_void(&mut m);
+    // `funcs[0]` is the callee; give it an `i32` return so its result is *not* a pointer.
+    m.funcs[0].ret = CTy::Int(32);
+    m.funcs[0].variadic = true;
+    m.funcs[0].blocks[0].term = Terminator::Return(None);
+
+    // The caller: `%9 = call @f0()` then `store i32 0 -> %9`, which is a pointer misuse.
+    let caller = m.funcs.len();
+    let mut g = m.funcs[0].clone();
+    g.id = FuncId(caller as u32);
+    g.variadic = false;
+    g.blocks[0].insts = vec![
+        inst(InstKind::Call {
+            dst: Some(ValueId(9)),
+            callee: Callee::Direct(FuncId(0)),
+            args: vec![],
+        }),
+        inst(InstKind::Store {
+            addr: Operand::Value(ValueId(9)),
+            val: Operand::Const(Const::Int { bits: 32, val: 0 }),
+            ty: CTy::Int(32),
+            align: 4,
+            vol: Volatility::Normal,
+        }),
+    ];
+    g.blocks[0].term = Terminator::Return(None);
+    m.funcs.push(g);
+
+    assert_rejects(&m, VerifyErrorKind::BadPointerOperand);
+}
