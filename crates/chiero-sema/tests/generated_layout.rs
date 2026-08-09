@@ -396,7 +396,16 @@ enum Outcome {
     /// **The finding.** chiero laid it out and *both* compilers say the numbers are wrong.
     Disagrees(String),
     /// gcc contradicts chiero and clang does not. **Not a chiero defect** — the two
-    /// compilers disagree with each other and chiero took one side. Reported as its own row,
+    /// compilers disagree with each other and chiero took one side.
+    ///
+    /// **One cause so far, established by reading all three rows rather than by their
+    /// sharing a verdict (§7.6).** `__attribute__((aligned(N)))` on a member whose natural
+    /// alignment is *larger* than N: gcc lowers the alignment (`void *` with `aligned(4)`
+    /// gives 12/4) and clang does not (16/8). chiero is on clang's side, which is also the
+    /// side **gcc's own manual documents** — "the aligned attribute can only increase the
+    /// alignment; to decrease it you need packed as well". So this is the measured behaviour
+    /// of gcc disagreeing with the documented behaviour of gcc, and chiero implements what
+    /// is written down. Reported as its own row,
     /// never merged into `Agrees`, because a gate that quietly counted it as agreement would
     /// be lowering its own standard; and never into `Disagrees`, because that would be the
     /// gate being wrong about chiero.
@@ -452,6 +461,10 @@ fn judge(u: &Unit) -> Vec<(String, Outcome)> {
                     harness::assert_agrees_with_cc("clang", &src2, &tag2, &l2, &p)
                 }));
                 if clang.is_ok() {
+                    // Print the record, not just the tag. Three rows sharing a verdict is
+                    // not three rows sharing a cause (§7.6), and the only way to tell is to
+                    // read them.
+                    eprintln!("  --- matched-one source for {tag} ---\n{}", u.src);
                     out.push((tag.clone(), Outcome::MatchedOne { gcc_says: msg }));
                 } else {
                     out.push((tag.clone(), Outcome::Disagrees(msg)));

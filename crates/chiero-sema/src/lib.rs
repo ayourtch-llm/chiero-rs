@@ -3965,10 +3965,27 @@ impl Cx<'_> {
                     // gap in the neighbours' offsets, and a consumer proposing a reorder must
                     // be able to tell that gap from alignment padding.
                     has_zero_width_bitfield = true;
-                    if !member_packed {
-                        bit_cursor = round_up(bit_cursor, unit_align_bits);
+                    // ⚠️ **In a union there is no allocation unit to flush.** Every member
+                    // starts at offset 0, so "force the next allocation to the next unit
+                    // boundary" names nothing, and a zero-width bit-field declares no member
+                    // — it can contribute neither size nor alignment.
+                    //
+                    // Without this guard the bit cursor carried across union members:
+                    // `union U { short a:14; int :0; }` left the cursor at 14, rounded it to
+                    // the `int`'s 32, and `size_bits.max` made the union **4 bytes where gcc
+                    // and clang both say 2**. A leading `:0` was already right (the cursor is
+                    // still 0), which is why the ordering matters and both orders are pinned
+                    // in `a_zero_width_bitfield_in_a_union_contributes_nothing`.
+                    //
+                    // `has_zero_width_bitfield` is still recorded: a consumer proposing a
+                    // reorder needs to know the record declared one, in a union as much as in
+                    // a struct.
+                    if !is_union {
+                        if !member_packed {
+                            bit_cursor = round_up(bit_cursor, unit_align_bits);
+                        }
+                        size_bits = size_bits.max(bit_cursor);
                     }
-                    size_bits = size_bits.max(bit_cursor);
                     continue;
                 }
                 let mut start = if is_union { 0 } else { bit_cursor };
