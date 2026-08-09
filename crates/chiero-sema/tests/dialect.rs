@@ -11,6 +11,27 @@ use chiero_parse::{ScopedTypedefs, parse_tu_with};
 use chiero_pp::{Config, preprocess_str};
 use chiero_sema::{TargetConfig, analyze_with};
 
+/// The diagnostics themselves, for the tests whose subject is a diagnostic's **severity**
+/// rather than its text.
+fn sema_diagnostics(src: &str, dialect: Dialect) -> Vec<chiero_sema::SemaDiagnostic> {
+    let tu = preprocess_str("t.c", src, Config::default());
+    assert!(tu.diagnostics.is_empty(), "pp: {:?}", tu.diagnostics);
+    let mut oracle = ScopedTypedefs::new();
+    let parsed = parse_tu_with(&tu, &mut oracle, dialect);
+    assert!(
+        parsed.diagnostics.is_empty(),
+        "parse: {:?}",
+        parsed.diagnostics
+    );
+    analyze_with(
+        &parsed.ast,
+        &TargetConfig::x86_64_linux(),
+        &harness::names_of(&parsed),
+        dialect,
+    )
+    .diagnostics
+}
+
 fn sema_messages(src: &str, dialect: Dialect) -> Vec<String> {
     let tu = preprocess_str("t.c", src, Config::default());
     assert!(tu.diagnostics.is_empty(), "pp: {:?}", tu.diagnostics);
@@ -1390,4 +1411,60 @@ fn a_conditional_with_one_void_side_is_a_gnu_extension() {
         sema_messages(used, Dialect::gnu()),
         vec!["a `void` value is used where a value is required".to_string()]
     );
+}
+
+/// **A diagnostic about ISO C is an advisory, because chiero supported the construct.**
+///
+/// Every rule in this file is one where `gnu11` is silent and `-pedantic-errors` speaks, and
+/// each site says the same thing in its own words: *support is unconditional and only the
+/// sentence follows the dialect*. So chiero lowered the construct, produced a result, and has
+/// a remark about portability — which is [`Severity::Advisory`] by its definition.
+///
+/// Leaving them at `Error` made `is_error()` return `true` for six diagnostics that invalidate
+/// nothing, and `is_error()` is the predicate a consumer uses to decide whether to throw an
+/// analysis away. That is the same conflation that made `chiero cir` refuse a translation unit
+/// it had understood, one dialect over.
+///
+/// ⚠️ **This is not "the strict dialect is now silent".** The sentences are still emitted and
+/// still counted; what changes is that they no longer claim the analysis is unusable.
+#[test]
+fn an_iso_conformance_remark_is_advisory_not_an_error() {
+    use chiero_sema::Severity;
+
+    // Each of these is accepted by `gcc -std=gnu11` and refused by `-pedantic-errors`.
+    let cases = [
+        ("__int128 w;", "__int128"),
+        (
+            "int f(void) { struct S { int a; } s; return sizeof((struct S)s); }",
+            "nonscalar",
+        ),
+        (
+            "union U { int a; }; union U g(int x) { return (union U)x; }",
+            "union type",
+        ),
+    ];
+    for (src, needle) in cases {
+        let diags = sema_diagnostics(src, Dialect::pedantic());
+        let hit = diags
+            .iter()
+            .find(|d| d.message.contains(needle))
+            .unwrap_or_else(|| {
+                panic!("`{src}` produced no diagnostic mentioning `{needle}`: {diags:?}")
+            });
+        assert_eq!(
+            hit.severity,
+            Severity::Advisory,
+            "`{}` invalidates nothing — chiero supported the construct and is remarking on ISO C",
+            hit.message
+        );
+        assert!(!hit.is_error());
+
+        // **The discriminator.** Under `gnu11` the sentence is not emitted at all, so this
+        // test would pass vacuously against a build that simply stopped reporting.
+        let quiet = sema_diagnostics(src, Dialect::gnu());
+        assert!(
+            !quiet.iter().any(|d| d.message.contains(needle)),
+            "`{src}` must be silent under gnu11, or this is not a dialect rule: {quiet:?}"
+        );
+    }
 }
