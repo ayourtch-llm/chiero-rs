@@ -2945,6 +2945,29 @@ typing the paths ever would.
    | `line` | ~12800 | 0.1684 s | **8.8x** |
    | `onelin` | ~1 | 0.0320 s | 3.4x |
 
+   ✅ **FOUND AND FIXED the same day, by the counter this entry called for.** `cycles_count`'s
+   `cs` was `vec![0; f.arcs.len()]`, allocated and zeroed on **every call**, and it is called
+   once per line — Θ(n²) cells for `line`, Θ(n) for `onelin`. `in_bs` and `indegree` had been
+   hoisted for exactly this reason, with a comment saying so; `cs` was left behind. **One fix
+   applied to two of three buffers.**
+
+   | `line` at n=12800 | before | after |
+   |---|---|---|
+   | line-half | 0.1684 s | **0.0467 s** |
+   | its growth | 8.8x | **4.0x — linear** |
+   | share of the clock | 69% | 44% |
+   | worst overall | 7.6x | 5.9x |
+
+   ⚠️ **The counter is why it survived two sessions.** `CYCLES_CELLS` counted the two hoisted
+   buffers and not the one still sized per call, so it read *"4.0x, linear"* while the clock
+   stayed superlinear — **a wrong measurement that agreed with the fix already made**, which is
+   the worst kind. Adding the missing term made it 15.9x on `line` against 4.0x on `onelin` and
+   located the defect in one run. *A counter that omits a term is not a smaller measurement, it
+   is a wrong one.* The confirmation is stronger than the timing: the cells counter is now
+   **identical for both shapes** (176138 → 704138), so the line-count dependence is gone rather
+   than reduced.
+
+   *The narrowing that led there, kept because it was free and did the work:*
    **5.3x more time for identical arc work, and the superlinearity is entirely on the `line`
    side.** That rules out everything scaling with arcs, blocks, or blocks-per-line — which is
    most of what the earlier waves chased — and leaves only what is done *per distinct line*.
