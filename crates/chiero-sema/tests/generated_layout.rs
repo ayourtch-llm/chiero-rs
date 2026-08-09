@@ -222,6 +222,12 @@ impl Gen {
 
         let n_members = 1 + self.rng.below(5);
         let mut members = String::new();
+        // **At least one named member, by construction.** C11 6.7.2.1p8 makes a record whose
+        // members are all unnamed *undefined*, gcc warns under `-Wpedantic` and chiero
+        // diagnoses it — correctly. Seven of the first run's records were that shape, and
+        // they were chiero being right, not a gap. The generated value corpus avoids the UB
+        // it can avoid by construction and discards the rest; this is one it can avoid.
+        let mut named = 0usize;
         // A run of bit-fields is where the interesting arithmetic is, so track whether the
         // previous member was one — a `:0` is only meaningful after a nonzero-width run.
         let mut prev_was_bitfield = false;
@@ -240,6 +246,7 @@ impl Gen {
                         .map(|(_, u)| if *u { "union" } else { "struct" })
                         .unwrap_or("struct");
                     members.push_str(&format!("  {inner_kw} {inner} {name};\n"));
+                    named += 1;
                     prev_was_bitfield = false;
                 }
                 // An array. The element count stays small so `sizeof` stays printable.
@@ -247,6 +254,7 @@ impl Gen {
                     let s = *self.rng.pick(SCALARS);
                     let n = 1 + self.rng.below(4);
                     members.push_str(&format!("  {} {name}[{n}];\n", s.c));
+                    named += 1;
                     prev_was_bitfield = false;
                 }
                 // A bit-field.
@@ -269,6 +277,7 @@ impl Gen {
                             members.push_str(&format!("  {} :{width};\n", s.c));
                         } else {
                             members.push_str(&format!("  {} {name}:{width};\n", s.c));
+                            named += 1;
                         }
                         prev_was_bitfield = true;
                     }
@@ -290,11 +299,15 @@ impl Gen {
                     } else {
                         members.push_str(&format!("  {} {name};\n", s.c));
                     }
+                    named += 1;
                     prev_was_bitfield = false;
                 }
             }
         }
 
+        if named == 0 {
+            members.push_str("  int named;\n");
+        }
         self.out
             .push_str(&format!("{attrs}{kw} {tag} {{\n{members}}};\n"));
         self.tags.push((tag.clone(), is_union));
@@ -325,8 +338,14 @@ enum Outcome {
     /// chiero laid out no record for a tag it parsed. Its own class: silence is the outcome
     /// a layout gate is least able to notice, because there is no number to compare.
     NoLayout,
-    /// **The finding.** chiero laid it out and gcc says the numbers are wrong.
+    /// **The finding.** chiero laid it out and *both* compilers say the numbers are wrong.
     Disagrees(String),
+    /// gcc contradicts chiero and clang does not. **Not a chiero defect** — the two
+    /// compilers disagree with each other and chiero took one side. Reported as its own row,
+    /// never merged into `Agrees`, because a gate that quietly counted it as agreement would
+    /// be lowering its own standard; and never into `Disagrees`, because that would be the
+    /// gate being wrong about chiero.
+    MatchedOne { gcc_says: String },
 }
 
 fn judge(u: &Unit) -> Vec<(String, Outcome)> {
@@ -366,7 +385,22 @@ fn judge(u: &Unit) -> Vec<(String, Outcome)> {
                     .cloned()
                     .or_else(|| e.downcast_ref::<&str>().map(|s| (*s).to_string()))
                     .unwrap_or_else(|| "non-string panic".into());
-                out.push((tag.clone(), Outcome::Disagrees(msg)));
+                // **Ask the second compiler before calling it a defect.** gcc and clang do
+                // not always agree about layout: `__attribute__((aligned(4)))` on a `void *`
+                // member *lowers* the alignment for gcc (12/4) and does not for clang (16/8).
+                // chiero matches clang there, and a gcc-only gate would have filed it as a
+                // wrong answer.
+                let src2 = u.src.clone();
+                let tag2 = tag.clone();
+                let l2 = l.clone();
+                let clang = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    harness::assert_agrees_with_cc("clang", &src2, &tag2, &l2, &p)
+                }));
+                if clang.is_ok() {
+                    out.push((tag.clone(), Outcome::MatchedOne { gcc_says: msg }));
+                } else {
+                    out.push((tag.clone(), Outcome::Disagrees(msg)));
+                }
             }
         }
     }
@@ -389,6 +423,7 @@ fn generated_record_layouts_agree_with_gcc() {
     let mut no_layout: Vec<String> = Vec::new();
     let mut refused: Vec<(u64, String)> = Vec::new();
     let mut disagree: Vec<(u64, String, String)> = Vec::new();
+    let mut matched_one: Vec<(u64, String)> = Vec::new();
     let mut records = 0usize;
 
     for seed in 0..120u64 {
@@ -400,19 +435,24 @@ fn generated_record_layouts_agree_with_gcc() {
                 Outcome::NoLayout => no_layout.push(format!("seed {seed}: {tag}\n{}", u.src)),
                 Outcome::Refused(d) => refused.push((seed, format!("{d}\n{}", u.src))),
                 Outcome::Disagrees(why) => disagree.push((seed, tag, why)),
+                Outcome::MatchedOne { .. } => matched_one.push((seed, tag)),
             }
         }
     }
 
     eprintln!(
         "generated layouts: {records} records over 120 seeds, {agreed} agree with gcc, \
-         {} DISAGREE, {} refused, {} without a layout",
+         {} DISAGREE, {} matched clang where gcc differs, {} refused, {} without a layout",
         disagree.len(),
+        matched_one.len(),
         refused.len(),
         no_layout.len()
     );
     for (seed, tag, _) in &disagree {
-        eprintln!("  DISAGREES  seed {seed} {tag}");
+        eprintln!("  DISAGREES   seed {seed} {tag}");
+    }
+    for (seed, tag) in &matched_one {
+        eprintln!("  MATCHED ONE seed {seed} {tag} — gcc differs, clang agrees with chiero");
     }
 
     assert!(

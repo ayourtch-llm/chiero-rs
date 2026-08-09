@@ -1252,6 +1252,8 @@ impl<'a> Parser<'a> {
                         span: self.span_from(astart),
                         // Set by `declarator`, which is the only place that knows.
                         from_declarator: false,
+                        // Set where the specifier list is folded onto the type node.
+                        from_specifier: false,
                     });
                 }
                 TokKind::Kw(Kw::Signed) => {
@@ -1374,7 +1376,30 @@ impl<'a> Parser<'a> {
         // `__attribute__((packed)) struct S a, b;` really does apply to both declarators,
         // and they share this node — so attaching them per declarator would add them to
         // the shared node once per name instead of once.
-        self.ast.ty_mut(ty).attrs.extend(attrs.iter().cloned());
+        //
+        // ⚠️ **But when the specifier *defines* a record, this node is the definition**, and
+        // an attribute written before the `struct` keyword is not part of it. gcc and clang
+        // both ignore it for the type — clang says so out loud (*"attribute 'aligned' is
+        // ignored, place it after \"union\" to apply attribute to type declaration"*), gcc
+        // silently, not even under `-Wall -Wextra`. Measured both ways:
+        //
+        //     __attribute__((aligned(16))) struct S { char a; };   sizeof 1,  _Alignof 1
+        //     struct __attribute__((aligned(16))) S { char a; };   sizeof 16, _Alignof 16
+        //     struct S { char a; } __attribute__((aligned(16)));   sizeof 16, _Alignof 16
+        //
+        // and with a declarator the attribute lands on the *object*: for
+        // `__attribute__((aligned(16))) struct S { char a; } v;` gcc gives `_Alignof(v)` 16
+        // and `_Alignof(struct S)` 1. So `from_specifier` is the third position, beside
+        // [`Attr::from_declarator`] which records the same defect from the postfix side.
+        // Consumers asking *"what does this record's definition say"* must skip both;
+        // consumers asking *"what does this declaration ask for"* must keep both.
+        self.ast
+            .ty_mut(ty)
+            .attrs
+            .extend(attrs.iter().cloned().map(|a| Attr {
+                from_specifier: true,
+                ..a
+            }));
         Specs {
             ty,
             storage,
@@ -1710,6 +1735,8 @@ impl<'a> Parser<'a> {
                     span,
                     // Set by `declarator`, which is the only place that knows.
                     from_declarator: false,
+                    // Set where the specifier list is folded onto the type node.
+                    from_specifier: false,
                 });
                 if !self.eat_punct(Punct::Comma) {
                     break;
@@ -3356,6 +3383,7 @@ fn punct_text(p: Punct) -> &'static str {
 fn mark_declarator(a: Attr) -> Attr {
     Attr {
         from_declarator: true,
+        from_specifier: false,
         ..a
     }
 }

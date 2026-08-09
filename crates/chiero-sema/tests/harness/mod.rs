@@ -401,6 +401,18 @@ pub fn gcc_available() -> bool {
 ///   arithmetic that produced them, and a layout whose sizes are right while every bit
 ///   sits in the wrong place would pass.
 pub fn assert_agrees_with_gcc(src: &str, tag: &str, l: &RecordLayout, p: &Parsed) {
+    assert_agrees_with_cc("gcc", src, tag, l, p)
+}
+
+/// The same, against a named compiler.
+///
+/// **Parameterised because gcc and clang do not always agree with each other**, and a gate
+/// that knows only gcc must call every such record a chiero defect. The generated layout
+/// corpus found one on its first clean run: `__attribute__((aligned(4)))` on a `void *`
+/// member *lowers* the alignment for gcc (size 12, align 4) and does not for clang (16/8).
+/// chiero matches clang. Reporting that as a defect would be the gate being wrong about
+/// chiero, which is worse than the gate missing something.
+pub fn assert_agrees_with_cc(cc: &str, src: &str, tag: &str, l: &RecordLayout, p: &Parsed) {
     let kw = if l.is_union { "union" } else { "struct" };
     let mut prog = String::from("#include <string.h>\n#include <stdio.h>\n");
     prog.push_str(src);
@@ -463,17 +475,17 @@ pub fn assert_agrees_with_gcc(src: &str, tag: &str, l: &RecordLayout, p: &Parsed
     let bin = dir.join("probe");
     std::fs::write(&c, &prog).expect("write probe");
 
-    let out = std::process::Command::new("gcc")
+    let out = std::process::Command::new(cc)
         .args(["-std=gnu11", "-w", "-o"])
         .arg(&bin)
         .arg(&c)
         .output()
-        .expect("run gcc");
+        .unwrap_or_else(|e| panic!("run {cc}: {e}"));
     assert!(
         out.status.success(),
-        "gcc rejected chiero's layout for `{kw} {tag}`.\n\
+        "{cc} rejected chiero's layout for `{kw} {tag}`.\n\
          chiero said size={} align={} fields={:?}\n\
-         --- gcc ---\n{}\n--- program ---\n{prog}",
+         --- {cc} ---\n{}\n--- program ---\n{prog}",
         l.size,
         l.align,
         l.fields

@@ -3522,7 +3522,9 @@ impl Cx<'_> {
         // gcc is explicit about this one: `typedef struct S {…} T __attribute__((packed));`
         // compiles with `warning: 'packed' attribute ignored` and leaves `struct S` alone.
         let packed = self.ast.ty(node).attrs.iter().any(|a| {
-            !a.from_declarator && matches!(self.text(a.name), Some("packed" | "__packed__"))
+            !a.from_declarator
+                && !a.from_specifier
+                && matches!(self.text(a.name), Some("packed" | "__packed__"))
         });
         let bits = if packed {
             // Smallest first; `long_bits` is the last resort and the existing answer for a range
@@ -3609,17 +3611,22 @@ impl Cx<'_> {
 
     /// 014 §3. The gcc x86-64 rules, with bit-fields.
     fn lay_out(&mut self, node: TypeId, is_union: bool, members: &[DeclId]) -> RecordLayout {
-        let packed = self
-            .ast
-            .ty(node)
-            .attrs
-            .iter()
-            .any(|a| matches!(self.text(a.name), Some("packed" | "__packed__")));
+        // ⚠️ **Filtered by position, and it was not.** This is the second place that asks
+        // whether a record is packed — the other is `record_is_packed`, ninety lines up, which
+        // has always filtered `from_declarator`. Two sites reading one fact differently is how
+        // a rule ends up half-applied: this one honoured an attribute written *before* the
+        // `struct` keyword, which gcc and clang both ignore, so
+        // `__attribute__((packed)) struct S { char a; int b; }` came out 5 bytes with `b` at
+        // offset 1 against gcc's 8 and 4. See [`chiero_ast::Attr::from_specifier`].
+        let definition_attr = |a: &chiero_ast::Attr| !a.from_declarator && !a.from_specifier;
+        let packed = self.ast.ty(node).attrs.iter().any(|a| {
+            definition_attr(a) && matches!(self.text(a.name), Some("packed" | "__packed__"))
+        });
         // **Only a union can be transparent** (gcc rejects the attribute on a struct), and the
         // flag is read here beside `packed` because both are attributes of the definition.
         let transparent = is_union
             && self.ast.ty(node).attrs.iter().any(|a| {
-                !a.from_declarator
+                definition_attr(a)
                     && matches!(
                         self.text(a.name),
                         Some("transparent_union" | "__transparent_union__")
@@ -4204,7 +4211,7 @@ impl Cx<'_> {
         let attrs = self.ast.ty(ty).attrs.clone();
         let mut best: Option<u64> = None;
         for a in attrs {
-            if definition_only && a.from_declarator {
+            if definition_only && (a.from_declarator || a.from_specifier) {
                 continue;
             }
             if !matches!(

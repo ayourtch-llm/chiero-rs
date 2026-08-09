@@ -612,6 +612,26 @@ pub struct Attr {
     /// So a consumer asking "what does this record's *definition* say" must filter on this,
     /// while one asking "what does this declaration ask for" must not.
     pub from_declarator: bool,
+    /// Whether this attribute was written in the **declaration-specifier** position, before
+    /// the type specifier — `__attribute__((packed)) struct S {…};` against
+    /// `struct __attribute__((packed)) S {…};`.
+    ///
+    /// **The third position, and it is the one that appertains to no type at all.** gcc and
+    /// clang both ignore it for the record; clang says so (*"attribute 'aligned' is ignored,
+    /// place it after \"union\" to apply attribute to type declaration"*) and gcc silently,
+    /// not even under `-Wall -Wextra`. With a declarator it belongs to the declared *object*:
+    /// `__attribute__((aligned(16))) struct S { char a; } v;` gives `_Alignof(v) == 16` and
+    /// `_Alignof(struct S) == 1`.
+    ///
+    /// Nothing distinguished it, so a record defined behind one was laid out as if the
+    /// attribute were its own — `__attribute__((packed)) struct S { char a; int b; }` came
+    /// out 5 bytes with `b` at offset 1 where gcc says 8 and 4. Found by a generated layout
+    /// corpus on its first run; VPP contains no instance, which is why the VPP gate could
+    /// never have found it.
+    ///
+    /// Same rule as [`Attr::from_declarator`]: a consumer asking what the *definition* says
+    /// filters on it, one asking what the *declaration* asks for does not.
+    pub from_specifier: bool,
 }
 
 /// The arena. Ids index these vectors directly; nothing is ever removed, so an id stays
