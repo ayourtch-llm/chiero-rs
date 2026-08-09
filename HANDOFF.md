@@ -1840,7 +1840,7 @@ typing the paths ever would.
 > **None of them was visible to the pp-gate**, which has reported 0 findings for weeks: none is
 > about preprocessing *syntax*. A gate that has been green for weeks is an untested surface.
 >
-> **State: 2026-08-09 — `./check.sh` GREEN at 2295 across 279 suites**, fmt and clippy clean.
+> **State: 2026-08-09 — `./check.sh` GREEN at 2296 across 279 suites**, fmt and clippy clean.
 > Up from 2281/277 at the previous session's end. Both fast gates re-run and unchanged
 > (`persona_gap` 0 gaps; `growth` `line` 6.3x / `onelin` 4.8x against the 8.0x threshold);
 > the VPP layout gate re-run after the sema change and unchanged at 2238 records / 10248
@@ -3323,7 +3323,17 @@ typing the paths ever would.
    (`chiero-diff`'s loop index, `chiero-pp`'s matched `(` token, `chiero-cir`'s explained-below `t`).
 
 5j. 🆕 **`CopyMem` discards the alignment the CIR hands it, so a memcpy and a vector move are the
-   same access.** Diagnosed 2026-08-08, not fixed, and the diagnosis cost a wrong RED that is worth
+   same access.**
+
+   🆕 **2026-08-09: both discard sites are now explained *at the site*** (the account lived only
+   here and in the test), **and the gap has a measured second half that points the other way.**
+   Lowering emits `align 1` for a packed member — `store i32 7i32 -> %5 align 1` for
+   `struct __attribute__((packed)) P { char c; int v; }` — which is the compiler saying the
+   access is deliberately unaligned and handled. `Memory` re-derives `want = 4` from the access
+   *size*, so ordinary legal C is misaligned as far as the model is concerned. **The recorded
+   half under-reports and fails silently; this half would fail loudly, on legal code, the day
+   `ub-strict` ships.** `a_scalar_access_in_an_align_1_object_is_reported_misaligned_today` pins
+   today's behaviour and is written to fail when the operand is threaded through. Diagnosed 2026-08-08, not fixed, and the diagnosis cost a wrong RED that is worth
    reading before anyone starts.
 
    The chain, all measured: a `u8x32` access lowers to `copymem …, 32i64 **align 16**`;
