@@ -1565,6 +1565,32 @@ directions**: it documents that `aligned` *"can only increase the alignment; to 
 need packed as well"*, yet row two decreases without `packed` and row three refuses an increase
 because of it. Worth knowing before anyone "fixes" chiero to match a quick gcc experiment.
 
+### 7.21 The pinned-40 retake after 2026-08-09, and why identical was the only possible answer
+
+`ok=38 cut=2 findings=21 exact=0` — **byte-identical** to the baseline, after a session that
+changed `layout`, alignment resolution and sema's diagnostic severities. The tempting reading is
+"no regression". The true one is stronger and less comfortable, and it took one grep:
+
+| shape fixed on 2026-08-09 | occurrences in all of VPP `src/` |
+|---|---|
+| prefix-attributed record definitions (§7.20) | **0** |
+| zero-width bit-fields — so union `:0` and packed `:0` too | **0** |
+| `_Alignof`, in any spelling (5n) | **0** |
+
+**The instrument could not have moved, and therefore could not have detected a regression in
+this work either.** An identical retake is evidence about the corpus before it is evidence about
+the tree — §8.3's trap, arrived at from the reassuring side rather than the alarming one.
+
+📌 **It also closes a loop.** `generated_layout.rs` was built this session precisely because
+the VPP gate and the hand fixtures cannot reach these shapes; the table above is that claim
+turned into a number. The evidence for today's layout work is the 585-record generated corpus
+and gcc, not the pinned 40 — and the pinned 40 is still the right instrument for what it does
+cover, which is why it was run.
+
+⚠️ **The general form, worth applying before any retake:** *ask what the corpus would have to
+contain for this number to move.* If the answer is "nothing it has", the run is a control, not
+a check — worth doing, worth recording, and worth not mistaking for confirmation.
+
 ### 7.5 How to check the workspace is green — `./check.sh`
 
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
