@@ -1667,7 +1667,7 @@ at from the analysis side.
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
 three xtask gates were red: a crate whose test *binary* fails to build emits no `test result`
 line at all, so counting successes cannot detect a missing success. `./check.sh` keys on
-cargo's exit status and prints the failing suites first. Current: **2310 passed, 279 suites** (2026-08-09).
+cargo's exit status and prints the failing suites first. Current: **2313 passed, 280 suites** (2026-08-09).
 
 ⏱️ **It now takes over an hour per leg**, and that is the session's dominant cost — see §9's
 note on the corpus. `conversions` and `semantics` are ~55 s each, the two VPP gates ~60 s, and
@@ -2822,12 +2822,32 @@ typing the paths ever would.
    bindings and had its own unbounded rendering. §7.2's rule, and the reason `check_reachable`'s
    trap was found at all.
 
-5c. 🆕 **Three `timeout` rows in `plugins/nsh/`** — `format_nsh_header`, `nsh_md2_decap`,
-   `nsh_md2_encap`, from the widened sweep (2026-08-08). The verifier fix removed the cause the
-   *old* `timeout` rows had, so this is a different one and nobody has looked. Sampling the stack
-   under `gdb` found the last one in about two minutes; §11.2 carries the invocation and the
-   `ptrace_scope=1` workaround. ⚠️ A `timeout` row is a run that measured **nothing** — it is a
-   lead, not a statistic.
+5c. ✅ **CLOSED 2026-08-09 — `parse_model` was quadratic, and the fix uncovered a second
+   defect.** Found by *sampling*, not by reading: two stack samples 50 s apart both landed in
+   `parse_model`. chiero was not waiting on z3 — it was reading z3's answer.
+   `text.split(&format!("define-fun {key} "))` ran **once per variable** over a text that grows
+   with the variable count. **Item 5b's shape, third instance in this workspace.**
+
+   | variables | 500 | 1000 | 2000 | 4000 |
+   |---|---|---|---|---|
+   | before | 0.007 s | 0.025 s | 0.087 s | 0.355 s (~3.4–4.1x per doubling) |
+
+   | entry | before | after |
+   |---|---|---|
+   | `nsh_md2_encap` | **>120 s, killed** | 64 s, exit 0, 5 findings |
+   | `nsh_md2_decap` | timeout | 64 s, exit 0, 5 findings |
+   | `format_nsh_header` | timeout | 62 s, exit 0 |
+
+   ⚠️ **Still cut by the sweep's 60 s budget, and now for a different reason.** Two fresh
+   samples land in `read_form` — genuinely waiting on z3, which is 023 §8's territory. The
+   attribution those rows always carried is only *now* the true one.
+
+   📌 **Bounding the scan to one entry exposed a second, older defect.** A `Bool` prints
+   `(define-fun v0_b () Bool true)` with no `#x`/`#b` token, so the unbounded search ran on into
+   the *following* definition and gave the bool whatever bit-vector it found there. The model
+   stayed plausible, which is why nothing caught it — until the bounded scan returned nothing
+   and `a_bool_variable_is_usable` went red. A test now plants `0xdeadbeef` immediately after a
+   bool, because that is exactly what the old parser returned for it.
 
 5g. ✅ **CLOSED 2026-08-08 — `pick_entries.py --verify-cir`.** It keeps only names that survive
    into the lowered module, using `chiero cir` (built earlier the same day, which is what made
@@ -4430,6 +4450,20 @@ not an anecdote.*
   messages is cheaper than the pattern that misses them** — 19 lines of `grep -o 'error: .*' |
   sort -u` found both counterparts at once. This is the same false-zero shape as the
   float-comparison census keyed on names the generator never emits; that makes it four.
+
+- **Sample the stack before reading the code — twice now it named a function no reading would.**
+  `TermArena::vars_of` (a call pattern, not a wrong line) and now `parse_model`, where the
+  suspicion was "a long z3 query" and the truth was chiero parsing z3's reply. ⚠️ **Take more
+  than one sample and extract the right thread**: the first sample here showed `read_form` and
+  looked like a solver wait; two more showed `parse_model`. And an `awk` that keyed on
+  `^Thread 1 ` matched gdb's *"Thread 1 received signal"* banner, printing another thread's
+  frames — the same too-loose-pattern class as the false zeros above.
+
+- **A performance fix that bounds a search can expose what the unbounded one was silently
+  reading.** Restricting `parse_model` to one definition made a `Bool` return nothing, and the
+  red test showed the old code had been giving bools *the next variable's value* for as long as
+  it existed. **The speed defect and the correctness defect were the same line**, and only the
+  first was being looked for.
 
 ### 11.1 About tests and what they can see
 
