@@ -1626,3 +1626,72 @@ fn an_advisory_diagnostic_does_not_abort_a_translation_unit() {
          {stderr}"
     );
 }
+
+/// **An advisory must not demote the next diagnostic, and must not hide a real error.**
+///
+/// Both halves were introduced by the severity work itself and found by an adversarial review
+/// of it, which is what that step of the protocol is for.
+///
+/// **The leak.** `Cx::error` returns early when `quiet > 0` — it is silent while re-resolving
+/// something already resolved — and the early return happened *before* the one-shot
+/// `next_severity` reset. A parameter list is re-resolved quietly, and an array bound in one
+/// reaches `wrap`, so an advisory raised there armed the flag and never disarmed it. The next
+/// diagnostic emitted **anywhere in the translation unit** was demoted to `Advisory`, and with
+/// the CLI no longer stopping on advisories, that demoted *Error* reached lowering. Ambient
+/// one-shot state was the wrong mechanism; severity is a parameter now.
+///
+/// **The mask.** The anti-cascade guard around an array length counts *any* new diagnostic to
+/// decide the length is unusable. It was written when the overflow was an Error, so counting
+/// advisories was moot. It is not moot now: the advisory suppressed the negative-length Error
+/// and chiero accepted a translation unit gcc refuses outright.
+#[test]
+fn an_advisory_neither_demotes_the_next_diagnostic_nor_hides_an_error() {
+    let dir = std::env::temp_dir().join(format!("chiero-adv2-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let run = |name: &str, src: &str| {
+        let c = dir.join(name);
+        std::fs::write(&c, src).expect("write");
+        std::process::Command::new(env!("CARGO_BIN_EXE_chiero"))
+            .arg("cir")
+            .arg(&c)
+            .output()
+            .expect("run chiero")
+    };
+
+    // **The leak.** The overflow in the parameter's bound is an advisory; the undeclared name
+    // is an Error and must still refuse the file.
+    let leak = run(
+        "leak.c",
+        "int g(int a[0x7fffffff + 0x7fffffff]) { return undeclared_name; }\n",
+    );
+    assert!(
+        !leak.status.success(),
+        "an undeclared name is an Error whatever came before it; exit was 0 and lowering \
+         received `ret undef`.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&leak.stdout),
+        String::from_utf8_lossy(&leak.stderr)
+    );
+
+    // **The mask.** gcc: "size of array 'arr' is negative", exit 1.
+    let neg = run("neg.c", "int arr[0x7fffffff + 0x7fffffff];\n");
+    assert!(
+        !neg.status.success(),
+        "gcc refuses this outright; chiero emitted `global @arr : size 0` and exited 0.\n\
+         stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&neg.stdout),
+        String::from_utf8_lossy(&neg.stderr)
+    );
+
+    // **The discriminator, and the behaviour the severity work exists for.** The original
+    // case must still succeed, or this test would pass against a revert.
+    let ok = run(
+        "ok.c",
+        "int probe(void) { int a[(0x7fffffff + 65535) ? 4 : 4]; a[0] = 1; return a[0]; }\n",
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        ok.status.success(),
+        "gcc compiles this with exit 0 and a warning: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+}
