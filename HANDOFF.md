@@ -1400,6 +1400,45 @@ cannot be checked after the fact — §11.3's own lesson, from the wrong side.
 take each unit's own flags. ⚠️ It re-takes the plugin numbers, which is a deliberate spend — but
 the numbers it replaces are measured under flags VPP does not use.
 
+### 7.31 Do the defect checkers fire? A corpus with known ground truth
+
+The day's repeated shape — instruments improved, coverage widened, **no new VPP defect** — has
+an ambiguity underneath it. Every published sweep reports two kinds (20 `null-dereference`, 1
+`division-by-zero`) while the vocabulary has nine. `findings: 0` could mean *the code is clean*
+or *the checker never fires*, and nothing here could tell the two apart.
+
+`crates/chiero-cli/tests/injected_defects.rs` — eight injected defects driven as **C through the
+real CLI**, each paired with a minimally-different control. (The 16 existing checker tests use
+hand-written CIR; this is the path every published number actually took.)
+
+| | |
+|---|---|
+| recall | **6/8** — `null_deref`, `oob_write`, `div_zero`, `use_after_free`, `use_after_scope`, `uninit_read` |
+| controls | **0 false positives** |
+
+📌 **So VPP's zeros are not inert checkers**, at least for these six. That is the answer the
+corpus was built to get.
+
+⚠️ **It found two defects in its own controls before finding anything in chiero.**
+`int a[4]; a[1]=1; return a[0];` reads an uninitialised `a[0]`; an unchecked `malloc` *is* a
+null-dereference. Both were mine. **A control carrying a second defect measures nothing**, which
+is the whole argument for pairing.
+
+⏭️ **Two standing misses, and neither is silence** — leads about the *analysis*, which is where
+the remaining value is:
+
+- **`wild_pointer`** — `*(int *)0x1234` reports `uninitialized-read: … of p … which was never
+  written`. chiero knows what happened (the envelope carries *"IntToPtr of an integer with no
+  provenance: the object was found by address"*) and `wild-pointer` fires in `chiero-mem`'s own
+  tests. **A misclassification**, and the message names `p` — the pointer *variable* — for a
+  fault about the invented object it points at, sending a reader to the wrong line.
+- **`pointer_outside_object`** — forming `a + 8` reports nothing; dereferencing it reports
+  `out-of-bounds`. C 6.5.6p8 makes the formation undefined on its own. A real divergence, and a
+  small one: the access is the part that hurts.
+
+Recorded rather than asserted — pinning today's kind would make a future fix look like a
+regression.
+
 ### 7.29 The verifier's dominator sets — 35.6 GB, and the arithmetic I did not believe
 
 `dominators` seeded every block with a copy of *every block in the function*, so the initial
@@ -1607,7 +1646,7 @@ at from the analysis side.
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
 three xtask gates were red: a crate whose test *binary* fails to build emits no `test result`
 line at all, so counting successes cannot detect a missing success. `./check.sh` keys on
-cargo's exit status and prints the failing suites first. Current: **2317 passed, 282 suites** (2026-08-09).
+cargo's exit status and prints the failing suites first. Current: **2323 passed, 284 suites** (2026-08-10).
 
 ⏱️ **It now takes over an hour per leg**, and that is the session's dominant cost — see §9's
 note on the corpus. `conversions` and `semantics` are ~55 s each, the two VPP gates ~60 s, and
