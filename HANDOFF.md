@@ -1840,7 +1840,8 @@ typing the paths ever would.
 > **Closed:** item 6 (both halves, §7.22), 5o (the advisory taxonomy), 5c (the nsh timeouts),
 > 8b (the stale build graph, resolved as a side effect), 8c (the frontend quadratics), 023 c17
 > (**withdrawn — M1 now exits 166/166**), plus three reviews that ended in honest zeros
-> (§7.23, §7.24, §7.26). `./check.sh` **2321 across 283 suites**.
+> (§7.23, §7.24, §7.26), the verifier's dominator sets (§7.29), and 40 plugin files recovered
+> into coverage (§7.30). `./check.sh` **2323 across 284 suites**.
 >
 > **Two instruments that did not exist this morning**, and every performance defect below was
 > found by one of them: `crates/chiero-lower/tests/scale.rs` (a *controlled size axis* — VPP
@@ -1856,6 +1857,29 @@ typing the paths ever would.
 > Nine scans of one shape — *a full scan inside a per-item loop* — plus the verifier's O(B²)
 > dominator sets. ⚠️ **None of this was visible to any VPP measurement**, and fixing it moved no
 > published number.
+>
+> ### 🔎 And then the cheap half of the session, which found more
+>
+> **The morning's heavy instrumentation found performance defects that moved no published
+> number. Three twenty-minute widenings in the evening found two real analysis defects.** If a
+> fresh context takes one strategic point from this file, take that one.
+>
+> `crates/chiero-cli/tests/injected_defects.rs` — a corpus of **known** defects, driven as C
+> through the real CLI, each paired with a minimally-different control. It answers a question
+> nothing here could answer before: when a VPP sweep says `findings: 0`, is the code clean or is
+> the checker dead? **9/13, 0 false positives**, and both default checkers reached.
+>
+> | lead | state |
+> |---|---|
+> | **8e** — a wild-pointer deref through *any* variable, field, array or **parameter** is masked | mechanism found (storing a `Pointer { base: UNBOUND }` writes no bytes), scope measured (5 shapes), and bounded (4 other kinds survive the same round-trip). **The checker is effectively unreachable in real C**, which explains a zero this project read as "VPP has no wild pointers" |
+> | **8f** — `x << 40` unreported when `x` is symbolic | one guard clause, `chiero-exec/src/lib.rs:3282`. The count rule needs only the count and is not in the symbolic fallback |
+> | `pointer-outside-object` fires only for *symbolic* offsets | possibly deliberate — the variant's own doc says forming such a pointer "is deliberate in a few real idioms". **Owner's view wanted**, and it explains why 5i's `vnet/` class is symbolic-index heavy |
+>
+> ⚠️ **Both leads have an executable red in the corpus.** Neither is prose.
+>
+> ⚠️ **And two of the three checkers that first looked dead were *my fixtures*** — `order-dependence`
+> works (`f() + h()` writing one global), and the corpus found two defects in its own controls
+> before finding anything in chiero. **Read a checker's own tests before writing a probe for it.**
 >
 > **032 c18 has its first `observed` entry** (`3f544b872 / test_lldp`), established with a
 > control run. The gate still reports `recall 0.0%` because replay is a stub; item 8 carries the
