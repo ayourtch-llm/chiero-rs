@@ -2051,14 +2051,21 @@ typing the paths ever would.
 > | 5 | **Tutorial↔API drift ×3** | ✅ **all three fixed.** `ExcludedTest { test, refinement, entity, fidelity }` corrected in tutorial 3 (it said `proof`), and tutorial 1's `Fresh \| Stale \| Unknown` corrected to `Partial` with the meaning spelled out. ✅ **and the third is now found and fixed.** `FileLoader` appeared nowhere in `docs/` *because no tutorial mentioned it at all* — `Program::parse` follows no `#include`, so a reader pointing chiero at a real translation unit meets a trait the documentation never named and guesses its signature. Tutorial 2 now has a *Reading a real file* section with a working `Disk` loader (`io::Result`, and why it is not `Option`), backed by a compiled test |
 > | 6 | `compiler_oracle.rs:14` bare-panics on missing clang (`spawn().unwrap()`) where house style is *"an error naming the file that was looked for"* | ✅ **fixed** (`5f47100`): the panic names the compiler, says it is looked up on `PATH`, and says what to do instead |
 >
-> ⏭️ **The gap behind finding 5, and the next thing to build here: nothing compares a tutorial
-> to the API.** Both drifts were a tutorial naming a field or variant that does not exist
-> (`ExcludedTest.proof`, `Validity::Unknown`), and both survived because a tutorial is prose in
-> a repository full of gates. Three registries were gated on 2026-08-10 by parsing an exhaustive
-> `match`; **the tutorials want the same treatment** — assert that every `Type { a, b }` field
-> list and every `A | B | C` variant list in `docs/tutorials/` names things the crates actually
-> export. ⚠️ Fragile if done by regex, so the honest version is probably Rust doctests
-> (`#[doc = include_str!]`) over snippets made compilable, which is a wave rather than an hour.
+> ✅ **The gap behind finding 5 is closed**: `crates/chiero-tool/tests/tutorial_api_drift.rs`
+> reads every tutorial's field lists and variant alternations and compares them to the crates'
+> own `pub struct`/`pub enum` declarations. It was mutation-tested against a corpus whose answer
+> was known in advance — restoring either pre-2026-08-10 line turns it red and names the field —
+> which is §8.3's strongest form and the reason it was worth an hour rather than the wave that
+> doctests over compilable snippets would have been. ⚠️ It says nothing about a type it cannot
+> find: treating "unknown" as "wrong" would make it unusable within a week, so it catches a
+> wrong name on a *known* type, which is what a reader trips over.
+>
+> 📌 **And the third drift, the one nobody could find, was an absence rather than an error.**
+> `FileLoader` appeared nowhere under `docs/` because no tutorial had ever mentioned it — the
+> search kept failing because there was nothing to find. **A missing name searches like a wrong
+> one and reads like neither**; the right question was not *where is the drift* but *what does
+> the tutorial not say*. Tutorial 2 now teaches `parse_with` and a `Disk` loader, gated by a
+> compiled test.
 >
 > 📌 **Finding 1 is the one to sit with.** This session asked nine operations *what does your
 > empty answer mean* and fixed two. It never asked `select-tests`, because probing it needed a
