@@ -236,3 +236,54 @@ fn every_layout_record_names_a_file_and_a_line() {
         "`struct pad` is declared on line 1:\n{v:#}"
     );
 }
+
+/// **A key that is always `(none)` trains a reader to skip the one report where it matters.**
+///
+/// `Envelope::render` prints a JSON null as `(none)`, and `chiero-tool` already ruled on this
+/// once for `witness_omitted`: *"exactly the training this field must not give a reader, who has
+/// to notice it on the one finding where it says 10 593."* `check-reachable` did not get the
+/// rule. An `unreachable` verdict cannot have a witness — nothing gets there, that is what the
+/// verdict means — and it printed `witness: (none)` and `why: (none)` under every one.
+#[test]
+fn a_verdict_carries_only_the_fields_its_shape_can_have() {
+    let p = scratch().join("reach.c");
+    std::fs::write(
+        &p,
+        "int probe (int x)\n{\n  if (x > 0 && x < 0)\n    return 1;\n  return 0;\n}\n",
+    )
+    .expect("write");
+    let ask = |line: &str| -> serde_json::Value {
+        let out = Command::new(bin())
+            .args([
+                "check-reachable",
+                p.to_str().unwrap(),
+                "--entry",
+                "probe",
+                "--line",
+                line,
+                "--json",
+                "--no-system-headers",
+            ])
+            .output()
+            .unwrap_or_else(|e| panic!("cannot run `{}`: {e}", bin()));
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        serde_json::from_str(&text).unwrap_or_else(|e| panic!("not JSON ({e}):\n{text}"))
+    };
+
+    let dead = ask("4");
+    assert_eq!(dead["result"]["verdict"], "unreachable", "{dead:#}");
+    for k in ["witness", "why"] {
+        assert!(
+            dead["result"].get(k).is_none(),
+            "an `unreachable` verdict carries `{k}`, which its shape cannot have:\n{dead:#}"
+        );
+    }
+
+    // And the field is still there where it is the whole answer.
+    let live = ask("5");
+    assert_eq!(live["result"]["verdict"], "reachable", "{live:#}");
+    assert!(
+        live["result"]["witness"].is_array(),
+        "a `reachable` verdict without its witness is a guess:\n{live:#}"
+    );
+}
