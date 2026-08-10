@@ -1,0 +1,33 @@
+#!/bin/bash
+# **The one gate that is fast enough to run on every commit, and the one that was skipped.**
+#
+# On 2026-08-10 the CI failure the owner had been seeing "for a while" turned out to be
+# `crates/chiero-cir/tests/dominance_property.rs` committed unformatted on 2026-08-08 — **34 of
+# 53 red runs**, both legs, `cargo fmt --all --check`. `./check.sh` runs exactly that as its
+# first leg and would have caught it in a second. It was not run.
+#
+# The same thing happened again the same day with `no_panic_corpus.rs`, caught only because the
+# commit happened to share a shell line with a `fmt --check`. **A gate that exists and is
+# skipped fails exactly like a gate that does not exist**, and no amount of widening fixes that
+# — only making it unskippable does.
+#
+# ⚠️ **Formatting only, and deliberately.** clippy is ~30 s warm and the test suite is an hour;
+# a hook that costs either of those gets bypassed within a day, and a bypassed hook is worse
+# than none because it teaches the reflex. `cargo fmt --all --check` is ~1 s on this tree and it
+# is the exact command CI runs.
+#
+# Enable it in a clone with:
+#     git config core.hooksPath .githooks
+# Bypass it for one commit — a WIP snapshot, a merge resolution — with `git commit --no-verify`.
+# ./check.sh remains the gate before pushing; this only removes one way to get it wrong.
+set -o pipefail
+
+if ! out=$(cargo fmt --all --check 2>&1); then
+  echo "$out" | grep '^Diff in' | sed 's/^/  /' | head -20
+  n=$(echo "$out" | grep -c '^Diff in')
+  echo
+  echo "pre-commit: $n formatting diff(s) — CI runs \`cargo fmt --all --check\` and will refuse this."
+  echo "            fix:    cargo fmt --all"
+  echo "            bypass: git commit --no-verify   (and expect CI to be red)"
+  exit 1
+fi

@@ -42,6 +42,10 @@ if [ $lints -eq 1 ]; then
   # **Fast legs first, and they gate.** Exiting rather than warning is the point: CI will
   # refuse this tree, so reporting it as GREEN after an hour of tests would be the same lie in
   # a more expensive form.
+  # 📌 **This is also `.githooks/pre-commit`**, and the reason that hook exists: on 2026-08-10
+  # the CI red the owner had been seeing turned out to be one file committed unformatted, 34 of
+  # 53 failed runs, caught by *this* leg in a second — except that nobody ran it. Enable the
+  # hook in a clone with `git config core.hooksPath .githooks`.
   if ! fmt=$(cargo fmt --all --check 2>&1); then
     echo "$fmt" | grep "^Diff in" | sed 's/^/  /' | head -20
     echo "RED (cargo fmt): $(echo "$fmt" | grep -c '^Diff in') diffs — CI runs this; run 'cargo fmt --all'"

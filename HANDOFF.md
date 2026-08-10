@@ -2334,7 +2334,11 @@ typing the paths ever would.
 > without running it. The same thing happened again on 2026-08-10 with `no_panic_corpus.rs`,
 > caught only because the commit shared a shell line with a `fmt --check` — **a gate that exists
 > and is skipped fails exactly like a gate that does not exist**, and no amount of widening
-> fixes it.
+> fixes it. ✅ **So it was made unskippable**: `.githooks/pre-commit` runs that one command and
+> refuses the commit, enabled with `git config core.hooksPath .githooks`. Formatting only and
+> deliberately — clippy is ~30 s and the suite is an hour, and **a hook that costs either gets
+> bypassed within a day, which is worse than none because it teaches the reflex**. Mutation-
+> tested: an unformatted line in `help.rs` is refused, naming the file and the line.
 >
 > **Counted, as far as the budget allowed**: of the 53, **at least 34 are `Format` on both
 > legs** and **at least 3 are `z3`/`Test`**; the rest are unclassified because the anonymous API
