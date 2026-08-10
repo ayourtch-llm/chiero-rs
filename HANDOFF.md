@@ -1413,7 +1413,7 @@ hand-written CIR; this is the path every published number actually took.)
 
 | | |
 |---|---|
-| recall | **12/13** — everything except `pointer_outside_object`, which is a judgement call rather than a defect |
+| recall | **13/14** — everything except `pointer_outside_object`, which is a judgement call rather than a defect |
 | reach | **both** default checkers (`OrderDependence`, `UndefinedArithmetic`), not only memory faults |
 | controls | **0 false positives** |
 
