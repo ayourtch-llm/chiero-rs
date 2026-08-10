@@ -3005,13 +3005,34 @@ longer sits between a fresh context and the live work.
    | a write, `*(int *)0x1234 = 5` | same message |
    | `wild-pointer` | exists (`MemFault::WildPointer`, `chiero-mem/src/lib.rs:1102`) and fires in `chiero-mem`'s own tests, so the kind is not missing |
 
-   📌 **Where to start.** `object_name` (`chiero-exec/src/lib.rs:6925`) resolves the name through
-   the *current frame's* `frame_objs`, and it **matched** — so the fault carries the pointer
-   variable's own `ObjectId`, not the invented target's. Either the no-provenance `IntToPtr`
-   path reuses the pointer's object, or the fault is raised against the wrong id. The envelope
-   already says the right thing in its assumptions — *"IntToPtr of an integer with no
-   provenance: the object was found by address"* — so the knowledge is present and only the
-   finding is wrong.
+   ✅ **Mechanism found — it is a round-trip through memory, and chiero is right without one.**
+   Delete the variable and the answer is correct:
+
+   ```c
+   int probe(void) { return *(int *) 0x1234; }
+   ```
+   → `wild-pointer: access through a pointer at address 4660 matching no known object`
+
+   The difference is those two instructions:
+
+   ```
+   %0 = inttoptr i32 4660i32 to ptr
+   store ptr %0 -> %1        ; %1 = addrlocal zebra
+   %3 = load ptr, %2         ; read it back
+   %4 = load i32, %3         ; and dereference
+   ```
+
+   `int_to_ptr` correctly yields `Pointer { base: UNBOUND, off: 4660 }`
+   (`chiero-mem/src/lib.rs:801`, and the stack starts at `0x7fff_0000_0000` so 4660 collides
+   with nothing). **Storing that pointer writes no bytes**, so `zebra`'s slot stays
+   uninitialized, the load reports *that*, and the wild-pointer finding never happens. The
+   uninitialized-read is not even wrong about `zebra` in chiero's model — it is a **mask**, and
+   the real defect is upstream of it.
+
+   ⚠️ **Why it matters beyond the fixture:** any program that puts a computed or opaque address
+   in a variable before dereferencing it — which is how real C spells this — loses the
+   wild-pointer finding and gets a confusing one about the variable instead. §7.31's corpus only
+   caught it because the fixture used a variable; the one-liner passes.
 
 8d. 🔶 **Point the measurement harness at the compile database instead of a hand-kept flag list**
    (§7.30). ✅ **The capability landed 2026-08-09**: `cargo run -p xtask -- compile-flags --db
