@@ -1674,7 +1674,7 @@ at from the analysis side.
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
 three xtask gates were red: a crate whose test *binary* fails to build emits no `test result`
 line at all, so counting successes cannot detect a missing success. `./check.sh` keys on
-cargo's exit status and prints the failing suites first. Current: **2323 passed, 284 suites** (2026-08-10).
+cargo's exit status and prints the failing suites first. Current: **2325 passed, 285 suites** (2026-08-10).
 
 ⏱️ **It now takes over an hour per leg**, and that is the session's dominant cost — see §9's
 note on the corpus. `conversions` and `semantics` are ~55 s each, the two VPP gates ~60 s, and
@@ -3067,7 +3067,7 @@ longer sits between a fresh context and the live work.
    exhaustiveness checking anywhere. That is why every defect landed on the sentinel pair and
    none on the enums, and it is the cheapest place to look next.
 
-8g. 🔍 **Inspected, not reproduced — two `lowering_gap` sites in the symbolic-offset store path
+8g. ✅ **CLOSED 2026-08-10 — confirmed and fixed.** Was: inspected, not reproduced — two `lowering_gap` sites in the symbolic-offset store path
    return without writing.** `chiero-exec/src/lib.rs:3669` ("a store of an untranslatable value")
    and `:3673` ("a store of a value with no term") both `return` after declaring the gap. That is
    **8e's exact shape**: the store does not happen, so a later read accuses the program of never
@@ -3097,11 +3097,20 @@ longer sits between a fresh context and the live work.
    a fresh symbol, `:3669` writes nothing and leaves the previous bytes. The envelope shows
    neither, so a CLI probe cannot tell them apart.
 
-   ⏭️ **What would settle it**: a `chiero-exec` test that stores `Undef` at a symbolic offset
-   over known bytes and then reads them back — stale bytes are the failure the comment at
-   `:3655` names ("a refusal that silently keeps stale bytes is worse than a refusal, because
-   the run then produces a confident wrong answer"). That is a unit test at the memory layer,
-   not a C fixture.
+   ✅ **Settled the way the entry said it would have to be** — a memory-layer test, since no
+   envelope can distinguish the two paths: `crates/chiero-exec/tests/undef_symbolic_store.rs`.
+   Both sites now havoc the whole object before returning, matching the concrete path.
+
+   ⚠️ **The first assertion was wrong, and the failure is the interesting part.** I asserted
+   the stale byte would *change*. It does not: `HavocFill::Uninitialized` clears the
+   initialization mask, not the contents, so `0x11` is still sitting there. **The defect was
+   never the byte — it was chiero answering with it.** The test asserts the read comes back as
+   a question (a fault, or no value), which is what the rule at `:3655` is actually about.
+   Verified red by removing the havoc call, green with it.
+
+   📌 **The reproduction needed an unmodelled *value*, not an exotic type.** Three earlier
+   attempts reached for `long double` and structs and found other gaps first; `FpToSi 80 -> 32`
+   yields `Value::Undef`, and `address_of_value` answers `None` for exactly that.
 
    ⏭️ If it is reachable, the fix is the one `:3750` already uses — poison rather than refuse.
 
@@ -3829,6 +3838,13 @@ not an anecdote.*
   (8h), and `free`'s fault offset (8h). **One grep — "which `NULL` sites do not mention
   `UNBOUND`" — found all the remaining ones after the first was fixed by hand.** Twice the site's
   own comment already argued why the missing case mattered, about the case beside it.
+
+- **An assertion that fails can be wrong about the property, not about the code.** 8g's first
+  test asserted that a skipped store's *stale byte would change*. It does not — the fix marks
+  the range uninitialized, which clears the initialization mask and leaves `0x11` in place. The
+  defect was never the byte; it was chiero **answering** with it. **When a fix lands and the
+  test still fails, ask whether the assertion names the property or a symptom of it** — here the
+  property is "the read comes back as a question", and the byte was only ever a proxy.
 
 ### 11.1 About tests and what they can see
 
