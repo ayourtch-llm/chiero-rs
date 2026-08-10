@@ -1453,6 +1453,15 @@ Mutation-checked.
 three were audited by eye on 2026-08-10 and all three are tests now; each audit's last act was
 to make itself unnecessary.
 
+📌 **`prove_equivalent` too, and it is the operation where a wrong answer is worst.** `x * 2`
+vs `x << 1` proves equivalent; `x + 1` vs `x + 2` differs; **a difference behind an unmodelled
+construct answers `unknown`, not `equivalent`** — no false proof. The existing `unknown` test
+compares a function *with itself*; the new one has programs that genuinely differ with the
+difference hidden, which is the shape that would licence a wrong rewrite.
+⚠️ **Its limit is written into it**: making both sides identical leaves it passing, because
+chiero answers `unknown` for `f80` either way. So it guards "never claims a proof it lacks",
+**not** "noticed the difference" — checked by mutating the fixture rather than assumed.
+
 📌 **`check-reachable` probed the same way, and it is healthy too** (2026-08-10). A reachable
 line, a line behind `x > 10 && x < 5`, and an always-reached line all answer correctly — and
 the distinction the operation exists for holds: a line guarded by an unmodelled 80-bit float
@@ -1711,7 +1720,7 @@ at from the analysis side.
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
 three xtask gates were red: a crate whose test *binary* fails to build emits no `test result`
 line at all, so counting successes cannot detect a missing success. `./check.sh` keys on
-cargo's exit status and prints the failing suites first. Current: **2328 passed, 286 suites** (2026-08-10).
+cargo's exit status and prints the failing suites first. Current: **2329 passed, 286 suites** (2026-08-10).
 
 ⏱️ **It now takes over an hour per leg**, and that is the session's dominant cost — see §9's
 note on the corpus. `conversions` and `semantics` are ~55 s each, the two VPP gates ~60 s, and
