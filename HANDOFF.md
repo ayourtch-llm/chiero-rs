@@ -2084,6 +2084,59 @@ typing the paths ever would.
 > ⚠️ **The tree was green under it**, so this does not explain the failure; it removes the
 > local gate from the list of suspects, which leaves the two environmental candidates above.
 >
+> ### 🎯 DONE-ENOUGH-TO-USE — the bar, answered 2026-08-10
+>
+> Asked by ayourtch through claude-mini: *what is **your** definition of the bar where chiero
+> switches from under-construction to a tool my agents actively use, how far away is it, and does
+> this candidate match?* Answered here rather than by compliance, as asked.
+>
+> **The bar, in one sentence: an agent can get a machine-readable answer to each of the nine
+> questions, about its own project, from the command line, without reading chiero's source — and
+> can tell when the answer is not one.** The last clause is the product; the first four are what
+> make it reachable. Five conditions, each falsifiable:
+>
+> | | condition | today |
+> |---|---|---|
+> | **D1** | **Every operation runs from the CLI on a real project with no hand-written driver.** `select-tests` is the only one that fails, and it is the flagship — the thesis that held on 2026-08-10 held *through a 145-line driver* | ⛔ the one real gap |
+> | **D2** | **The machine surface is a contract**: the `--json` envelope's shape and the exit codes are documented and gated. Today `2` (usage) versus `1` (failed) is real in `main.rs` and asserted nowhere — `cli.rs` only ever checks `0` against not-`0`, and 050 never mentions an exit code. An agent branching on that is branching on an accident | ⛔ |
+> | **D3** | **No operation panics on the pinned corpus, and a refusal names what it could not do.** Two engine panics were found the day `find-bugs` was widened to 92 plugins; the other eight operations have never been swept that way at all | 🟡 measured for one operation |
+> | **D4** | **The documents a new reader reads first are gated against the API**, not proofread against it | ✅ **as of today** — per-operation `--help` renders from the parser (§7.33) and `tutorial_api_drift.rs` compares every tutorial's field and variant lists to the crates |
+> | **D5** | **A pinnable tag, one page of known limits, one stated supported platform.** x86-64 Linux is what every differential gate is written against; ARM is engine-portable and oracle-blind and that is a *sentence*, not a project | ⛔ |
+>
+> **(b) Distance: 4–7 days of autonomous work**, D1 on the critical path and the only one
+> carrying design risk. D2 ≈ 1 day, D3 ≈ 1–2 days (a sweep harness exists; it has to run nine
+> operations instead of one), D5 ≈ half a day. D1 ≈ 1–2 days *once the flag surface is settled*,
+> which is the part worth objecting to early — proposal below.
+>
+> **(c) On the candidate: agreed, with one merge, one promotion and two additions.** Item 3
+> (truthful `check.sh` counters) is ✅ already done, so it is history rather than a bar. Items 4
+> and 5 merge into D5 — a limits page nobody can pin is not a limit anybody reads. Item 2's
+> per-operation help is done; its "one real-project tutorial" is promoted into D4's *gated* form,
+> because a tutorial proofread by hand is the failure mode that produced the drift in the first
+> place, and a walkthrough that no gate executes will drift again by the second release. The
+> additions are D2 and D3, and both come from the same place: agents are the consumer, so the
+> JSON shape and the absence of a panic are the interface — prose is not.
+>
+> ⏭️ **The D1 proposal, so it can be shot down before it is built.** `--coverage <dir> --stem
+> <name>` cannot express per-test attribution because it names one object and no test. Two
+> spellings, and building both is an hour:
+>
+> ```
+> chiero select-tests before.c after.c --test bfd=/build/cov/bfd:vnet_bfd_bfd_main
+> chiero select-tests before.c after.c --coverage-manifest tests.tsv   # test<TAB>dir<TAB>stem
+> ```
+>
+> The repeatable flag is for a handful of tests at a prompt; the manifest is what a `make
+> test-cov TEST=<name>` loop writes, which is how claude-mini produced the run that worked. Both
+> land on `ingest_native_as` (`chiero-gcov/src/lib.rs:862`), which already exists and already
+> takes the `TestId` — **the library has been able to do this the whole time and only the command
+> line could not say it.** `--coverage`/`--stem` stay, and keep refusing.
+>
+> ⚠️ **What is *not* in my bar, and why.** ARM oracle parity (D5 turns it into a sentence);
+> more corpora (§8.3 says widen toward *known* ground truth, and VPP is not that); the seven
+> owner decisions below — none of them blocks a user, and two of them are about what chiero
+> should become rather than whether it can be used.
+>
 > ### 🙋 DECISIONS WAITING ON THE OWNER — the whole list, in one place
 >
 > Seven questions accumulated across sessions, each recorded where it arose and therefore
