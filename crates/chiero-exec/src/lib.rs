@@ -3284,6 +3284,21 @@ impl<'m> Engine<'m> {
             if signed {
                 self.forced_signed_overflow(a, s, op, w, (x, y), span);
             }
+            // **The count rule needs only the count** (C11 6.5.7p3), so a symbolic *value*
+            // must not suppress it: `x << 40` on an `i32` is undefined whatever `x` holds.
+            // Until 2026-08-10 the guard above returned first and this never ran — the other
+            // two symbolic fallbacks are right here and the shift arm simply was not one of
+            // them. No solver query: the count is a literal or this does nothing.
+            if let (BinOp::Shl | BinOp::LShr | BinOp::AShr, Some(yc)) = (op, a.as_const(y))
+                && yc.bits() >= w as u128
+            {
+                s.ub.push(UbEvent {
+                    kind: UbKind::Shift,
+                    span,
+                    detail: format!("{op:?} of a {w}-bit value by {}", yc.bits()),
+                    requires: Vec::new(),
+                });
+            }
             return;
         };
         let mut push = |kind: UbKind, detail: String| {
