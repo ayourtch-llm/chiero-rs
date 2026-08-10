@@ -1877,21 +1877,28 @@ typing the paths ever would.
 > ### 🔎 And then the cheap half of the session, which found more
 >
 > **The morning's heavy instrumentation found performance defects that moved no published
-> number. Three twenty-minute widenings in the evening found two real analysis defects.** If a
-> fresh context takes one strategic point from this file, take that one.
+> number. The evening's four-line C programs found five checker defects, all fixed.** If a fresh
+> context takes one strategic point from this file, take that one.
 >
 > `crates/chiero-cli/tests/injected_defects.rs` — a corpus of **known** defects, driven as C
 > through the real CLI, each paired with a minimally-different control. It answers a question
 > nothing here could answer before: when a VPP sweep says `findings: 0`, is the code clean or is
-> the checker dead? **9/13, 0 false positives**, and both default checkers reached.
+> the checker dead? **14/15, 0 false positives**, and both default checkers reached.
 >
-> | lead | state |
+> | defect | what it was |
 > |---|---|
-> | **8e** — a wild-pointer deref through *any* variable, field, array or **parameter** is masked | mechanism found (storing a `Pointer { base: UNBOUND }` writes no bytes), scope measured (5 shapes), and bounded (4 other kinds survive the same round-trip). **The checker is effectively unreachable in real C**, which explains a zero this project read as "VPP has no wild pointers" |
-> | **8f** — `x << 40` unreported when `x` is symbolic | one guard clause, `chiero-exec/src/lib.rs:3282`. The count rule needs only the count and is not in the symbolic fallback |
-> | `pointer-outside-object` fires only for *symbolic* offsets | possibly deliberate — the variant's own doc says forming such a pointer "is deliberate in a few real idioms". **Owner's view wanted**, and it explains why 5i's `vnet/` class is symbolic-index heavy |
+> | **8e** — a wild-pointer deref through *any* variable, field, array or **parameter** was masked | `address_term` special-cased `NULL` and fell through for `UNBOUND`, so the store wrote nothing and the reload reported an uninitialized read *of the pointer variable*. **The checker was effectively unreachable in real C**, which explains a zero this project had read as "VPP has no wild pointers" |
+> | **8f** — `x << 40` unreported when `x` is symbolic | the concrete-operand guard returned before the count rule, which needs only the count |
+> | **8h** — an indirect **call** through a wild pointer reported *nothing* | `NULL` was special-cased at the call site and `UNBOUND` was not. Its own comment calls a silent degrade "the more misleading of the two ways to be wrong" |
+> | **8h** — `free((void *) 0x1234)` said "at address 0" | `free` takes an id and had no offset; `free_at` added |
+> | **8g** — an untranslatable store at a **symbolic** offset kept the old bytes | the concrete path havocs, the symbolic path `return`ed. Settled with a memory-layer test, since no envelope can distinguish them |
+> | `pointer-outside-object` fires only for *symbolic* offsets | ⏭️ **the one open item, and a judgement call** — the variant's own doc says forming such a pointer "is deliberate in a few real idioms". It also explains why 5i's `vnet/` class is symbolic-index heavy |
 >
-> ⚠️ **Both leads have an executable red in the corpus.** Neither is prose.
+> 📌 **Four of the five came from one question**: *`ObjectId::NULL` is special-cased — where is
+> its sibling?* The rule that generalises is **audit const sentinels, not enum variants** — a
+> missing enum arm is a compile error, a missing sentinel case is silent. Two further sentinel
+> audits (`ObjState`, `DYNAMIC_EXTENT`) came back **zero**, which is what gives the rule its
+> scope.
 >
 > ⚠️ **And two of the three checkers that first looked dead were *my fixtures*** — `order-dependence`
 > works (`f() + h()` writing one global), and the corpus found two defects in its own controls
