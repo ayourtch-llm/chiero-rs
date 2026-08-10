@@ -195,3 +195,44 @@ fn every_proposal_names_a_file_and_a_line() {
         "no proposal points at the redundant load's own line:\n{v:#}"
     );
 }
+
+/// And the third operation that answers "here is something about your code": a record.
+///
+/// `layout` names the record's tag, which a reader can at least grep for — survivable, and not
+/// the same as an answer. A header included from twenty translation units defines the tag in one
+/// of them, and that is the file a reader wants.
+#[test]
+fn every_layout_record_names_a_file_and_a_line() {
+    let p = scratch().join("rec.c");
+    std::fs::write(
+        &p,
+        "struct pad\n{\n  char a;\n  int b;\n  char c;\n};\nint probe (void) { return sizeof (struct pad); }\n",
+    )
+    .expect("write");
+    let out = Command::new(bin())
+        .args([
+            "layout",
+            p.to_str().unwrap(),
+            "--json",
+            "--no-system-headers",
+        ])
+        .output()
+        .unwrap_or_else(|e| panic!("cannot run `{}`: {e}", bin()));
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let v: serde_json::Value =
+        serde_json::from_str(&text).unwrap_or_else(|e| panic!("not JSON ({e}):\n{text}"));
+    let records = v["result"]["records"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no records array:\n{v:#}"));
+    assert!(!records.is_empty(), "no records to check:\n{v:#}");
+    for r in records {
+        assert!(
+            r["file"].is_string() && r["line"].is_u64(),
+            "a record with no location cannot be found in a tree of headers:\n{r:#}"
+        );
+    }
+    assert!(
+        records.iter().any(|r| r["line"].as_u64() == Some(1)),
+        "`struct pad` is declared on line 1:\n{v:#}"
+    );
+}
