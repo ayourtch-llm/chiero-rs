@@ -1413,7 +1413,7 @@ hand-written CIR; this is the path every published number actually took.)
 
 | | |
 |---|---|
-| recall | **9/13** — the six memory faults, plus `wild_pointer_direct`, `use_after_free_via_parameter`, and `order_dependence` |
+| recall | **10/13** — the six memory faults, plus `wild_pointer_direct`, `use_after_free_via_parameter`, `order_dependence` and `shift_past_width` |
 | reach | **both** default checkers (`OrderDependence`, `UndefinedArithmetic`), not only memory faults |
 | controls | **0 false positives** |
 
@@ -3022,7 +3022,7 @@ longer sits between a fresh context and the live work.
    when it succeeds**. That is a trade worth making — but knowingly, and with the numbers re-taken
    afterwards, not as a side effect of a wave that was about something else.
 
-8f. 🆕 **A shift past the operand width is unreported whenever the shifted value is symbolic**,
+8f. ✅ **CLOSED 2026-08-10 — a shift past the operand width was unreported whenever the shifted value was symbolic**,
    though the rule depends only on the *count*. `chiero-exec/src/lib.rs:3282`:
 
    ```rust
@@ -3048,9 +3048,10 @@ longer sits between a fresh context and the live work.
    entirely. **Two of the three "dead" checkers were my fixtures**, and only the shift arm is
    real.
 
-   ⏭️ Likely a small fix: run the count rule when `y` alone is constant. ✅ **The case is in the
-   corpus** as `shift_past_width` (§7.31), so the fix has a red to turn green and a regression
-   has somewhere to fail; `undefined_arithmetic.rs`'s constant test guards the existing path.
+   ✅ **Fixed:** the count rule now runs in the symbolic fallback beside `symbolic_div_by_zero`,
+   guarded on the count alone. `shift_past_width` went red → green (§7.31 is 10/13), the full
+   suite is GREEN 2323/284, and the pinned 40 is byte-identical — a **control** rather than a
+   check, since VPP would need a constant shift past the width to move it.
 
 8e. 🆕 **A wild-pointer dereference is reported as an uninitialized read *of the pointer
    variable*.** Found by the injected-defect corpus (§7.31), then characterised — the finding is
