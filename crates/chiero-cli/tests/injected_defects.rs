@@ -161,6 +161,27 @@ const CASES: &[(&str, &str, &str, &str)] = &[
         "int probe(void) { int x = 0; return x + 1; }",
         "uninitialized",
     ),
+    (
+        // **The second default checker** (`chiero_check::default_checkers()` is
+        // `OrderDependence` + `UndefinedArithmetic`), which nothing in this corpus reached
+        // until 2026-08-10. ⚠️ My first probe was `a[i++] + i` and reported nothing — the
+        // wrong shape, not a gap: this checker is about *two calls in one unsequenced region
+        // writing the same global*. Reading `chiero-check/tests/order_dependence.rs` before
+        // writing the fixture would have saved the probe (§8.3 step 1, again).
+        "order_dependence",
+        "int g;\n\
+         static int f(void) { g = 1; return 1; }\n\
+         static int h(void) { g = 2; return 2; }\n\
+         int probe(void) { return f() + h(); }",
+        // The control sequences them with a declaration each, which is the fix a reader
+        // would apply — so it also checks the checker is about sequencing and not about
+        // "two functions write g".
+        "int g;\n\
+         static int f(void) { g = 1; return 1; }\n\
+         static int h(void) { g = 2; return 2; }\n\
+         int probe(void) { int a = f(); int b = h(); return a + b; }",
+        "order-dependence",
+    ),
 ];
 
 #[test]
