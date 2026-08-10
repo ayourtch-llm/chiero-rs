@@ -71,12 +71,15 @@ Again `Option`: `None` means unmeasured, `Some(vec![])` means measured and touch
 
 ```rust
 index.record_sources(&repo_root);   // hash the sources at ingest time
-let validity = index.validity(&repo_root);   // Fresh | Stale { .. } | Unknown
+let validity = index.validity(&repo_root);   // Fresh | Stale { .. } | Partial { .. }
 ```
 
 Coverage is **historical** — it records what the tests did against the code as it was. If a
 source file has changed since, the index is `Stale`, and a caller that has been told so can
-decide what to do. A caller that has *not* been told will quietly reason about the wrong
+decide what to do. `Partial` is the weaker one: every source still matches and some tests
+produced no coverage — they crashed, timed out or never ran — so selection falls back to
+running them. **There is no `Unknown` here**; this tutorial claimed one until 2026-08-10, when
+a first-time user went looking for it. A caller that has *not* been told will quietly reason about the wrong
 program.
 
 ## Compilers and formats

@@ -79,10 +79,13 @@ all mean **keep the test**. This is the seam that
 [tutorial 4](04-prove-equivalent.md) plugs into.
 
 ```rust
-selection.excluded   // ExcludedTest { test, entity, proof, fidelity }
+selection.excluded   // ExcludedTest { test, refinement, entity, fidelity }
 ```
 
-Every exclusion records what proved it. An exclusion with no proof cannot be constructed.
+Every exclusion records **which refinement removed it** — `"equivalence"` for §3.1 — and the
+`entity` whose proof did it. The field is named `refinement`, not `proof`: the refinement is the
+rule that applied, and `entity` names the thing it was proved about. An exclusion with neither
+cannot be constructed.
 
 ## Checking the claim instead of believing it
 
