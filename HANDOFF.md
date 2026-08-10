@@ -1429,9 +1429,11 @@ is the whole argument for pairing.
 kinds had never been probed: `double-free` and `bad-free` both worked and are now guarded;
 `misaligned` reports nothing **by design** — the engine filters it "until a `ub-strict` mode
 exists" (`chiero-exec/src/lib.rs:3798`, item 5j) because lowering emits `align 1` for a packed
-member, and `chiero-mem/tests/copy_alignment.rs` already pins both halves. ⏭️ **Worth re-running
-whenever the vocabulary or the corpus changes** — it is a five-minute diff of an enum against a
-test file.
+member, and `chiero-mem/tests/copy_alignment.rs` already pins both halves. ✅ **And it is a gate now, not a habit**:
+`crates/chiero-cli/tests/defect_vocabulary.rs` parses `MemFault::kind`'s match — exhaustive by
+compiler — and demands every slug have a corpus case or an `EXCLUDED` entry **with a reason**.
+⚠️ **It failed on its first run:** the corpus said `"uninitialized"` where the vocabulary says
+`uninitialized-read`, passing only because the assertion used `contains`.
 
 📌 **Reach is healthy — seven probes, an honest zero, 2026-08-10.** The two defects this
 corpus found were about *representation* (`UNBOUND`, 8e) and *a guard clause* (8f), so the
@@ -1682,7 +1684,7 @@ at from the analysis side.
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
 three xtask gates were red: a crate whose test *binary* fails to build emits no `test result`
 line at all, so counting successes cannot detect a missing success. `./check.sh` keys on
-cargo's exit status and prints the failing suites first. Current: **2325 passed, 285 suites** (2026-08-10).
+cargo's exit status and prints the failing suites first. Current: **2326 passed, 286 suites** (2026-08-10).
 
 ⏱️ **It now takes over an hour per leg**, and that is the session's dominant cost — see §9's
 note on the corpus. `conversions` and `semantics` are ~55 s each, the two VPP gates ~60 s, and
@@ -3860,6 +3862,13 @@ not an anecdote.*
   defect was never the byte; it was chiero **answering** with it. **When a fix lands and the
   test still fails, ask whether the assertion names the property or a symptom of it** — here the
   property is "the read comes back as a question", and the byte was only ever a proxy.
+
+- **"Worth re-running whenever X changes" is a gate that has not been written yet.** The
+  `MemFault`-vocabulary sweep was recorded as a five-minute manual check; a check that must be
+  *remembered* will not be. Written as a test the same hour, it **failed immediately** on drift
+  nobody had noticed — a corpus case expecting `"uninitialized"` where the enum says
+  `uninitialized-read`, passing only because the assertion used `contains`. **The interval
+  between "I should re-run this" and the gate is where the drift lives.**
 
 ### 11.1 About tests and what they can see
 
