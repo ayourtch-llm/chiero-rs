@@ -1781,7 +1781,7 @@ at from the analysis side.
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
 three xtask gates were red: a crate whose test *binary* fails to build emits no `test result`
 line at all, so counting successes cannot detect a missing success. `./check.sh` keys on
-cargo's exit status and prints the failing suites first. Current: **2331 passed, 286 suites** (2026-08-10).
+cargo's exit status and prints the failing suites first. Current: **2332 passed, 287 suites** (2026-08-10).
 
 ⏱️ **It now takes over an hour per leg**, and that is the session's dominant cost — see §9's
 note on the corpus. `conversions` and `semantics` are ~55 s each, the two VPP gates ~60 s, and
@@ -2086,7 +2086,7 @@ typing the paths ever would.
 > 8b (the stale build graph, resolved as a side effect), 8c (the frontend quadratics), 023 c17
 > (**withdrawn — M1 now exits 166/166**), plus three reviews that ended in honest zeros
 > (§7.23, §7.24, §7.26), the verifier's dominator sets (§7.29), and 40 plugin files recovered
-> into coverage (§7.30). `./check.sh` **2323 across 284 suites**.
+> into coverage (§7.30). `./check.sh` **2332 across 287 suites** at the session's end.
 >
 > **Two instruments that did not exist this morning**, and every performance defect below was
 > found by one of them: `crates/chiero-lower/tests/scale.rs` (a *controlled size axis* — VPP
