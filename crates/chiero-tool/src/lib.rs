@@ -1083,6 +1083,15 @@ pub fn find_bugs(module: &chiero_cir::Module, cfg: &BugCfg) -> Envelope {
     find_bugs_located(module, cfg, None)
 }
 
+/// A finding's kind: the slug its message starts with, up to the first `:`.
+///
+/// Every message has one because every one is built from `MemFault::kind` or `ub_phrase` — the
+/// same vocabulary `crates/chiero-cli/tests/defect_vocabulary.rs` gates. A message that somehow
+/// has no colon is its own kind, which groups it with nothing and is the safe direction.
+fn kind_of(message: &str) -> &str {
+    message.split_once(':').map_or(message, |(k, _)| k)
+}
+
 /// The same, with the map that turns each finding's span into a file and a line.
 ///
 /// **A report that says what is wrong and not where is not actionable**, and that is what this
@@ -1168,11 +1177,30 @@ pub fn find_bugs_located(
             suppressed += 1;
             continue;
         }
+        // **Kind and span, not the message.** The message is a *rendering*: it carries clauses
+        // that are true of the path it came from — "where %1 is a pointer parameter assumed to
+        // be possibly null" — so keying on it made any per-path prose a second bug. Measured
+        // 2026-08-10 on `int probe(int *p){ int *q = 0; return *q; }`: one dereference, two
+        // findings, and `p` is never dereferenced.
+        //
+        // The engine's own `FindingKey` is `(kind, span, object, func)` and is exactly right;
+        // `Finding` exposes neither `kind` nor `object`, so this reconstructs the kind from the
+        // slug the message starts with — the same slug `defect_vocabulary.rs` reads off
+        // `MemFault::kind` and `ub_phrase`, which is why every message has one.
         match grouped
             .iter_mut()
-            .find(|(g, _)| g.message == f.message && g.span == f.span)
+            .find(|(g, _)| kind_of(&g.message) == kind_of(&f.message) && g.span == f.span)
         {
-            Some((_, n)) => *n += 1,
+            Some((g, n)) => {
+                *n += 1;
+                // **The whole finding, not just the longer sentence.** Every variant is true of
+                // some path and the longer one carries a clause a reader cannot get elsewhere —
+                // but the witness has to come from the path the message describes, or the report
+                // would explain one execution and hand over the input to another.
+                if f.message.len() > g.message.len() {
+                    *g = f;
+                }
+            }
             None => grouped.push((f, 1)),
         }
     }
