@@ -1421,11 +1421,21 @@ every non-trapping UB — a shift past the width, an OOB stack read, signed over
 `completed` by construction.
 
 📌 **So the oracle's reach is narrow and honest**: it confirms *trapping* faults with a
-parameter-bound witness, and says nothing about the rest. ⏭️ Widening it means either
-sanitizers in the harness (which would turn the non-trapping UB cases into real checks) or
-040 §3's stubbing, which is what the `refused` rows are waiting on. **Neither is a defect
-today** — the operation reports its own limits correctly, which is the property §7.31's whole
-sweep was about.
+parameter-bound witness, and says nothing about the rest. **Neither limit is a defect today** —
+the operation reports them correctly, which is the property §7.31's whole sweep was about.
+
+⏭️ **Widening it with a sanitizer is feasible and measured — and it is a design decision, not a
+patch.** `gcc -fsanitize=undefined` on `x << 40` prints the diagnosis, and with
+`UBSAN_OPTIONS=halt_on_error=1:abort_on_error=1` the process aborts (exit **134**, SIGABRT), so
+today's `completed` rows would become `faulted`.
+
+⚠️ **The reason not to just do it**: a UBSan abort says *some* undefined behaviour happened,
+not that **this finding's** fault did. `FindingOutcome::Faulted` currently means the program
+died *at the witness*, and its doc pairs the signal with the fault — *"SIGFPE for a division by
+zero, SIGSEGV for a null dereference"*. A blanket SIGABRT does not carry that. **A false
+confirmation is worse than an uninformative `completed`**, because it licenses "a real compiler
+agrees" when the compiler agreed about something else. Deciding what a sanitizer abort confirms
+is the work; wiring the flag is three characters.
 
 ### 7.31 Do the defect checkers fire? A corpus with known ground truth
 
