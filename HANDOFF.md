@@ -2347,6 +2347,13 @@ typing the paths ever would.
 > naive parser reports *every* run as having no failed job. ⚠️ **A rate limit that answers 200
 > looks exactly like a clean result.** Classify in batches, and check `/rate_limit` first.
 >
+> ✅ **The record was then audited for the same mistake elsewhere** — every *"there is no…"*,
+> *"cannot be checked"*, *"no way to…"* in this file, read against what is actually reachable.
+> **An honest zero**: the remaining ones are statements about the code or about lost data
+> (§7.30's discarded sweep rows genuinely cannot be checked *after the fact*, though the sweep
+> can be re-run), not about this machine's reach. Two false ones in one day was the cluster, not
+> the rule.
+>
 > ⏭️ **The instrument to keep**: `curl -s api.github.com/repos/<owner>/<repo>/actions/runs` and
 > `/actions/runs/<id>/jobs`, both anonymous on a public repo. Two probes name the leg and the
 > step. ⚠️ And the second-order lesson, which cost two days here and repeated with the deploy
