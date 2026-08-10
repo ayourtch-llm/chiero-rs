@@ -2126,12 +2126,31 @@ typing the paths ever would.
 > |---|---|---|
 > | **D1** | **Every operation runs from the CLI on a real project with no hand-written driver.** `select-tests` was the only one that failed, and it is the flagship — the thesis that held on 2026-08-10 held *through a 145-line driver* | ✅ **as of 2026-08-10** — `--test NAME=PATH` and `--coverage-manifest`, gated end to end against two real gcov objects (§7.34). ⏭️ Unverified on VPP scale: the fixture is two objects, and the walkthrough that needed the driver has not been re-run |
 > | **D2** | **The machine surface is a contract**: the `--json` envelope's shape and the exit codes are documented and gated. Today `2` (usage) versus `1` (failed) is real in `main.rs` and asserted nowhere — `cli.rs` only ever checks `0` against not-`0`, and 050 never mentions an exit code. An agent branching on that is branching on an accident | ✅ **as of 2026-08-10** — 050 contracts 19 and 20, gated per operation against the dispatch list (`crates/chiero-cli/tests/exit_codes.rs`). The behaviour was already right; nothing was asserting or documenting it |
-> | **D3** | **No operation panics on the pinned corpus, and a refusal names what it could not do.** Two engine panics were found the day `find-bugs` was widened to 92 plugins; the other eight operations have never been swept that way at all | 🟡 measured for one operation |
+> | **D3** | **No operation panics on the pinned corpus, and a refusal names what it could not do.** Two engine panics were found the day `find-bugs` was widened to 92 plugins; the other eight operations have never been swept that way at all | ✅ **as of 2026-08-10** — `crates/chiero-cli/tests/no_panic_corpus.rs`: 126 runs over the 14-file analysis corpus, 56 through entries `cir` names for itself, in 2.5 s with no VPP. ⏭️ The wide sweep still runs one operation; extending it is a spend, not a gate |
 > | **D4** | **The documents a new reader reads first are gated against the API**, not proofread against it | ✅ **as of today** — per-operation `--help` renders from the parser (§7.33) and `tutorial_api_drift.rs` compares every tutorial's field and variant lists to the crates |
 > | **D5** | **A pinnable tag, one page of known limits, one stated supported platform.** x86-64 Linux is what every differential gate is written against; ARM is engine-portable and oracle-blind and that is a *sentence*, not a project | 🔶 **half** — [docs/LIMITS.md](docs/LIMITS.md) is the page, linked from the README and written from measured facts. The tag is not cut: it is an outward-facing release action and the owner's to take |
 >
-> **(b) Distance: 4–7 days of autonomous work when this was written; D1 landed the same day, so
-> 3–5 days stand.** D1 was the critical path and the only one carrying design risk. D2 ≈ 1 day, D3 ≈ 1–2 days (a sweep harness exists; it has to run nine
+> ### ✅ Where the bar stands, end of 2026-08-10
+>
+> **Four of the five are done, and the fifth is half.** D1 (`select-tests` from the CLI, §7.34),
+> D2 (exit statuses as 050 contracts 19–20), D3 (no operation panics on the analysis corpus) and
+> D4 (help and tutorials gated against the API, §7.33) all landed the day the bar was written.
+> D5 has its page — [docs/LIMITS.md](docs/LIMITS.md) — and not its tag.
+>
+> ⏭️ **What is left is one action and it is the owner's**: cutting a tag is outward-facing, and
+> pinning one is a promise about what it holds. Three things belong in that decision — a version
+> number, whether the seven owner decisions below should be answered first, and whether the VPP
+> walkthrough should be re-run through the new flags before anything is pinned. **That re-run is
+> the honest gap in D1**: the fixture is two gcov objects, and the run that needed the 145-line
+> driver has not been repeated without it.
+>
+> **(b) Distance: 4–7 days of autonomous work when this was written; four of five landed the
+> same day.** The estimate was wrong by a factor of several, and in a direction worth
+> understanding rather than celebrating: every one of them turned out to be *a shape missing
+> from an interface*, not a capability missing from the analysis. D1 was an argument spelling
+> over a library function that already existed; D2 was a distinction already implemented and
+> never asserted; D3 was one sweep pointed at nine operations instead of one. **The bar was
+> mostly a documentation-and-surface bar, and I estimated it as an engineering one.** D2 ≈ 1 day, D3 ≈ 1–2 days (a sweep harness exists; it has to run nine
 > operations instead of one), D5 ≈ half a day. D1 ≈ 1–2 days *once the flag surface is settled*,
 > which is the part worth objecting to early — proposal below.
 >
