@@ -3429,6 +3429,17 @@ reached 952 lines again, 316 of them finished work:
    and `chiero-lex/tests/performance.rs` shows the convention was known — *"ignored tests do not
    carry contract coverage credit under 070 §4, so this comment intentionally does not cite a
    contract number"*. **A convention nobody checks is a convention that has already drifted.**
+   🔎 **And `#[ignore]` is the small half.** A test that *skips* when its corpus is absent counts
+   as coverage in every environment it never ran. 011 c11 — *"lexing every `.c`/`.h` under
+   `/home/ubuntu/vpp/src` produces zero panics"* — is carried by a running, non-ignored test that
+   begins `if !root.exists() { eprintln!("…skipping…"); return; }`. There is no VPP on the CI
+   runner, so **on CI that contract is asserted by nothing**, the test reports `ok`, and the
+   `eprintln` is invisible because cargo captures output for passing tests. **103 skip messages
+   across the suite** say how wide the class is; most are honest guards for gcc, gcov or VPP, and
+   every one of them is a green test that checked nothing in the environment where it printed
+   that line. ⏭️ The cheap first move is not a gate but a *count*: have `check.sh` report how many
+   assertions skipped, the way it reports how many ran. **A skip nobody counts is a pass.**
+
    ⏭️ The gate to build: a citation from a file whose citing test is `#[ignore]`d does not count.
    Naive "any `#[ignore]` in a citing file" over-flags — a file may hold twenty running tests and
    one deliberate reproduction — so it has to associate each `Covers:`/inline citation with the
