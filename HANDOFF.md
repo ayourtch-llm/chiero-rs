@@ -3087,6 +3087,15 @@ longer sits between a fresh context and the live work.
 
    ⏭️ If it is reachable, the fix is the one `:3750` already uses — poison rather than refuse.
 
+   🔍 **A third of the same shape, also unreproduced: `Span::DUMMY` in `promote_to_array`.**
+   `chiero-mem/src/lib.rs:3652/3712/3718` build faults with `off: 0, at: Span::DUMMY` because
+   that function has neither. `render_loc` turns a dummy span into *"source offset 0"*, so a
+   fault raised there names no line — the same "right about the fault, wrong about where" that
+   `free` had before `free_at`. Found by the sentinel audit (`Span::DUMMY` is the third
+   sentinel); **not reproduced**, since it needs a promotion to array on an object that is
+   already freed or too large. If it is reachable, the fix mirrors `free_at`: take the pointer,
+   not the id.
+
 8f. ✅ **CLOSED 2026-08-10 — a shift past the operand width was unreported whenever the shifted value was symbolic**,
    though the rule depends only on the *count*. `chiero-exec/src/lib.rs:3282`:
 
