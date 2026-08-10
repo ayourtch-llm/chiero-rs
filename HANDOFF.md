@@ -3419,6 +3419,27 @@ reached 952 lines again, 316 of them finished work:
    stay untyped — and the variant's own doc says forming such a pointer "is deliberate in a few
    real idioms". **Owner's call.**
 
+5t. 🆕 **Selection has no size axis, and reading it finds two of 5b's shape.** `chiero-select`
+   is absent from 5b's per-crate census exactly as `chiero-lower` and `chiero-mem` were — the
+   two crates four of the nine instances lived in — and as of 2026-08-10 it is a *shipping CLI
+   operation* (§7.34), so its scale matters more than it did yesterday. Read in
+   `select_refined`:
+
+   | site | shape | when it bites |
+   |---|---|---|
+   | `coverage.files().any(\|f\| f == entity.file())` | a scan of every covered file, **per impacted entity** | thousands of files × thousands of entities |
+   | `if !slot.contains(&r)` in `add` | a scan of one test's reasons, **per reason added** | a test covering many entities accumulates many reasons |
+
+   ⚠️ **Reading is not the method, and 5b says so in its own entry**: *"none of the nine was
+   found by the grep"* — they were found by sampling under a size axis. These two are
+   *hypotheses* until measured.
+   🚧 **The blocker is testability, not effort**: a `CoverageIndex` can only be populated by
+   `ingest_native*` from real gcov artefacts, so there is no way to build a 4000-entity index in
+   a test. The fix is a test-only constructor in `chiero-gcov` — the `_for_test` convention
+   already exists there (`object_size_for_test`, `loop_keys_for_test`) — and then a
+   `scale.rs` in `chiero-select` shaped like `chiero-lower`'s: min of five runs, a discarded
+   warm-up, a span ratio rather than adjacent pairs (§7.39's lessons are all reusable).
+
 5s. 🆕 **`contract-coverage` counts a citation, not an execution — and M1's 166/166 included a
    test that had not run since it was `#[ignore]`d.** Found 2026-08-10 by auditing the ignored
    set after "nobody ran the gate" turned up three times in one day.
