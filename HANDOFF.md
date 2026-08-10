@@ -2368,12 +2368,20 @@ longer sits between a fresh context and the live work.
    | after the platform predefines | **22** | `#error "Unsupported OS"` gone |
    | after 012 c25 + the attribute table | **0** | all three causes addressed |
    | final, all persona fixes in | **0** | 792,404,723 tokens — see below |
+   | **2026-08-10, first run on the regenerated graph** | **0** | **1971** units (+4), **820,160,849** tokens (+27.8M, **+3.5%**) |
 
    🆕 **The number that actually matters is not the 0, it is the token count: 731,159,228 →
    792,404,723.** Same 1967 translation units, same flags, **+61 million tokens — 8.4% more C**.
    That is code in `#if` branches the persona had left dead: Linux-only paths in VPP *and* glibc,
    the little-endian layouts, the `__SSE2__` tables. **The library's default persona had been
    describing a program 8% smaller than the one VPP ships.**
+
+   📌 **Re-run 2026-08-10, and it moved — which makes it a check rather than a control.** The
+   replay probe regenerated cmake (§7.30, item 8b), so this was the gate's first run against the
+   new build graph: **+4 translation units and +27.8 million tokens, 3.5% more C**, all of it
+   code the four stale `CMakeLists.txt` had been hiding from every measurement. **Still 0
+   diagnosed**, so chiero handles the newly visible 3.5% as cleanly as the rest — a small honest
+   positive, and the first evidence that 8b's resolution bought coverage rather than just tidiness.
 
    ⚠️ **Correction, made minutes after first writing this entry: it does *not* invalidate the
    published VPP findings sweeps.** I wrote "every 0 findings this project published over VPP was
