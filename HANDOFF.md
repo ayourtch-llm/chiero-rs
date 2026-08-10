@@ -1413,7 +1413,7 @@ hand-written CIR; this is the path every published number actually took.)
 
 | | |
 |---|---|
-| recall | **6/8** — `null_deref`, `oob_write`, `div_zero`, `use_after_free`, `use_after_scope`, `uninit_read` |
+| recall | **7/9** — `null_deref`, `oob_write`, `div_zero`, `use_after_free`, `use_after_scope`, `uninit_read`, `wild_pointer_direct` |
 | controls | **0 false positives** |
 
 📌 **So VPP's zeros are not inert checkers**, at least for these six. That is the answer the
@@ -1427,11 +1427,11 @@ is the whole argument for pairing.
 ⏭️ **Two standing misses, and neither is silence** — leads about the *analysis*, which is where
 the remaining value is:
 
-- **`wild_pointer`** — `*(int *)0x1234` reports `uninitialized-read: … of p … which was never
-  written`. chiero knows what happened (the envelope carries *"IntToPtr of an integer with no
-  provenance: the object was found by address"*) and `wild-pointer` fires in `chiero-mem`'s own
-  tests. **A misclassification**, and the message names `p` — the pointer *variable* — for a
-  fault about the invented object it points at, sending a reader to the wrong line.
+- **`wild_pointer_via_variable`** — masked, and its twin `wild_pointer_direct` **passes**.
+  `return *(int *)0x1234;` is reported correctly; assigning the same address to a variable first
+  is not. **The pair is what made it a diagnosis** rather than a puzzle: identical fault, one
+  instruction of round-trip apart. Storing a `Pointer { base: UNBOUND }` writes no bytes, so the
+  slot stays uninitialized and the load reports *that*. Full mechanism in item 8e.
 - **`pointer_outside_object`** — forming `a + 8` reports nothing; dereferencing it reports
   `out-of-bounds`. C 6.5.6p8 makes the formation undefined on its own. A real divergence, and a
   small one: the access is the part that hurts.
