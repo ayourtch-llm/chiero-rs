@@ -245,6 +245,24 @@ const CASES: &[(&str, &str, &str, &str)] = &[
          int probe(void) { int *p = malloc(4); if (!p) return 0; free(p); return 0; }",
         "bad-free",
     ),
+    (
+        // `UbKind`'s vocabulary, not `MemFault`'s — added 2026-08-10 when the vocabulary gate
+        // was extended to the second enum and showed the corpus had never touched either of
+        // these. Both already worked.
+        "float_cast_out_of_range",
+        "int probe(void) { double d = 1e30; return (int) d; }",
+        "int probe(void) { double d = 2.0; return (int) d; }",
+        "float-to-integer-conversion-out-of-range",
+    ),
+    (
+        // **Forced, not merely allowed.** `x + 2147483647` reports nothing by design: `UbKind`
+        // separates a path that *forces* overflow from one that permits it, and reporting the
+        // latter would fire on every `x + 1` in existence. The `if` is what forces it.
+        "signed_overflow_forced",
+        "int probe(int x) { if (x > 2147483000) { return x + 1000; } return 0; }",
+        "int probe(int x) { if (x > 2147483000) { return 0; } return x + 1000; }",
+        "signed-overflow",
+    ),
 ];
 
 #[test]
