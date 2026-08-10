@@ -2002,6 +2002,35 @@ indistinguishable from a stale measurement without one.
 ⏭️ 040 contract 1 is now half-citable: *fires at the right span* and *exactly once* both have
 tests, on an injected corpus rather than in the directory 040 c1 names, which was never created.
 
+### 7.40 An answer must say where — the second half, and a wrong location caught by a gate
+
+§7.38 gave findings a file and a line. `find-optimizations` was the neighbour, and worse off:
+`dead_branch` said which side was live and nothing about *which branch*. Unlike a finding, the
+information was never carried — and the blocker sat a layer below the envelope. **A checker
+could reach everything about a state except where it is**: `State::pc` is public, `module` is a
+private field of `CheckerCtx` with no accessor, so a checker had the position and no way to
+resolve it. `CheckerCtx::span_of` is the accessor, and every checker written after this one
+gains it.
+
+The two load/store detectors use the *event's own instruction span* rather than the state's,
+which is more precise: the second load is the one a reader would delete.
+
+⚠️ **The first fallback was wrong, and `tutorial_transcripts.rs` caught it.** At a terminator
+`pc` sits past the last instruction and a `Terminator` carries no span of its own, so falling
+back to the **block's** span looked right — but a block's span is where it *starts*, so every
+dead branch in an entry block was reported at the function's opening line. Tutorial 7's
+`classify.c` said line 1 where the `if` is on line 4. **A wrong location is worse than none**: a
+reader who follows one and finds nothing stops trusting the field, and that is a harder thing to
+get back than a missing one. It falls back to the last instruction now — the one that computed
+the condition.
+
+📌 **The gate that caught it exists because a tutorial is a claim.** Nothing else in the suite
+compares a console block to a run, and this change would otherwise have shipped a plausible
+wrong number into the page a reader is most likely to trust.
+
+⏭️ `layout` records are the remaining half: `chiero_sema::RecordLayout` has no span, so that one
+starts in sema rather than in a checker.
+
 ### 7.5 How to check the workspace is green — `./check.sh`
 
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
@@ -3319,7 +3348,7 @@ reached 952 lines again, 316 of them finished work:
    numbers, so this needs a re-measure in the same change, not after it. That is why it is an
    item rather than a commit.
 
-5q. 🆕 **`find-optimizations` proposals name no location at all — and unlike a finding, the
+5q. 🔶 **HALF CLOSED 2026-08-10 — proposals carry a location (§7.40); `layout` records still do not.** Was: **`find-optimizations` proposals name no location at all — and unlike a finding, the
    information was never carried.** The neighbour check on §7.38, which fixed the same class in
    `find-bugs`: an answer must say *where*. A proposal today reads
 
