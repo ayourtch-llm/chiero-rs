@@ -1968,7 +1968,16 @@ pub fn layout_envelope(
             "proposals": total,
             "cache_line_bytes": cfg.cache_line_bytes,
         }),
-        Fidelity::Exact,
+        // **A record this analysis could not state in full costs the proof, not just a
+        // sentence.** 041 §2: *"Only `fidelity == Exact` is a proof, and only `Exact` licenses
+        // dropping a test in 032"*. The blind spot below has always named such records — the
+        // machine-readable claim beside it still said `proven`, which is the half a consumer
+        // reads. Same defect as `find_optimizations`' on 2026-08-10, one operation over.
+        if records.iter().all(|r| r.fields_complete) {
+            Fidelity::Exact
+        } else {
+            Fidelity::Bounded
+        },
     )
     .with_blind_spot(
         "this is an analysis of layout; §3's hot/cold, false-sharing and prefetch findings \

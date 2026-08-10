@@ -715,3 +715,48 @@ func @g() -> f80";
          that there is nothing to find: {v}"
     );
 }
+
+/// **A layout analysis that could not state a record is not a proof about that file.**
+///
+/// 041 §2 makes `Exact` mean something specific: *"Only `fidelity == Exact` is a proof, and only
+/// `Exact` licenses dropping a test in 032"*. `layout_envelope` returned `Exact` unconditionally
+/// — including when `fields_complete` was false for a record, which is the case its own comment
+/// describes: *"a record chiero could not judge is not a record with nothing to find … a padding
+/// number summed over the members that are left is not a smaller number but a wrong one"*.
+///
+/// The blind spot naming the record was already there; the *machine-readable* claim beside it
+/// still said proven. This is `find_optimizations`' defect of the same day, one operation over.
+#[test]
+fn a_layout_with_an_unstatable_record_is_not_proven() {
+    use chiero_opt::locality::Record;
+    let cfg = chiero_opt::locality::LocalityCfg {
+        cache_line_bytes: 64,
+        counts: Vec::new(),
+    };
+    let rec = |complete: bool| Record {
+        tag: "S".into(),
+        size: 8,
+        align: 4,
+        packed: false,
+        externally_visible: false,
+        fields: Vec::new(),
+        fields_complete: complete,
+    };
+
+    let complete = rec(true);
+    let env = chiero_tool::layout_envelope(std::slice::from_ref(&complete), &cfg);
+    assert!(
+        env.proven,
+        "a fully stated record is a proof: {}",
+        env.to_json()
+    );
+
+    let partial = rec(false);
+    let env = chiero_tool::layout_envelope(std::slice::from_ref(&partial), &cfg);
+    assert!(
+        !env.proven,
+        "a record whose field list cannot be stated leaves the padding number wrong, not \
+         merely smaller — so the envelope must not claim a proof: {}",
+        env.to_json()
+    );
+}
