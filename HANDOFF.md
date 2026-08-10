@@ -1413,7 +1413,8 @@ hand-written CIR; this is the path every published number actually took.)
 
 | | |
 |---|---|
-| recall | **7/9** — `null_deref`, `oob_write`, `div_zero`, `use_after_free`, `use_after_scope`, `uninit_read`, `wild_pointer_direct` |
+| recall | **9/12** — the six memory faults, plus `wild_pointer_direct`, `use_after_free_via_parameter`, and `order_dependence` |
+| reach | **both** default checkers (`OrderDependence`, `UndefinedArithmetic`), not only memory faults |
 | controls | **0 false positives** |
 
 📌 **So VPP's zeros are not inert checkers**, at least for these six. That is the answer the
@@ -3016,6 +3017,12 @@ longer sits between a fresh context and the live work.
    reports `division-by-zero`, so the symbolic fallback works; the shift arm simply is not in it.
    ⚠️ **Not** the "allows to overflow" case — `x + 2147483647` is silent by design, since
    `UbKind` distinguishes a path that *forces* overflow from one that merely permits it.
+
+   ✅ **Order-dependence, the other default checker, is fine** — checked after this, because
+   "three checkers seem dead" was the first reading. `f() + h()` with both writing one global
+   reports; sequencing them is clean. My probe for it had been `a[i++] + i`, the wrong shape
+   entirely. **Two of the three "dead" checkers were my fixtures**, and only the shift arm is
+   real.
 
    ⏭️ Likely a small fix: run the count rule when `y` alone is constant. The corpus in §7.31 is
    where the case belongs, and `undefined_arithmetic.rs`'s constant test guards the existing path.
