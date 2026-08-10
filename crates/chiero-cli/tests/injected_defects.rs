@@ -124,6 +124,16 @@ const CASES: &[(&str, &str, &str, &str)] = &[
         "wild-pointer",
     ),
     (
+        // **Through a parameter — the shape real code actually uses.** Masked the same way
+        // (item 8e); measured 2026-08-10 alongside a struct field and an array element, which
+        // mask identically. Every route that puts the pointer in memory before dereferencing
+        // loses the finding, so `wild_pointer_direct` is close to the only shape that reports.
+        "wild_pointer_via_parameter",
+        "static int deref(int *q) { return *q; }\n         int probe(void) { return deref((int *) 0x1234); }",
+        "static int deref(int *q) { return *q; }\n         int probe(void) { int v = 1; return deref(&v); }",
+        "wild-pointer",
+    ),
+    (
         "pointer_outside_object",
         "int probe(void) { int a[4]; a[0] = 1; int *p = a + 8; return (int) (p != 0); }",
         "int probe(void) { int a[4]; a[0] = 1; int *p = a + 4; return (int) (p != 0); }",
