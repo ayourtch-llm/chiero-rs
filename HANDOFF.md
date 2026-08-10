@@ -2069,6 +2069,14 @@ cases the one that carries the answer. `drop_null` is that comment made reusable
 The test pins the **invariant**, not the shape: a finding with a witness has no `unwitnessed`,
 and one without a witness must still say why (023 contract 15).
 
+⏭️ **The sweep was finished by reading, and it stops one layer short on purpose.** Every
+`Value::Null` in `chiero-tool` was read: the remaining ones are inside the **replay** result —
+`source` on a refusal, and `before`/`after`/`detail` per `chiero_replay::Outcome` variant. Same
+class, and they render as `(none)` the same way, but each is *variant*-dependent rather than
+always empty, and reaching them needs `--allow-replay-exec` (050 §6) — a path that compiles and
+runs code. **Not changed, because it could not be exercised here**, which is the same rule that
+kept `solver_rlimit` untouched. `drop_null` is the tool if somebody takes it on.
+
 ⚠️ **Four transcripts across two tutorials went stale and the gate named each one**; every one
 was regenerated from its own run rather than edited. Eight lines of `(none)` left the pages —
 `verdict: unreachable / line: 6 / proven` is three lines now instead of five.
