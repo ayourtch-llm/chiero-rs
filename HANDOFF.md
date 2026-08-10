@@ -1425,6 +1425,22 @@ corpus was built to get.
 null-dereference. Both were mine. **A control carrying a second defect measures nothing**, which
 is the whole argument for pairing.
 
+📌 **Reach is healthy — seven probes, an honest zero, 2026-08-10.** The two defects this
+corpus found were about *representation* (`UNBOUND`, 8e) and *a guard clause* (8f), so the
+obvious next question was whether **depth** defeats the checkers. It does not:
+
+| probe | result |
+|---|---|
+| null-deref behind a loop, and behind a symbolic `if` | reports |
+| null-deref three calls deep, and returned from a callee | reports |
+| OOB reachable only when `i * 7 == 91` | reports — **and the solver finds `i = 13`**, offset 52 |
+| `free()` in a callee, use after return | reports |
+| division by zero only on the path where `a == b` | reports |
+
+So a defect being far away, behind a solver query, or across a function boundary does not
+hide it. **That bounds where to look next**: this project's checker defects have been about
+what a value *is* and which guard runs, not about how hard the defect is to reach.
+
 ⏭️ **Two standing misses, and neither is silence** — leads about the *analysis*, which is where
 the remaining value is:
 
