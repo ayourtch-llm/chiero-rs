@@ -29,8 +29,9 @@ Ten operations, each a command and a library call, each returning an
 - **`select-tests` works from the command line.** `--test NAME=PATH`, once per test run, or
   `--coverage-manifest <file>` with a `NAME<TAB>PATH` line each. The selection carries the
   caller's own test names back, so a consumer does not have to join on `TestId` integers.
-- **Every `find-bugs` finding names a file and a line.** The engine had carried the span all
-  along; the envelope dropped it, so a report said what was wrong and never where.
+- **Every answer names a file and a line.** `find-bugs` findings, `find-optimizations`
+  proposals and `layout` records all carry the location of what they are about. Each was
+  produced by a layer that knew where it was and handed it to a layer that dropped it.
 - **`--march <name>`** targets the compiler persona (it had been accepted since 2026-08-09 and
   documented nowhere).
 - **`--solver-rlimit <units>`**, a deterministic budget in solver work units — unlike a wall
