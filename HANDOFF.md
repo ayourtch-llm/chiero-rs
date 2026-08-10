@@ -2336,6 +2336,13 @@ typing the paths ever would.
 > and is skipped fails exactly like a gate that does not exist**, and no amount of widening
 > fixes it.
 >
+> **Counted, as far as the budget allowed**: of the 53, **at least 34 are `Format` on both
+> legs** and **at least 3 are `z3`/`Test`**; the rest are unclassified because the anonymous API
+> allows **60 requests an hour**, and a `while read` loop over 53 runs both exhausts that and
+> trips abuse detection — which returns a 200 with a JSON body that has no `jobs` key, so a
+> naive parser reports *every* run as having no failed job. ⚠️ **A rate limit that answers 200
+> looks exactly like a clean result.** Classify in batches, and check `/rate_limit` first.
+>
 > ⏭️ **The instrument to keep**: `curl -s api.github.com/repos/<owner>/<repo>/actions/runs` and
 > `/actions/runs/<id>/jobs`, both anonymous on a public repo. Two probes name the leg and the
 > step. ⚠️ And the second-order lesson, which cost two days here and repeated with the deploy
