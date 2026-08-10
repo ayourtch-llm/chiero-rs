@@ -1413,7 +1413,7 @@ hand-written CIR; this is the path every published number actually took.)
 
 | | |
 |---|---|
-| recall | **14/15** — everything except `pointer_outside_object`, which is a judgement call rather than a defect |
+| recall | **16/17** — everything except `pointer_outside_object`, which is a judgement call rather than a defect |
 | reach | **both** default checkers (`OrderDependence`, `UndefinedArithmetic`), not only memory faults |
 | controls | **0 false positives** |
 
@@ -1424,6 +1424,14 @@ corpus was built to get.
 `int a[4]; a[1]=1; return a[0];` reads an uninitialised `a[0]`; an unchecked `malloc` *is* a
 null-dereference. Both were mine. **A control carrying a second defect measures nothing**, which
 is the whole argument for pairing.
+
+📌 **The whole `MemFault` vocabulary is now swept against the corpus** (2026-08-10). Three
+kinds had never been probed: `double-free` and `bad-free` both worked and are now guarded;
+`misaligned` reports nothing **by design** — the engine filters it "until a `ub-strict` mode
+exists" (`chiero-exec/src/lib.rs:3798`, item 5j) because lowering emits `align 1` for a packed
+member, and `chiero-mem/tests/copy_alignment.rs` already pins both halves. ⏭️ **Worth re-running
+whenever the vocabulary or the corpus changes** — it is a five-minute diff of an enum against a
+test file.
 
 📌 **Reach is healthy — seven probes, an honest zero, 2026-08-10.** The two defects this
 corpus found were about *representation* (`UNBOUND`, 8e) and *a guard clause* (8f), so the
