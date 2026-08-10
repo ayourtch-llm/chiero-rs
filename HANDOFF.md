@@ -1413,7 +1413,7 @@ hand-written CIR; this is the path every published number actually took.)
 
 | | |
 |---|---|
-| recall | **13/14** — everything except `pointer_outside_object`, which is a judgement call rather than a defect |
+| recall | **14/15** — everything except `pointer_outside_object`, which is a judgement call rather than a defect |
 | reach | **both** default checkers (`OrderDependence`, `UndefinedArithmetic`), not only memory faults |
 | controls | **0 false positives** |
 
@@ -3038,6 +3038,22 @@ longer sits between a fresh context and the live work.
    when it succeeds**. That is a trade worth making — but knowingly, and with the numbers re-taken
    afterwards, not as a side effect of a wave that was about something else.
 
+8h. ✅ **CLOSED 2026-08-10 — `NULL` had two more unhandled siblings, found by auditing 8e.**
+   8e's own conclusion was *look at representations and guard clauses*, so every
+   `ObjectId::NULL` site was checked for a missing `UNBOUND` case. 13 sites, 7 `NULL`-only, two
+   of them real defects:
+
+   | | |
+   |---|---|
+   | **an indirect call through a wild pointer produced no finding at all** | `chiero-exec/src/lib.rs:8176` special-cases `NULL`; a wild function pointer fell through to the candidate filter, which cannot match an address naming no object, so the run degraded with *"unresolvable callee"* and a reader scanning for findings saw a clean one. ⚠️ **That site's own comment calls this "the more misleading of the two ways to be wrong about a definite fault"** — and it was true of the case one line below itself |
+   | **`free((void *) 0x1234)` reported "at address 0"** | while dereferencing the same pointer reported 4660. `Memory::free` takes an `ObjectId` and had no offset. `free_at(p)` added for callers holding a `Pointer`; `free` stays where offset zero really is the answer |
+
+   Corpus 13/15 → **14/15**, full suite GREEN 2324/284, pinned 40 byte-identical.
+
+   📌 **Three defects from one question**: *`NULL` is special-cased — where is its sibling?*
+   8e was `address_term`, and these two were the call site and the free path. The audit took
+   one grep and three probes.
+
 8g. 🔍 **Inspected, not reproduced — two `lowering_gap` sites in the symbolic-offset store path
    return without writing.** `chiero-exec/src/lib.rs:3669` ("a store of an untranslatable value")
    and `:3673` ("a store of a value with no term") both `return` after declaring the gap. That is
@@ -3750,6 +3766,13 @@ not an anecdote.*
   stopped giving up on a store they can now model. **Diff the assumptions and the gaps, not just
   the findings** — the whole point of an envelope is that it records what chiero could *not* do,
   and that is where a modelling fix shows up first.
+
+- **When a value has a special case, ask where its siblings are.** `ObjectId` has two reserved
+  members, `NULL` and `UNBOUND`. Every defect found in chiero's checkers on 2026-08-10 was a
+  site that handled the first and not the second: `address_term` (8e), the indirect-call arm
+  (8h), and `free`'s fault offset (8h). **One grep — "which `NULL` sites do not mention
+  `UNBOUND`" — found all the remaining ones after the first was fixed by hand.** Twice the site's
+  own comment already argued why the missing case mattered, about the case beside it.
 
 ### 11.1 About tests and what they can see
 
