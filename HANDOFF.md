@@ -1413,7 +1413,7 @@ hand-written CIR; this is the path every published number actually took.)
 
 | | |
 |---|---|
-| recall | **9/12** — the six memory faults, plus `wild_pointer_direct`, `use_after_free_via_parameter`, and `order_dependence` |
+| recall | **9/13** — the six memory faults, plus `wild_pointer_direct`, `use_after_free_via_parameter`, and `order_dependence` |
 | reach | **both** default checkers (`OrderDependence`, `UndefinedArithmetic`), not only memory faults |
 | controls | **0 false positives** |
 
@@ -3024,8 +3024,9 @@ longer sits between a fresh context and the live work.
    entirely. **Two of the three "dead" checkers were my fixtures**, and only the shift arm is
    real.
 
-   ⏭️ Likely a small fix: run the count rule when `y` alone is constant. The corpus in §7.31 is
-   where the case belongs, and `undefined_arithmetic.rs`'s constant test guards the existing path.
+   ⏭️ Likely a small fix: run the count rule when `y` alone is constant. ✅ **The case is in the
+   corpus** as `shift_past_width` (§7.31), so the fix has a red to turn green and a regression
+   has somewhere to fail; `undefined_arithmetic.rs`'s constant test guards the existing path.
 
 8e. 🆕 **A wild-pointer dereference is reported as an uninitialized read *of the pointer
    variable*.** Found by the injected-defect corpus (§7.31), then characterised — the finding is
