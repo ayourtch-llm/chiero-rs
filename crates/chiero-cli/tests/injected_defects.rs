@@ -182,6 +182,19 @@ const CASES: &[(&str, &str, &str, &str)] = &[
          int probe(void) { int a = f(); int b = h(); return a + b; }",
         "order-dependence",
     ),
+    (
+        // **Item 8f** — undefined by C11 6.5.7p3 whatever `x` holds, and unreported. It lowers
+        // to `shl i32 %4, 40i32 signed`, the shape `chiero-check`'s own test asserts on with
+        // constants. The cause is one guard at `chiero-exec/src/lib.rs:3282`: when *either*
+        // operand is symbolic the concrete arm returns early, and the count rule — which needs
+        // only the count — is not in the fallback beside `symbolic_div_by_zero`.
+        //
+        // The control shifts by a legal amount, so it differs only in the constant.
+        "shift_past_width",
+        "int probe(int x) { return x << 40; }",
+        "int probe(int x) { return x << 4; }",
+        "shift-past-operand-width",
+    ),
 ];
 
 #[test]
