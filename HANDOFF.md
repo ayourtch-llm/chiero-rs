@@ -2288,7 +2288,7 @@ typing the paths ever would.
 >
 > ### 🙋 DECISIONS WAITING ON THE OWNER — the whole list, in one place
 >
-> Seven questions accumulated across sessions, each recorded where it arose and therefore
+> Eight questions accumulated across sessions, each recorded where it arose and therefore
 > scattered.
 > Gathered here with **what it costs and what it unblocks**, so they can be answered in one pass.
 > None is urgent; none can be answered by a wave.
@@ -2302,6 +2302,8 @@ typing the paths ever would.
 > | 5 | **`--solver-rlimit` for the pinned 40** (§7.24) — two of its rows vary 22/23/24 between runs of one binary, so they cannot be compared | needs a counter-based budget built first; `--solver-rlimit` bounds one query, not a run | **leave it** — `compare.py` excludes the two flagged rows, and 38 of 40 are solid |
 > | 6 | **011 contract 12 — amend a throughput floor to a ratio?** It reads *"≥100 MB/s lexing over a 50 MB blob"*: the only contract naming an absolute number with no sound instrument, and **ill formed by this project's own rule** — *"a counter, not a clock: a wall-clock bound silently stops being able to fail whenever the build gets faster"* | a spec edit, then a test; `growth.rs` already has the shape | amend it to a **ratio per 4x input**. Precedent is next door in 011 c13, and this is the one M2 contract still uncited (125/126) |
 > | 7 | **Two spends**: make `COMPDB_INCLUDES` the default and re-take the plugin sweep (~65 min, recovers ~40 files); and fire the replay gate's gcov build (item 8, `make test-cov`, a separate build tree so the baseline is safe) | ~65 min and one gcov build | both are *additions* — neither re-litigates a published number, and the second is what gets 032 c18 past `recall 0.0%` |
+>
+> | 8 | **040 contract 16 — `blind_spots` non-empty in *every* report?** Contradicted by a deliberate behaviour: `expansion_sites_envelope` on a page carries its qualification in `truncation`, the field 050 §2 created for it, and demanding a blind spot too would be demanding it said twice (§7.37) | a one-line spec amendment | amend c16 to 050 §2's form — *the envelope carries the qualification somewhere structural*. The behaviour is right and the contract is older than the field |
 >
 > 📌 **Nothing else in §9.1 is blocked.** Every other live item is either a spend already costed
 > above, a historical note kept for its reasoning, or work done this session.
