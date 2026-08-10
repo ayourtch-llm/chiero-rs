@@ -2086,7 +2086,7 @@ was regenerated from its own run rather than edited. Eight lines of `(none)` lef
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
 three xtask gates were red: a crate whose test *binary* fails to build emits no `test result`
 line at all, so counting successes cannot detect a missing success. `./check.sh` keys on
-cargo's exit status and prints the failing suites first. Current: **2367 passed, 295 suites** (2026-08-10), and **both legs** — the second, `CHIERO_SMT_SOLVER=/nonexistent`, passes 2367 too. Worth running that leg before committing anything whose answer depends on a solver: `injected_rewrites.rs` would have been red on half of CI otherwise (§7.35).
+cargo's exit status and prints the failing suites first. Current: **2368 passed, 295 suites** (2026-08-10), and **both legs** — the second, `CHIERO_SMT_SOLVER=/nonexistent`, passes 2368 too. Worth running that leg before committing anything whose answer depends on a solver: `injected_rewrites.rs` would have been red on half of CI otherwise (§7.35).
 
 ⏱️ **It now takes over an hour per leg**, and that is the session's dominant cost — see §9's
 note on the corpus. `conversions` and `semantics` are ~55 s each, the two VPP gates ~60 s, and
