@@ -1861,6 +1861,32 @@ reusing: **the wrong answers are forbidden unconditionally, because a false proo
 proof with or without z3; only the floor that says *something was decided* is conditional on a
 backend.** Found by running the second leg before committing rather than after.
 
+### 7.36 Three known-ground-truth corpora, and what the third pair of them found
+
+**Nothing.** Both are honest zeros, and both are worth the hour.
+
+§8.3's strongest form says to widen toward a corpus whose answer is known in advance.
+`injected_defects.rs` did that for the checkers on 2026-08-10 and found seven defects, because
+every published `find-bugs` number came through the CLI while every test drove hand-written
+CIR. Two neighbours were in exactly the same position and got the same treatment:
+
+| corpus | cases | result |
+|---|---|---|
+| `crates/chiero-cli/tests/injected_rewrites.rs` | 6 equivalent rewrites, 6 that differ | **12/12 correct** — no false proof, no false accusation |
+| `crates/chiero-cli/tests/injected_reachability.rs` | 4 live lines, 4 dead ones | **8/8 correct** — and the dead ones are *proved*, not merely not-shown |
+
+📌 **A zero from a corpus with known answers is not the same as a zero from real code**, which
+is the whole argument of §8.3 read backwards. `find-bugs` was in bad shape and nobody could see
+it, because a `findings: 0` over VPP reads identically whether the code is clean or the checker
+never fires. These two say something a VPP sweep cannot: the adjudicator and the reachability
+analysis *decide*, from C, through the command, and they decide correctly.
+
+⏭️ **The rule both files settled, and it generalises past them.** The wrong answers are
+forbidden **unconditionally** — a false proof is a false proof with or without z3 — and only the
+floor asserting that *something was decided* is conditional on a backend. Without that split
+`injected_rewrites.rs` would have been red on the `solver: none` leg, where nine of its twelve
+verdicts correctly become `unknown`. ⚠️ Found by running the second leg **before** committing.
+
 ### 7.5 How to check the workspace is green — `./check.sh`
 
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
