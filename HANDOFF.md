@@ -2974,9 +2974,23 @@ longer sits between a fresh context and the live work.
    different question. `COMPDB=<db>` is implemented in `measure.sh`, **opt-in, and must not be
    made the default without the owner** — it is the parked item wearing a flag-hygiene disguise.
 
-   ⏭️ What is safely separable: the ~30 files that fail *for want of an include path* are a
-   coverage loss independent of `-march`. Passing only the missing `-I`s — not the whole command
-   — would recover them without touching the target configuration. Worth it: those numbers
+   ✅ **The safe half is built and measured: `COMPDB_INCLUDES=<db> ./measure.sh`.** Include
+   paths from the build, nothing else — `xtask compile-flags --includes-only`, which is tested
+   to drop `-march`/`-mtune`/`-D`/`-U`/`-std` because that filter *is* the line between
+   recovering a file and silently changing what target the analysis is about.
+
+   | mode | pinned 40 envelopes |
+   |---|---|
+   | includes only | **38/38 identical** — a true no-op |
+   | full compile command | **26 of 38 differ** — the parked item |
+
+   All five §7.30 reproductions go **FAIL → ok**: `linux-cp/lcp_interface.c`,
+   `sfdp_services/acl/cli.c`, `tlspicotls/certs.c`, `af_xdp/unformat.c`,
+   `sasc/services/flow-quality/counter.c`.
+
+   ⏭️ **What remains is a spend, not a question**: making it the default and re-taking the
+   plugin sweep (~65 min) to bank the ~30 recovered files. It no longer waits on the owner's
+   `-march` decision. Worth it: those numbers
    are measured under flags VPP does not use. ⏭️ The `failed` rows were never saved, so the
    overlap cannot be checked historically; §7.30's sample is the evidence, and its five named
    files are a ready reproduction.
