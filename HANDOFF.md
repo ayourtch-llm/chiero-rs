@@ -3902,19 +3902,17 @@ not an anecdote.*
   the findings** — the whole point of an envelope is that it records what chiero could *not* do,
   and that is where a modelling fix shows up first.
 
-- **Audit const sentinels, not enum variants.** A missing enum arm is a compile error; a
-  `const` sentinel has no exhaustiveness checking anywhere. Every checker defect found on
-  2026-08-10 was a site handling `ObjectId::NULL` and not `ObjectId::UNBOUND`, and the two
-  widened audits that came back **zero** — `ObjState::Freed`/`OutOfScope`, and
-  `DYNAMIC_EXTENT` — were both enum-or-guarded cases. **The zeros are what located the rule**:
-  without them "check siblings" is advice, with them it is a place to look.
-
-- **When a value has a special case, ask where its siblings are.** `ObjectId` has two reserved
-  members, `NULL` and `UNBOUND`. Every defect found in chiero's checkers on 2026-08-10 was a
-  site that handled the first and not the second: `address_term` (8e), the indirect-call arm
-  (8h), and `free`'s fault offset (8h). **One grep — "which `NULL` sites do not mention
-  `UNBOUND`" — found all the remaining ones after the first was fixed by hand.** Twice the site's
-  own comment already argued why the missing case mattered, about the case beside it.
+- **Audit const sentinels: when a value has a special case, ask where its siblings are.**
+  A missing enum arm is a compile error; a `const` sentinel has no exhaustiveness checking
+  anywhere. `ObjectId` has two reserved members, and **every checker defect found on 2026-08-10
+  was a site handling `NULL` and not `UNBOUND`** — `address_term` (8e), the indirect-call arm
+  and `free`'s fault offset (8h). One grep — *which `NULL` sites do not mention `UNBOUND`* —
+  found the rest after the first was fixed by hand, and twice the site's own comment already
+  argued why the missing case mattered, about the case beside it.
+  **The scope came from the zeros**: `ObjState::Freed`/`OutOfScope` and `DYNAMIC_EXTENT` were
+  both clean, and both are enum-or-guarded. Without them "check siblings" is advice; with them
+  it names where to look. Compare *"a catch-all match arm hides a missing feature"* and
+  *"enumerate the variants"* below — same family, the enum half.
 
 - **An assertion that fails can be wrong about the property, not about the code.** 8g's first
   test asserted that a skipped store's *stale byte would change*. It does not — the fix marks
@@ -4232,7 +4230,11 @@ not an anecdote.*
   mutations where the baseline works, once as a **100% reduction**. ⚠️ Matching by basename is the
   tempting fix and stays rejected.
 - **A dummy span fabricates a location.** Three separate places have now needed an `is_dummy`
-  guard first.
+  guard first — and on 2026-08-10 the same shape appeared in a *fault*: `free` reported a wild
+  pointer "at address 0" because it takes an `ObjectId` and had no offset (fixed via `free_at`),
+  while `promote_to_array`'s `off: 0, at: Span::DUMMY` arms turned out unreachable behind guards
+  that already hold. **A finding that names the wrong place is the same defect as one that names
+  no place**, and both send a reader somewhere the fault is not.
 - **Enumerate the variants; do not wait to imagine them.** Walking `ExprKind`'s 21 variants against
   the arms of `raw_expr` took ten minutes and found three reaching the catch-all, one of them a
   live silent defect. The same census over `RValue`/`InstKind`/`Terminator` came back clean, which
