@@ -3029,10 +3029,20 @@ longer sits between a fresh context and the live work.
    uninitialized-read is not even wrong about `zebra` in chiero's model — it is a **mask**, and
    the real defect is upstream of it.
 
-   ⚠️ **Why it matters beyond the fixture:** any program that puts a computed or opaque address
-   in a variable before dereferencing it — which is how real C spells this — loses the
-   wild-pointer finding and gets a confusing one about the variable instead. §7.31's corpus only
-   caught it because the fixture used a variable; the one-liner passes.
+   ⚠️ **Scope, measured 2026-08-10 across four shapes — it is not one fixture.**
+
+   | shape | result |
+   |---|---|
+   | `int *p = (int *) 0x1234; return *p;` | masked |
+   | `struct S s; s.p = (int *) 0x1234; return *s.p;` | masked |
+   | `int *a[2]; a[0] = (int *) 0x1234; return *a[0];` | masked |
+   | `deref((int *) 0x1234)` — through a **parameter** | masked |
+   | `return *(int *) 0x1234;` | **the only shape that reports** |
+
+   **So the `wild-pointer` checker is close to unreachable in real C**, which always names a
+   pointer before using it. Parameter passing masks it too, which means it cannot survive a
+   function boundary. That reframes 8e from a reporting nit to a checker that effectively does
+   not run — and it is consistent with no VPP sweep ever having produced one.
 
 8d. 🔶 **Point the measurement harness at the compile database instead of a hand-kept flag list**
    (§7.30). ✅ **The capability landed 2026-08-09**: `cargo run -p xtask -- compile-flags --db
