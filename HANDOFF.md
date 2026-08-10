@@ -3078,6 +3078,22 @@ longer sits between a fresh context and the live work.
    `remember_provenance` carries `UNBOUND` so the access still faults as a wild pointer. The
    `NULL` arm one line above documents the identical failure mode in its own comment.
 
+   📌 **Re-swept afterwards (§11.2), and the finding count is the wrong place to look.** On the
+   40 recovered plugin files: `findings=489 exact=1` **unchanged**, no new kinds, no
+   `wild-pointer`. But the masked path itself moved:
+
+   | | before | after |
+   |---|---|---|
+   | envelopes hitting *"the address of an unplaced object"* | **3** | **1** |
+   | lowering gaps across the set | 84 | **80** |
+   | assumptions | 663 | **658** |
+
+   Two real plugin files — `sasc/service.c` and `sfdp_services/acl/acl_sample.c` — stopped
+   giving up on a store they can now model. The remaining 1 is legitimate: `addr_of` also
+   answers `None` for a genuinely unplaced object. **So the fix bought fidelity on real code
+   without changing a single finding**, which is a result a findings-only comparison would have
+   reported as "no effect".
+
    ⚠️ **The pinned 40 did not move, and the reason is measurable rather than hopeful**: 26 of
    its 40 envelopes reach `IntToPtr` with no provenance, but **0** reach "unplaced object" — the
    masked store — in either that corpus or the 40 recovered plugin files. VPP's `IntToPtr`
@@ -3691,6 +3707,13 @@ not an anecdote.*
   of it. Twice on 2026-08-09 an inference was published as a measurement — the other understated
   a defect by 60x (§7.29). **The tell is the same both times: a sentence about consequences
   written from a count of causes.**
+
+- **A fix can move fidelity without moving findings, and a findings-only diff calls that "no
+  effect".** 8e's re-sweep: `findings=489 exact=1` unchanged on 40 plugin files, while the
+  masked path went from **3 envelopes to 1** and lowering gaps from 84 to 80. Two real files
+  stopped giving up on a store they can now model. **Diff the assumptions and the gaps, not just
+  the findings** — the whole point of an envelope is that it records what chiero could *not* do,
+  and that is where a modelling fix shows up first.
 
 ### 11.1 About tests and what they can see
 
