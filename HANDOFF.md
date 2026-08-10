@@ -3396,6 +3396,22 @@ reached 952 lines again, 316 of them finished work:
    stay untyped — and the variant's own doc says forming such a pointer "is deliberate in a few
    real idioms". **Owner's call.**
 
+5s. 🆕 **`contract-coverage` counts a citation, not an execution — and M1's 166/166 included a
+   test that had not run since it was `#[ignore]`d.** Found 2026-08-10 by auditing the ignored
+   set after "nobody ran the gate" turned up three times in one day.
+   `chiero-recipe/tests/replay_coverage.rs` cites **023 contract 21** in its header and had its
+   only test ignored as *blocked*; the blocker was gone (it passes 3/3 in 0.12 s, un-ignored in
+   the same change) and the HANDOFF note its reason cited **does not exist**.
+   ⚠️ 070 §4 is quoted in `ci.yml` as *"a gate nobody runs is a gate that is already failing"*,
+   and `chiero-lex/tests/performance.rs` shows the convention was known — *"ignored tests do not
+   carry contract coverage credit under 070 §4, so this comment intentionally does not cite a
+   contract number"*. **A convention nobody checks is a convention that has already drifted.**
+   ⏭️ The gate to build: a citation from a file whose citing test is `#[ignore]`d does not count.
+   Naive "any `#[ignore]` in a citing file" over-flags — a file may hold twenty running tests and
+   one deliberate reproduction — so it has to associate each `Covers:`/inline citation with the
+   tests that carry it, or move to per-test citations. 📌 The measurement first: how many of the
+   166 rest on an ignored test? Today's answer is *at least one*, and it was found by hand.
+
 5r. ✅ **CLOSED 2026-08-10 — see §7.39.** One dereference, two findings — `find_bugs` groups on the *message*, and the message
    carries a per-path clause.** Found 2026-08-10, immediately after findings learned to carry a
    line (§7.38), because 040 contract 1's *"fires exactly once"* became a question somebody

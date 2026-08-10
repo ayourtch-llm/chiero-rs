@@ -197,8 +197,17 @@ int f(int n) {
 /// Run for *both* branches. One alone is passed by an implementation that reports every
 /// line of the function — the two runs have to differ from each other in the same way
 /// gcc's do, or the agreement is with a constant.
+/// ✅ **Un-`#[ignore]`d 2026-08-10, and the reason it carried was doubly stale.** It read
+/// *"blocked: a scalar parameter loaded back from its own slot reads as uninitialized, so both
+/// replay paths degrade to Unknown and the branch forks … see the wave-108 note in HANDOFF §9"*
+/// — the blocker is gone (3/3 green, ~0.12 s), and **there is no wave-108 note in HANDOFF or
+/// the archive**, so the citation pointed at nothing.
+///
+/// 📌 **It mattered more than one test.** This file's header cites **023 contract 21**, and
+/// `xtask contract-coverage` counts a citation whether or not the citing test runs — so M1's
+/// "166/166 contracts cited by a test" included one that had not executed since the ignore was
+/// added. 070 §4's own words: *a gate nobody runs is a gate that is already failing*.
 #[test]
-#[ignore = "blocked: a scalar parameter loaded back from its own slot reads as uninitialized, so both replay paths degrade to Unknown and the branch forks. Independent of replay — see the wave-108 note in HANDOFF §9."]
 fn a_replayed_witness_covers_the_lines_gcov_reports() {
     if !gcov_available() {
         eprintln!("skipping: no gcov");
