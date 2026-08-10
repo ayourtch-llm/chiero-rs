@@ -3419,6 +3419,22 @@ reached 952 lines again, 316 of them finished work:
    tree*). **Only per-test association answers this**, which is why 5s asks for it rather than
    for a cheaper approximation.
 
+   ✅ **The audit was then run by hand over the tractable set, and its yield is one.** Eight
+   files hold both an `#[ignore]` and a `//!` citation. Checked individually: `persona_gap.rs`
+   and `preprocess_corpus.rs` are single ignored tests whose contract (012 c17) six other files
+   also cite; `memory_budget.rs` has *every* test ignored, and `xtask contract-coverage` already
+   reports its contract (030 c11) as **uncited**, so no false credit; `builddb.rs` and
+   `generated.rs` have running tests carrying theirs. **The one real instance was
+   `replay_coverage.rs`, and it is fixed.**
+
+   ⚠️ **And the scan claimed two more that were not real.** It reported 014 c6 and c8 as cited
+   by "nobody else" — false: `chiero-sema/tests/layout.rs` cites `014 contracts 1, 2, 3, 4,
+   **4b**, 5, 6, 7, 8, 10` and tests both fixtures in running tests. The regex walking the
+   comma-separated run stopped at the markdown bold `**4b**`. **Third time in one session that
+   an instrument's own output had to be checked against a case already known** — the 53
+   rate-limited `NO-FAILED-JOB` lines, the file-level zero, and this. The check that caught all
+   three is one question: *would this have found the thing I already know?*
+
 5r. ✅ **CLOSED 2026-08-10 — see §7.39.** One dereference, two findings — `find_bugs` groups on the *message*, and the message
    carries a per-path clause.** Found 2026-08-10, immediately after findings learned to carry a
    line (§7.38), because 040 contract 1's *"fires exactly once"* became a question somebody
