@@ -2128,6 +2128,22 @@ fires"*, and no amount of real code can. ⏭️ The generalisation that kept pay
 written for one component and ask whether its neighbours obey it** — 050 contract 3's
 empty-answer rule, asked of all nine operations, found two more.
 
+🧪 **Step 0, added 2026-08-10 after it saved three findings from being published: point the
+instrument at a case whose answer you already know, before believing its output.** An instrument
+built to find X and then run over unknown ground reports whatever its own shape reports, and a
+clean answer is the one that looks least like a bug. Three times in one session:
+
+| the instrument said | the truth was |
+|---|---|
+| 53 CI runs, every one *"no failed job"* | the API's rate limit answers **HTTP 200** with a body that has no `jobs` key |
+| 0 of 166 M1 contracts rest on an ignored test | the criterion could not have found 023 c21, the one case already known by hand |
+| 014 c6 and c8 are cited by *"nobody else"* | a regex walking `contracts 1, 2, 3, 4, **4b**, 5, …` stopped at the markdown bold |
+
+Each was one question away from being caught, and it is always the same question: **would this
+have found the thing I already know?** Two of the three were about to become published findings.
+⚠️ Note the direction — every one of them erred toward *nothing is wrong*, which is the error a
+reader will not query.
+
 This has now paid out many times, each time on the first run after a widening:
 
 | widened | cost | yield |
