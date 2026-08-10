@@ -2394,6 +2394,29 @@ typing the paths ever would.
 > for months (*a green gate is evidence about the corpus, not about the tree*). Then §9.1 for
 > the next target.
 >
+> ### 🔥 What 2026-08-10 did, in one block
+>
+> **The bar, then the surfaces it exposed.** Four of the five done-enough-to-use conditions
+> landed (§7.33, §7.34, §7.36, and the exit-status contracts); D5 is prepared and waits on a tag.
+> All six first-user findings are closed, including the third tutorial drift, whose answer was an
+> *absence*: no tutorial had ever named `FileLoader`.
+>
+> **Three known-ground-truth corpora, and what they cost each other.** `injected_rewrites.rs`
+> (12/12) and `injected_reachability.rs` (8/8) are honest zeros; the defects came from *reading*
+> instead — 040 contract 1 asked for a fixture that fires at the right span, which could not be
+> checked because the envelope carried none (§7.38), and asking *exactly once* of the answer
+> that resulted found the grouping defect (§7.39).
+>
+> **Two instruments were widened and both immediately paid.** `contract-coverage` could not see
+> the product surface at all — 050 had twenty contracts and no counter (§7.37) — and `check.sh`
+> did not compile under CI's `RUSTFLAGS`. The coverage scanner then counted a *disclaimer* as a
+> citation, which is the one direction such a tool must never move by itself.
+>
+> ⏭️ **The pattern of the day, worth carrying forward: every defect found was in a surface or an
+> instrument, and every one was found by asking a written rule what it would take to check it.**
+> The corpora that found nothing were still worth building, because a zero from known ground
+> truth is evidence and a zero from real code is not.
+>
 > ### 🔥 What the **second** 2026-08-09 session did, and what it leaves
 >
 > **Closed:** item 6 (both halves, §7.22), 5o (the advisory taxonomy), 5c (the nsh timeouts),
