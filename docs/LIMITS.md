@@ -34,6 +34,18 @@ answers about ARM.**
   and runs it, sandboxed (050 §6, contract 12). Without it you get the harness text and no
   verdict.
 
+## What a green CI run does and does not say
+
+CI runs the whole suite in two configurations — with a solver and without one — on every push,
+and both gate. Two things it cannot cover, stated because a badge is a claim:
+
+- **Three contracts need a VPP checkout the runner does not have**: every VPP source lexing
+  without a panic, all 1967 translation units preprocessing, and the compile database parsing.
+  Their tests skip there and run on a machine that has the tree.
+- **The solverless leg skips 44 assertions**, by construction — they are the ones asserting what
+  a *complete* solver decides, and there isn't one. The suite reports that count beside the
+  passes rather than leaving both legs looking identical.
+
 ## The analysis
 
 - **Analysis is per function, not per program.** You name an entry with `--entry`, and chiero
