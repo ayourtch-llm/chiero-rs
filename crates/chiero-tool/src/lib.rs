@@ -1080,6 +1080,29 @@ impl BugCfg {
 /// `max_loop_iters` and `max_states` is which knob to turn, and a reader who cannot tell them
 /// apart cannot decide whether re-running would help.
 pub fn find_bugs(module: &chiero_cir::Module, cfg: &BugCfg) -> Envelope {
+    find_bugs_located(module, cfg, None)
+}
+
+/// The same, with the map that turns each finding's span into a file and a line.
+///
+/// **A report that says what is wrong and not where is not actionable**, and that is what this
+/// operation produced until 2026-08-10: `chiero_exec::Finding` carries `span`, and the envelope
+/// dropped it. In a translation unit that is a megabyte of expanded headers, "null-dereference:
+/// access at offset 0 of NULL" sends a reader back to re-run the search by hand.
+///
+/// It survived because every test of this operation builds its module from hand-written CIR,
+/// where there is no source map and so nothing to lose — the same shape as the day's other
+/// gaps, one layer down.
+///
+/// **`expansion_loc`, not `spelling_loc`.** A defect inside a macro body belongs, for a reader,
+/// at the place the macro was *used*; that is what gcov sees (030 §1) and what this project's
+/// finding deduplication already keys on (040 contract 11). The spelling site is still
+/// reachable through `explain-macro` on the reported line, which is the operation for it.
+pub fn find_bugs_located(
+    module: &chiero_cir::Module,
+    cfg: &BugCfg,
+    map: Option<&chiero_span::SourceMap>,
+) -> Envelope {
     if !module.funcs.iter().any(|f| *f.name == cfg.entry) {
         // **An error, not an empty finding list.** A typo in an entry name would otherwise
         // produce the most confident possible all-clear.
@@ -1193,6 +1216,15 @@ pub fn find_bugs(module: &chiero_cir::Module, cfg: &BugCfg) -> Envelope {
             });
                 let mut v = serde_json::json!({
                     "message": f.message,
+                    // **Where, before what comes after it.** A reader jumps to a defect; a
+                    // consumer groups by it. Absent when no map was given (a caller that built
+                    // its module by hand has no file to name) rather than null, so a `find-bugs`
+                    // over hand-written CIR does not grow two empty keys per finding.
+                    "file": map
+                        .and_then(|m| m.expansion_loc(f.span))
+                        .zip(map)
+                        .map(|(l, m)| m.file(l.file).path().display().to_string()),
+                    "line": map.and_then(|m| m.expansion_loc(f.span)).map(|l| l.line),
                     "paths": paths,
                     "replay": replay,
                     "fidelity": format!("{:?}", f.fidelity),
@@ -1219,6 +1251,15 @@ pub fn find_bugs(module: &chiero_cir::Module, cfg: &BugCfg) -> Envelope {
                     && let Some(o) = v.as_object_mut()
                 {
                     o.shift_remove("witness_omitted");
+                }
+                // Same rule for the location: a caller that built its module by hand has no
+                // file to name, and `file: (none)` under every finding would be noise rather
+                // than an answer.
+                if v["file"].is_null()
+                    && let Some(o) = v.as_object_mut()
+                {
+                    o.shift_remove("file");
+                    o.shift_remove("line");
                 }
                 v
             })

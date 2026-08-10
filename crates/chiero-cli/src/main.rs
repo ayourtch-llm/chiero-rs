@@ -468,7 +468,8 @@ fn find_bugs(o: &Options) -> Result<chiero_tool::Envelope, Fault> {
         .entry
         .clone()
         .ok_or_else(|| Fault::Usage("find-bugs needs --entry <fn>".into()))?;
-    let m = lower(&f[0], &read(&f[0])?, o.frontend()).map_err(Fault::Failed)?;
+    let (m, map) =
+        frontend::lower_located(&f[0], &read(&f[0])?, o.frontend()).map_err(Fault::Failed)?;
     let mut cfg = chiero_tool::BugCfg::new(entry.clone());
     cfg.entry_ptr_nonnull = o.entry_ptr_nonnull;
     cfg.report_invented_bounds = o.report_invented_bounds;
@@ -495,7 +496,7 @@ fn find_bugs(o: &Options) -> Result<chiero_tool::Envelope, Fault> {
             chiero_tool::ReplayPolicy::EmitOnly
         };
     }
-    Ok(chiero_tool::find_bugs(&m, &cfg))
+    Ok(chiero_tool::find_bugs_located(&m, &cfg, Some(&map)))
 }
 
 fn check_reachable(o: &Options) -> Result<chiero_tool::Envelope, Fault> {

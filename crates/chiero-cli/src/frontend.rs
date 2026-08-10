@@ -140,6 +140,19 @@ impl chiero_sema::SymbolText for Names {
 
 /// The whole pipeline: preprocess, parse, analyse, lower.
 pub(crate) fn lower(path: &Path, src: &str, f: Frontend) -> Result<chiero_cir::Module, String> {
+    lower_located(path, src, f).map(|(m, _)| m)
+}
+
+/// The same, keeping the map that turns a span into a file and a line.
+///
+/// **The map was always built here and always discarded.** `find-bugs` therefore reported *what*
+/// was wrong and never *where* — see `chiero_tool::find_bugs_located`. Every diagnostic in this
+/// file already renders through it (`at`), so the information was one return value away.
+pub(crate) fn lower_located(
+    path: &Path,
+    src: &str,
+    f: Frontend,
+) -> Result<(chiero_cir::Module, chiero_span::SourceMap), String> {
     let tu = preprocess(path, src, f)?;
     let mut oracle = chiero_parse::ScopedTypedefs::new();
     // **GNU C, not strict ISO.** The tree under analysis is built by gcc or clang with their
@@ -182,7 +195,7 @@ pub(crate) fn lower(path: &Path, src: &str, f: Frontend) -> Result<chiero_cir::M
             &format!("chiero cannot lower this: {}", d.message),
         ));
     }
-    Ok(lowered.module)
+    Ok((lowered.module, tu.source_map))
 }
 
 /// Every complete, named record in a translation unit, as 041 §3's locality analysis wants it.

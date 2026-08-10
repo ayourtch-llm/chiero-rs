@@ -65,8 +65,12 @@ fn run(args: &[String]) -> Run {
 /// heard of and the envelope says exactly that: *"`after.c` is not in the coverage index at
 /// all"*. That is the right answer to the wrong question, and it is the trap this project has
 /// hit four times, always in the flattering direction.
-fn before_and_after() -> (PathBuf, PathBuf) {
-    let d = scratch();
+fn before_and_after(case: &str) -> (PathBuf, PathBuf) {
+    // **A directory per case, because these tests run concurrently in one process.** They all
+    // wrote `old/other.c` and `new/other.c`, and identical content is not the same as safe: a
+    // reader can see a file another test is halfway through writing. It failed once in a full
+    // `cargo test` and never in isolation, which is the signature.
+    let d = scratch().join(case);
     let (old, new) = (d.join("old"), d.join("new"));
     std::fs::create_dir_all(&old).expect("scratch");
     std::fs::create_dir_all(&new).expect("scratch");
@@ -92,7 +96,7 @@ fn object(stem: &str) -> String {
 /// The repeatable spelling: a handful of tests typed at a prompt.
 #[test]
 fn a_repeated_test_flag_attributes_coverage_and_selects() {
-    let (before, after) = before_and_after();
+    let (before, after) = before_and_after("repeated-flag");
     let args: Vec<String> = vec![
         "select-tests".into(),
         before.display().to_string(),
@@ -128,8 +132,9 @@ fn a_repeated_test_flag_attributes_coverage_and_selects() {
 /// The manifest spelling: what a `make test-cov TEST=<name>` loop writes.
 #[test]
 fn a_coverage_manifest_attributes_coverage_and_selects() {
-    let (before, after) = before_and_after();
-    let manifest = scratch().join("tests.tsv");
+    let (before, after) = before_and_after("manifest");
+    let manifest = scratch().join("manifest").join("tests.tsv");
+    std::fs::create_dir_all(manifest.parent().unwrap()).expect("scratch");
     std::fs::write(
         &manifest,
         format!("other\t{}\nt\t{}\n", object("other"), object("t")),
@@ -160,7 +165,7 @@ fn a_coverage_manifest_attributes_coverage_and_selects() {
 /// is the empty answer this project spent 2026-08-10 forbidding elsewhere.
 #[test]
 fn the_unattributed_spelling_still_refuses_and_now_names_the_alternative() {
-    let (before, after) = before_and_after();
+    let (before, after) = before_and_after("refusal");
     let args: Vec<String> = vec![
         "select-tests".into(),
         before.display().to_string(),
@@ -182,7 +187,7 @@ fn the_unattributed_spelling_still_refuses_and_now_names_the_alternative() {
 /// A malformed `--test` says what it wanted, rather than selecting nothing.
 #[test]
 fn a_test_flag_without_a_name_is_a_usage_error_naming_the_shape() {
-    let (before, after) = before_and_after();
+    let (before, after) = before_and_after("malformed");
     let args: Vec<String> = vec![
         "select-tests".into(),
         before.display().to_string(),

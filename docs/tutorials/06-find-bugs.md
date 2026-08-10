@@ -23,6 +23,8 @@ int average (int *a, int n)
 $ chiero find-bugs average.c --entry average
 findings:
   - message: null-dereference: access at offset 0 of NULL, where %2 is a pointer parameter assumed to be possibly null
+    file: average.c
+    line: 5
     paths: 1
     replay: (none)
     fidelity: Unknown
@@ -40,6 +42,8 @@ findings:
         pinned: false
     unwitnessed: (none)
   - message: division-by-zero: SDiv by a divisor the path allows to be zero
+    file: average.c
+    line: 6
     paths: 2
     replay: (none)
     fidelity: Exact

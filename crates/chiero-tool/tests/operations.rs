@@ -108,6 +108,11 @@ const OPS: &[Op] = &[
         samples: prove_equivalent_samples,
         never_exact: None,
     },
+    Op {
+        name: "find_bugs_located",
+        samples: find_bugs_located_samples,
+        never_exact: None,
+    },
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -182,6 +187,39 @@ fn select_tests_named_samples() -> Vec<Envelope> {
             &names,
         ),
     ]
+}
+
+/// The same inputs as `find_bugs`, through the variant that resolves each finding's span.
+///
+/// **No map here on purpose.** These modules are built from hand-written CIR, which is exactly
+/// the configuration in which the location was silently lost for months: with no map the two
+/// keys must be *absent* rather than null, and every other field must be what `find_bugs`
+/// produces. The located path with a real map is gated end to end in
+/// `chiero-cli/tests/finding_location.rs`, which is where a source file exists to point at.
+fn find_bugs_located_samples() -> Vec<Envelope> {
+    let clean =
+        "func @f(%0: i32) -> i32 {\nentry:\n  .line 1\n  %1 = add i32 %0, 1i32\n  ret %1\n}";
+    let overflow = "func @f() -> i32 {\nentry:\n  .line 1\n  %0 = add i32 2147483647i32, 1i32 signed\n  ret %0\n}";
+    let out = vec![
+        chiero_tool::find_bugs_located(&m(clean), &chiero_tool::BugCfg::new("f"), None),
+        chiero_tool::find_bugs_located(&m(overflow), &chiero_tool::BugCfg::new("f"), None),
+        chiero_tool::find_bugs_located(&m(clean), &chiero_tool::BugCfg::new("nosuch"), None),
+    ];
+    // **Absent, not null.** With no map there is no file to name, and a `file: (none)` under
+    // every finding would train a reader to skip the field on the reports where it is the
+    // whole point.
+    for e in &out {
+        let v: serde_json::Value = serde_json::from_str(&e.to_json()).expect("valid JSON");
+        if let Some(fs) = v["result"]["findings"].as_array() {
+            for f in fs {
+                assert!(
+                    f.get("file").is_none() && f.get("line").is_none(),
+                    "a finding built with no source map still carries a location: {f}"
+                );
+            }
+        }
+    }
+    out
 }
 
 fn impact_samples() -> Vec<Envelope> {
