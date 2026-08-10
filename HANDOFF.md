@@ -1968,6 +1968,34 @@ typing the paths ever would.
 > The archive is linted like this file is. Section numbers did not change, so an old citation
 > still finds its subject.
 >
+> ### 🧑‍💻 FIRST END-TO-END USER TEST — the thesis held, and six findings, 2026-08-10
+>
+> claude-mini ran chiero as a genuinely naive first user on ayourtch's request: fresh x86 and
+> ARM boxes, README only, then real VPP — checkout, gcov build, a planted
+> `clib_max`→`clib_min` in `bfd_recalc_detection_time`, and selection. Report at
+> `~/from-claude-mini-2026-08-10-user-test.md`; driver at `~/vpp-select-driver`.
+>
+> ✅ **The product thesis held, on real code, end to end.** `select_with` ranked `bfd`
+> **first — 4582 covering relations against 343/343/343** (the boot-path floor), and running only
+> that test caught the bug: 3 failures, exactly the asymmetric-interval cases.
+> 📌 **A free mutation insight for VPP** came out of it: the symmetric-interval tests stay green
+> because the bfd suite's defaults cannot see this bug class at all (`min == max` when `a == b`).
+>
+> | # | finding | state |
+> |---|---|---|
+> | 1 | **CLI `select-tests` was structurally empty** — `ingest_native` attributes no test, so `index.tests()` is empty and every invocation returned `0 selected` whatever the diff said. ⚠️ **Tutorial 3's console example runs this path; `tutorials.rs` covers the library one** — §8.3's third form inside our own tutorial | ✅ **fixed**: it refuses and names the limit. The real fix is per-test attribution (`ingest_native_as`), which `--coverage`/`--stem` cannot express — **a design question for the owner** |
+> | 2 | **First ARM run ever** (aarch64 Grace): build 11 s, 1500+ tests green, **engine portable**. The 12 failures are *all* gcc-differential gates on real x86↔ARM divergence — char signedness, 128-bit long double, predefines under `-march`, vector lanes, zero-width bit-field in a union, and `cli.rs:1482` asserting `has_sse42` unconditionally | 🆕 **not defects — the map of an ARM port**, if VPP-on-ARM ever matters |
+> | 3 | `check.sh` printed **"0 failed" while a suite failed 31/1 inside** — it summed a column that is not the failure count in every rendering | ✅ **fixed**: matches `[0-9]+ failed` by name. The verdict keyed on cargo's exit status and was always right; only the number lied |
+> | 4 | **No per-operation `--help`** — `select-tests --help` prints the global page, and 030's path/stem semantics cost three attempts. ⚠️ *But the envelope text taught them each time* — "that discipline **works** on a hostile-ignorant user; it's the best part" | 🆕 open |
+> | 5 | **Tutorial↔API drift ×3**: `FileLoader::load` returns `Result` (tutorial implies `Option`); `ExcludedTest` is a refinement where tutorial 3 says proof; no `Validity::Unknown` (it is `Fresh`/`Stale`/`Partial`) | 🆕 open |
+> | 6 | `compiler_oracle.rs:14` bare-panics on missing clang (`spawn().unwrap()`) where house style is *"an error naming the file that was looked for"* | 🆕 open |
+>
+> 📌 **Finding 1 is the one to sit with.** This session asked nine operations *what does your
+> empty answer mean* and fixed two. It never asked `select-tests`, because probing it needed a
+> coverage directory — so the single operation whose empty answer was **structurally
+> guaranteed** was the one the sweep skipped. **The gap in a sweep is where its cheapest step
+> was.**
+>
 > ### 🔴 CI IS RED AND I COULD NOT REPRODUCE IT — what is ruled out, 2026-08-10
 >
 > The owner reports GitHub CI on `ayourtch-llm/chiero-rs` failing "for a while" while
@@ -3537,6 +3565,18 @@ not an anecdote.*
   `lint.py` prints its success line only after the failure branch has returned. **The defect was
   in transient shell, not in the tooling** — which is the harder half to fix, since ad-hoc
   commands get no review and are exactly where a hurried check goes.
+
+- **The gap in a sweep is wherever its cheapest step was.** 2026-08-10 asked nine operations
+  *what does your empty answer mean* and fixed two. It skipped `select-tests` because probing it
+  needed a coverage directory — and that was the one whose empty answer was **structurally
+  guaranteed**: the CLI attributed no test, so every invocation returned `0 selected` whatever
+  the diff said. A first-time user found it in an afternoon by running the tutorial. **When a
+  sweep exempts a case for being awkward to reach, that exemption is the finding**, and the note
+  recording the skip is not a substitute for making it.
+
+- **Run the tutorial, not the library, when checking a tutorial.** `tutorials.rs` exercised the
+  library path while tutorial 3's console example ran a CLI path no gate covered — §8.3's third
+  form inside our own documentation. A worked example is a *claim about the shipped command*.
 
 ### 11.1 About tests and what they can see
 
