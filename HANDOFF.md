@@ -1990,6 +1990,15 @@ typing the paths ever would.
 > | 5 | **Tutorial↔API drift ×3** | 🔶 **two fixed, one not found.** `ExcludedTest { test, refinement, entity, fidelity }` corrected in tutorial 3 (it said `proof`), and tutorial 1's `Fresh \| Stale \| Unknown` corrected to `Partial` with the meaning spelled out. ⚠️ **`FileLoader::load` appears nowhere in `docs/` or the README** — so the drift the user hit is in a doc comment or a path I did not search, and it is *not* fixed. Their transcript would name it |
 > | 6 | `compiler_oracle.rs:14` bare-panics on missing clang (`spawn().unwrap()`) where house style is *"an error naming the file that was looked for"* | 🆕 open |
 >
+> ⏭️ **The gap behind finding 5, and the next thing to build here: nothing compares a tutorial
+> to the API.** Both drifts were a tutorial naming a field or variant that does not exist
+> (`ExcludedTest.proof`, `Validity::Unknown`), and both survived because a tutorial is prose in
+> a repository full of gates. Three registries were gated on 2026-08-10 by parsing an exhaustive
+> `match`; **the tutorials want the same treatment** — assert that every `Type { a, b }` field
+> list and every `A | B | C` variant list in `docs/tutorials/` names things the crates actually
+> export. ⚠️ Fragile if done by regex, so the honest version is probably Rust doctests
+> (`#[doc = include_str!]`) over snippets made compilable, which is a wave rather than an hour.
+>
 > 📌 **Finding 1 is the one to sit with.** This session asked nine operations *what does your
 > empty answer mean* and fixed two. It never asked `select-tests`, because probing it needed a
 > coverage directory — so the single operation whose empty answer was **structurally
