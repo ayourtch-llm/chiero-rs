@@ -32,6 +32,8 @@ CHIERO=${CHIERO:-$HERE/../../../target/release/chiero}
 VPP=${VPP:-/home/ubuntu/vpp}
 VPPBUILD=${VPPBUILD:-$VPP/build-root/build-vpp-native}
 TIMEOUT=${TIMEOUT:-60}
+# Only consulted when COMPDB is set; `cargo run -p xtask --` also works.
+XTASK=${XTASK:-$HERE/../../../target/debug/xtask}
 # Overridable so a wider sweep does not need a second copy of this script — the checked-in
 # number is `entries.tsv`, and anything else is an exploration that says which list it ran.
 LIST=${LIST:-$HERE/entries.tsv}
@@ -72,6 +74,34 @@ while IFS=$'\t' read -r f fn; do
         own="-I$VPPBUILD/vpp/CMakeFiles/plugins/$d"
       ;;
   esac
+  # **`COMPDB=<file>` takes the flags from the build instead of from the list above.**
+  #
+  # The hand-kept `INC`/`DEF` is a second reader of a fact the build already states, and the
+  # two have drifted: measured 2026-08-09, **198 of 935 plugin C units need include paths this
+  # script never passes**, and ~16% of those fail to preprocess because of it — reported as
+  # "chiero cannot read this" when the flags are the cause (HANDOFF §7.30).
+  #
+  # ⛔ **Opt-in, and do NOT make it the default: this is the parked `-march` item.** The
+  # database's flags carry `-march=x86-64-v2 -mtune=generic`, which this script has never
+  # passed, and they change the analysis rather than merely widening it — the pinned 40 run
+  # this way keeps its summary line (`cut=2 ok=38 findings=21`) while **26 of 38 envelopes
+  # differ**, and `-march` alone changes the CIR of `vppinfra/hash.c`.
+  #
+  # The *include-path* half is separable and safe (20 plugin files: 17 byte-identical CIR, 0
+  # differing). If the goal is only to recover the ~30 files that fail for want of an `-I`,
+  # add the missing include paths and leave the target configuration alone.
+  #
+  #   ninja -C $VPPBUILD/vpp -t compdb > /tmp/db.json
+  #   COMPDB=/tmp/db.json ./measure.sh
+  #
+  # A file the build does not compile has no flags, and `compile-flags` says so by failing;
+  # the hand-kept list is the fallback there, because refusing to measure a file the sweep was
+  # asked about would be a silent hole rather than a reported one.
+  flags="$INC $own $DEF"
+  if [ -n "${COMPDB:-}" ]; then
+    real=$("$XTASK" compile-flags --db "$COMPDB" "$f" 2>/dev/null | head -1)
+    [ -n "$real" ] && flags="$real"
+  fi
   # **chiero's own clock first, the harness's as a backstop.** `--time-budget` stops the
   # search and prints what it had; `timeout` kills the process and prints nothing, which is
   # what every `timeout` row in the old numbers was — a function about which the measurement
@@ -79,7 +109,7 @@ while IFS=$'\t' read -r f fn; do
   # that the two are tellable apart: `cut` means chiero stopped, `timeout` means something the
   # clock does not cover did not (the frontend, or a single solver query).
   timeout "$((TIMEOUT + 30))" "$CHIERO" find-bugs "$VPP/src/$f" --entry "$fn" --json \
-      --time-budget "$TIMEOUT" $INC $own $DEF "$@" >"$J" 2>"$E"
+      --time-budget "$TIMEOUT" $flags "$@" >"$J" 2>"$E"
   rc=$?
   # Saved before any of the classification below, so a `timeout`'s empty file and a `failed`'s
   # stderr are both in the residue rather than only the rows that produced a count.

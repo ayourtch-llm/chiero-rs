@@ -1374,12 +1374,21 @@ and an order of magnitude smaller than the sentence I first wrote. Ready reprodu
 `linux-cp/lcp_interface.c`, `sfdp_services/acl/cli.c`, `tlspicotls/certs.c`,
 `af_xdp/unformat.c`, `sasc/services/flow-quality/counter.c`.
 
-✅ **And where both sets of flags work, they agree.** 20 more plugin files, each run under
-harness flags and its own real command: **17 produce byte-identical CIR, 0 differ**, 3 had one
-side fail (consistent with the ~16% above). So the harness's extra include paths never shadowed
-anything that mattered — **8d converts failures into coverage and changes no existing finding**,
-which is what makes its re-take cheap to justify rather than a re-litigation of published
-numbers.
+🔶 **Where both sets of *include paths* work, they agree — and that is a narrower claim than the
+one first written here.** 20 plugin files run under harness includes and their real includes:
+**17 byte-identical CIR, 0 differing**, 3 with one side failing. So the extra include paths never
+shadowed anything.
+
+⚠️ **But the real compile command is not just include paths, and the rest of it changes
+everything.** Every VPP unit carries `-march=x86-64-v2 -mtune=generic`, which the harness has
+never passed. Running the pinned 40 with the *full* database flags: the summary line is
+identical (`cut=2 ok=38 findings=21`) and **26 of 38 envelopes differ**. Confirmed directly —
+`vppinfra/hash.c` and `vlib/counter.c` produce different CIR with and without `-march` alone.
+
+⛔ **So taking flags from the database is the parked `-march` item, not flag hygiene**, and the
+first version of this paragraph said the re-take "changes no existing finding" on the strength
+of an include-path-only comparison. It is wrong. `COMPDB=` exists in `measure.sh` and stays
+**opt-in and unused** until the owner decides.
 
 Those land as *"chiero cannot read this"* — **a harness defect wearing a chiero defect's
 clothes**. §8.3's plugin-sweep rows ("31 `failed` rows resolved to six causes") are where it
@@ -2958,11 +2967,16 @@ longer sits between a fresh context and the live work.
    The pinned 40 is unaffected — checked, not assumed: strict superset, and the CIR is
    byte-identical under real and harness flags for three of its files.
 
-   ✅ **It changes no existing finding** — 20 plugin files run both ways give **17 byte-identical
-   CIR and 0 differing** (§7.30), so the extra include paths never shadowed anything. The re-take
-   *adds* the ~30 misattributed files to coverage rather than re-litigating published numbers.
+   ⛔ **STOP — flipping the harness is the parked `-march` item, and this entry said otherwise
+   for two commits.** The database's flags include `-march=x86-64-v2 -mtune=generic`; the pinned
+   40 run that way keeps its summary line and **26 of 38 envelopes differ** (§7.30). The
+   "changes no existing finding" claim came from comparing *include paths only*, which is a
+   different question. `COMPDB=<db>` is implemented in `measure.sh`, **opt-in, and must not be
+   made the default without the owner** — it is the parked item wearing a flag-hygiene disguise.
 
-   ⚠️ Re-takes the plugin sweep (~65 min). Worth it: those numbers
+   ⏭️ What is safely separable: the ~30 files that fail *for want of an include path* are a
+   coverage loss independent of `-march`. Passing only the missing `-I`s — not the whole command
+   — would recover them without touching the target configuration. Worth it: those numbers
    are measured under flags VPP does not use. ⏭️ The `failed` rows were never saved, so the
    overlap cannot be checked historically; §7.30's sample is the evidence, and its five named
    files are a ready reproduction.
