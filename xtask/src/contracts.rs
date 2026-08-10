@@ -28,6 +28,21 @@ pub const M1_DOCS: &[&str] = &["020", "021", "022", "023", "024"];
 /// about the half it can. Found by the M2 agent, about this gate.
 pub const M2_DOCS: &[&str] = &["010", "011", "012", "013", "014", "015"];
 
+/// **The product surface** — the documents describing what a *caller* gets, measured for the
+/// same reason M2 is and never folded into a gate either.
+///
+/// ⚠️ **Nothing counted these until 2026-08-10**, and the omission had the shape this project
+/// keeps finding: the instrument measured the two groups somebody was building at the time and
+/// was never widened as the work moved. So the one spec an agent consumer depends on most —
+/// 050, the tool interface — had twenty numbered contracts and no counter saying which of them
+/// any test claims. "A coverage tool that cannot see half the work in flight reports a
+/// comfortable number about the half it can" was written *in this file* about exactly this, one
+/// group earlier.
+///
+/// 025 and 070 are excluded deliberately: 070 is the testing protocol, whose contracts are
+/// about how tests are written rather than about behaviour a test can cite.
+pub const PRODUCT_DOCS: &[&str] = &["030", "031", "032", "040", "041", "042", "050", "060"];
+
 #[derive(Debug, Default)]
 pub struct Coverage {
     /// Contract ids declared by each document, in source order.
@@ -105,7 +120,7 @@ fn contracts_in(text: &str) -> Vec<String> {
 
 pub fn measure(root: &Path) -> std::io::Result<Coverage> {
     let mut cov = Coverage::default();
-    for doc in M1_DOCS.iter().chain(M2_DOCS) {
+    for doc in M1_DOCS.iter().chain(M2_DOCS).chain(PRODUCT_DOCS) {
         let dir = root.join("docs/specs");
         let Some(path) = std::fs::read_dir(&dir)?
             .filter_map(|e| e.ok())

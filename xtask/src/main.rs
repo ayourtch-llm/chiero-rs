@@ -237,6 +237,41 @@ fn contract_coverage() -> ExitCode {
                 }
                 println!("  total: {}/{} cited", ftotal - fmissing, ftotal);
             }
+
+            // **The product surface**, and it was invisible here until 2026-08-10. The two
+            // groups above are the ones somebody was building when this tool was written; the
+            // documents describing what a *caller* gets were never added as the work moved, so
+            // 050 — the one an agent consumer depends on most — had twenty contracts and no
+            // counter. Reported, never a gate: 080 states no exit over these.
+            let mut ptotal = 0usize;
+            let mut pmissing = 0usize;
+            let mut plines = Vec::new();
+            for doc in xtask::contracts::PRODUCT_DOCS {
+                let declared = cov.declared.get(*doc).map(|v| v.len()).unwrap_or(0);
+                if declared == 0 {
+                    continue;
+                }
+                let un = cov.uncovered(doc);
+                ptotal += declared;
+                pmissing += un.len();
+                plines.push(format!(
+                    "{doc}: {}/{} cited{}",
+                    declared - un.len(),
+                    declared,
+                    if un.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  — uncited: {}", un.join(", "))
+                    }
+                ));
+            }
+            if ptotal > 0 {
+                println!("\nproduct surface (measure, not a gate):");
+                for l in plines {
+                    println!("  {l}");
+                }
+                println!("  total: {}/{} cited", ptotal - pmissing, ptotal);
+            }
             ExitCode::SUCCESS
         }
         Err(e) => {
