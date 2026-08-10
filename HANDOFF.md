@@ -1400,6 +1400,33 @@ cannot be checked after the fact — §11.3's own lesson, from the wrong side.
 take each unit's own flags. ⚠️ It re-takes the plugin numbers, which is a deliberate spend — but
 the numbers it replaces are measured under flags VPP does not use.
 
+### 7.32 The replay harness as a second oracle — what it can and cannot check
+
+§8.3's new lead says to widen toward known ground truth. `chiero-replay` is a second one nobody
+had characterised: `--replay --allow-replay-exec` compiles a finding's witness into a C harness
+and runs it, so a **real compiler** can be asked whether the fault reproduces. Measured
+2026-08-10:
+
+| finding | replay outcome | what it means |
+|---|---|---|
+| `10 / d`, witness binds `d = 0` | **`faulted`** | independently confirmed — the compiled program died |
+| `a[i]` out of range, `x << 40` | `completed` | ran fine, **and that is not disconfirmation** |
+| `*p` where the witness binds a *load* rather than a parameter | `refused` | 040 §3 wants unmodelled extern calls stubbed and memory objects materialised; neither is built |
+
+✅ **The semantics are already documented exactly right, which is why this is a zero rather than
+a finding.** `FindingOutcome::Completed` says *"**Not a confirmation**: the witness did not reach
+the fault chiero reported, or the fault is one that does not trap"*, and `confirms()` returns
+true only for `Faulted`. The harness compiles `-std=gnu11 -w -O0` with **no sanitizers**, so
+every non-trapping UB — a shift past the width, an OOB stack read, signed overflow — lands in
+`completed` by construction.
+
+📌 **So the oracle's reach is narrow and honest**: it confirms *trapping* faults with a
+parameter-bound witness, and says nothing about the rest. ⏭️ Widening it means either
+sanitizers in the harness (which would turn the non-trapping UB cases into real checks) or
+040 §3's stubbing, which is what the `refused` rows are waiting on. **Neither is a defect
+today** — the operation reports its own limits correctly, which is the property §7.31's whole
+sweep was about.
+
 ### 7.31 Do the defect checkers fire? A corpus with known ground truth
 
 The day's repeated shape — instruments improved, coverage widened, **no new VPP defect** — has
