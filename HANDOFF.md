@@ -3022,6 +3022,26 @@ longer sits between a fresh context and the live work.
    when it succeeds**. That is a trade worth making — but knowingly, and with the numbers re-taken
    afterwards, not as a side effect of a wave that was about something else.
 
+8g. 🔍 **Inspected, not reproduced — two `lowering_gap` sites in the symbolic-offset store path
+   return without writing.** `chiero-exec/src/lib.rs:3669` ("a store of an untranslatable value")
+   and `:3673` ("a store of a value with no term") both `return` after declaring the gap. That is
+   **8e's exact shape**: the store does not happen, so a later read accuses the program of never
+   storing what it did store.
+
+   📌 **Its concrete-offset sibling already knows.** The site at `:3750` writes a *fresh symbol*
+   instead of refusing, and its comment says why: *"wave 195's draft refused to write and made a
+   later read accuse the program of never storing what it had just stored. The program did
+   store; chiero does not know what."* One fact, two readers — and the symbolic path is the
+   reader that did not get the memo.
+
+   ⚠️ **No reproduction, after two attempts**, so this is a lead and not a defect. Reaching it
+   needs an operand the engine cannot translate *and* a symbolic offset at once. Tried and
+   recorded so nobody repeats them: `long double g[4]; g[i & 3] = x;` gaps on `FpToSi 80 -> 32`
+   before the store, and a struct-by-value assignment at a symbolic index produces an unrelated
+   entry-pointer null-deref. It may be unreachable from C.
+
+   ⏭️ If it is reachable, the fix is the one `:3750` already uses — poison rather than refuse.
+
 8f. ✅ **CLOSED 2026-08-10 — a shift past the operand width was unreported whenever the shifted value was symbolic**,
    though the rule depends only on the *count*. `chiero-exec/src/lib.rs:3282`:
 
