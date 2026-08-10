@@ -1810,6 +1810,33 @@ every operation reading the assumption flag look as though it read `--entry`; an
 reads no options at all. A test that parses source has to be read as a *measurement instrument*,
 and both failures made the gate quieter rather than louder.
 
+### 7.34 `select-tests` from the command line — D1, and the two gates that refused it first
+
+The first end-to-end user's biggest finding, closed the day it was reported. `--test NAME=PATH`
+once per test run, or `--coverage-manifest <file>` with a `NAME<TAB>PATH` line each — what a
+`make test-cov TEST=<name>` loop writes. Gated end to end in
+`crates/chiero-cli/tests/select_tests_cli.rs` against two real gcov objects in the corpus: a
+change to `other.c` selects the test that ran `other` and leaves the one that ran `t` alone.
+
+📌 **The library could always do this. Only the command line could not say it.**
+`ingest_native_as` has taken a `TestId` since the day it was written, and the VPP walkthrough
+that proved the thesis reached it through a 145-line Rust driver. The whole fix is an argument
+shape — which is worth remembering the next time a capability looks missing.
+
+⚠️ **Two things the fixture taught that no amount of design would have.** The before/after pair
+must keep the *same* file name in two directories: coverage records source paths as gcov wrote
+them, and a pair called `before.c`/`after.c` describes a file no test has ever run. The envelope
+said so exactly — *"`after.c` is not in the coverage index at all"* — which is the envelope
+discipline working on its own author. And a `TestId` is a number: `"test": 3` is not an answer a
+consumer can act on, so `select_tests_named` carries the caller's own names back.
+
+**Both gates that went red on this were right, and one of them was made better by it:**
+
+| gate | what it refused | outcome |
+|---|---|---|
+| `chiero-tool/tests/operations.rs` | a new public function returning an `Envelope` with no samples — 050 contracts 1 and 4b are quantified over operations | registered, with the declaration that naming a test cannot make a historical measurement a proof |
+| `chiero-cli/tests/help.rs` | `select-tests --help` advertising `--coverage`, once the coverage handling moved into a helper | the gate now follows an operation into any function it hands `o` to. **A gate that goes red when code is *tidied* teaches people to weaken it** |
+
 ### 7.5 How to check the workspace is green — `./check.sh`
 
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
@@ -2017,7 +2044,7 @@ typing the paths ever would.
 >
 > | # | finding | state |
 > |---|---|---|
-> | 1 | **CLI `select-tests` was structurally empty** — `ingest_native` attributes no test, so `index.tests()` is empty and every invocation returned `0 selected` whatever the diff said. ⚠️ **Tutorial 3's console example runs this path; `tutorials.rs` covers the library one** — §8.3's third form inside our own tutorial | ✅ **fixed**: it refuses and names the limit. The real fix is per-test attribution (`ingest_native_as`), which `--coverage`/`--stem` cannot express — **a design question for the owner** |
+> | 1 | **CLI `select-tests` was structurally empty** — `ingest_native` attributes no test, so `index.tests()` is empty and every invocation returned `0 selected` whatever the diff said. ⚠️ **Tutorial 3's console example runs this path; `tutorials.rs` covers the library one** — §8.3's third form inside our own tutorial | ✅ **fixed twice**: it refused and named the limit, and then it learned to select. `--test NAME=PATH` (repeatable) and `--coverage-manifest <file>` attribute coverage per test and land on `ingest_native_as`; tutorial 3 shows them. §7.34 |
 > | 2 | **First ARM run ever** (aarch64 Grace): build 11 s, 1500+ tests green, **engine portable**. The 12 failures are *all* gcc-differential gates on real x86↔ARM divergence — char signedness, 128-bit long double, predefines under `-march`, vector lanes, zero-width bit-field in a union, and `cli.rs:1482` asserting `has_sse42` unconditionally | 🆕 **not defects — the map of an ARM port**, if VPP-on-ARM ever matters |
 > | 3 | `check.sh` printed **"0 failed" while a suite failed 31/1 inside** — it summed a column that is not the failure count in every rendering | ✅ **fixed**: matches `[0-9]+ failed` by name. The verdict keyed on cargo's exit status and was always right; only the number lied |
 > | 4 | **No per-operation `--help`** — `select-tests --help` prints the global page, and 030's path/stem semantics cost three attempts. ⚠️ *But the envelope text taught them each time* — "that discipline **works** on a hostile-ignorant user; it's the best part" | ✅ **fixed**: each operation has its own page, listing **only the options it reads**, and a usage error prints that page rather than the global one — which is where the user actually met it. §7.33 |
@@ -2097,14 +2124,14 @@ typing the paths ever would.
 >
 > | | condition | today |
 > |---|---|---|
-> | **D1** | **Every operation runs from the CLI on a real project with no hand-written driver.** `select-tests` is the only one that fails, and it is the flagship — the thesis that held on 2026-08-10 held *through a 145-line driver* | ⛔ the one real gap |
+> | **D1** | **Every operation runs from the CLI on a real project with no hand-written driver.** `select-tests` was the only one that failed, and it is the flagship — the thesis that held on 2026-08-10 held *through a 145-line driver* | ✅ **as of 2026-08-10** — `--test NAME=PATH` and `--coverage-manifest`, gated end to end against two real gcov objects (§7.34). ⏭️ Unverified on VPP scale: the fixture is two objects, and the walkthrough that needed the driver has not been re-run |
 > | **D2** | **The machine surface is a contract**: the `--json` envelope's shape and the exit codes are documented and gated. Today `2` (usage) versus `1` (failed) is real in `main.rs` and asserted nowhere — `cli.rs` only ever checks `0` against not-`0`, and 050 never mentions an exit code. An agent branching on that is branching on an accident | ⛔ |
 > | **D3** | **No operation panics on the pinned corpus, and a refusal names what it could not do.** Two engine panics were found the day `find-bugs` was widened to 92 plugins; the other eight operations have never been swept that way at all | 🟡 measured for one operation |
 > | **D4** | **The documents a new reader reads first are gated against the API**, not proofread against it | ✅ **as of today** — per-operation `--help` renders from the parser (§7.33) and `tutorial_api_drift.rs` compares every tutorial's field and variant lists to the crates |
 > | **D5** | **A pinnable tag, one page of known limits, one stated supported platform.** x86-64 Linux is what every differential gate is written against; ARM is engine-portable and oracle-blind and that is a *sentence*, not a project | ⛔ |
 >
-> **(b) Distance: 4–7 days of autonomous work**, D1 on the critical path and the only one
-> carrying design risk. D2 ≈ 1 day, D3 ≈ 1–2 days (a sweep harness exists; it has to run nine
+> **(b) Distance: 4–7 days of autonomous work when this was written; D1 landed the same day, so
+> 3–5 days stand.** D1 was the critical path and the only one carrying design risk. D2 ≈ 1 day, D3 ≈ 1–2 days (a sweep harness exists; it has to run nine
 > operations instead of one), D5 ≈ half a day. D1 ≈ 1–2 days *once the flag surface is settled*,
 > which is the part worth objecting to early — proposal below.
 >
