@@ -3054,6 +3054,19 @@ longer sits between a fresh context and the live work.
    8e was `address_term`, and these two were the call site and the free path. The audit took
    one grep and three probes.
 
+   ✅ **The audit was then widened twice, and both came back honest zeros — which is what
+   sharpened it into a rule.**
+
+   | pair audited | result |
+   |---|---|
+   | `ObjState::Freed` vs `OutOfScope` | **zero.** Two `Freed`-only sites, both in `free`, and the `kind != Heap` arm beside them already covers the sibling: an out-of-scope stack object is a `BadFree` |
+   | `DYNAMIC_EXTENT` (`u64::MAX` as a VLA marker) | **zero.** All four `count.saturating_mul(elem)` sites are guarded; the two raw `.count` reads are `chiero-opt`'s benign `!= 1` and `ArenaShape::count`, which is 021 §6's lazy-object shaping and never comes from an `AllocaDecl` |
+
+   📌 **The rule the zeros produced: audit *const sentinels*, not enum variants.** A missing
+   enum arm is a compile error; `NULL`/`UNBOUND`/`DYNAMIC_EXTENT` are `const` values with no
+   exhaustiveness checking anywhere. That is why every defect landed on the sentinel pair and
+   none on the enums, and it is the cheapest place to look next.
+
 8g. 🔍 **Inspected, not reproduced — two `lowering_gap` sites in the symbolic-offset store path
    return without writing.** `chiero-exec/src/lib.rs:3669` ("a store of an untranslatable value")
    and `:3673` ("a store of a value with no term") both `return` after declaring the gap. That is
@@ -3766,6 +3779,13 @@ not an anecdote.*
   stopped giving up on a store they can now model. **Diff the assumptions and the gaps, not just
   the findings** — the whole point of an envelope is that it records what chiero could *not* do,
   and that is where a modelling fix shows up first.
+
+- **Audit const sentinels, not enum variants.** A missing enum arm is a compile error; a
+  `const` sentinel has no exhaustiveness checking anywhere. Every checker defect found on
+  2026-08-10 was a site handling `ObjectId::NULL` and not `ObjectId::UNBOUND`, and the two
+  widened audits that came back **zero** — `ObjState::Freed`/`OutOfScope`, and
+  `DYNAMIC_EXTENT` — were both enum-or-guarded cases. **The zeros are what located the rule**:
+  without them "check siblings" is advice, with them it is a place to look.
 
 - **When a value has a special case, ask where its siblings are.** `ObjectId` has two reserved
   members, `NULL` and `UNBOUND`. Every defect found in chiero's checkers on 2026-08-10 was a
