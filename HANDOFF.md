@@ -1453,6 +1453,15 @@ Mutation-checked.
 three were audited by eye on 2026-08-10 and all three are tests now; each audit's last act was
 to make itself unnecessary.
 
+📌 **`check-reachable` probed the same way, and it is healthy too** (2026-08-10). A reachable
+line, a line behind `x > 10 && x < 5`, and an always-reached line all answer correctly — and
+the distinction the operation exists for holds: a line guarded by an unmodelled 80-bit float
+comparison answers **`not_shown_reachable`**, names `FOLt is not modeled`, and says the line may
+still be reachable. ⏭️ Three routes to that verdict were tested (no solver, an exhaustive proof,
+a loop bound); the **unmodelled-operation** route was not, and it is the one most likely to
+break silently — it produces no error and no path, which looks exactly like nothing arriving.
+Now `a_line_behind_an_unmodelled_branch_is_not_shown_reachable`.
+
 📌 **Reach is healthy — seven probes, an honest zero, 2026-08-10.** The two defects this
 corpus found were about *representation* (`UNBOUND`, 8e) and *a guard clause* (8f), so the
 obvious next question was whether **depth** defeats the checkers. It does not:
@@ -1702,7 +1711,7 @@ at from the analysis side.
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
 three xtask gates were red: a crate whose test *binary* fails to build emits no `test result`
 line at all, so counting successes cannot detect a missing success. `./check.sh` keys on
-cargo's exit status and prints the failing suites first. Current: **2327 passed, 286 suites** (2026-08-10).
+cargo's exit status and prints the failing suites first. Current: **2328 passed, 286 suites** (2026-08-10).
 
 ⏱️ **It now takes over an hour per leg**, and that is the session's dominant cost — see §9's
 note on the corpus. `conversions` and `semantics` are ~55 s each, the two VPP gates ~60 s, and
