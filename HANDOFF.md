@@ -2308,50 +2308,39 @@ typing the paths ever would.
 > guaranteed** was the one the sweep skipped. **The gap in a sweep is where its cheapest step
 > was.**
 >
-> ### 🔴 CI IS RED AND I COULD NOT REPRODUCE IT — what is ruled out, 2026-08-10
+> ### ✅ CI: SOLVED AND GREEN — and both recorded candidates were wrong, 2026-08-10
 >
-> The owner reports GitHub CI on `ayourtch-llm/chiero-rs` failing "for a while" while
-> `./check.sh` is green locally. ⚠️ **That is §8.3's third form pointed at this project's own
-> gates** — a local gate narrower than CI, or runner drift — so it is worth more than anything
-> in the queue below.
+> The owner reported CI failing "for a while" while `./check.sh` was green. This file then
+> recorded two candidate causes — a newer stable rustc under `RUSTFLAGS: -D warnings`, or the
+> apt z3 version — and said the log was needed to choose between them, *"and there is no `gh`
+> CLI on this machine, which is why this stops here rather than at an answer."*
 >
-> **Every step of `.github/workflows/ci.yml` was run locally, exactly as written. All pass:**
+> ⚠️ **That sentence was the defect.** The repository is **public**, so
+> `api.github.com/repos/ayourtch-llm/chiero-rs/actions/runs` answers anonymously to `curl`, with
+> per-job and per-step conclusions. The answer had been one request away for two days. Job logs
+> do need admin rights (403), but the step *names* are enough — and they were.
 >
-> | CI step | local result |
-> |---|---|
-> | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` | pass (`check.sh` covers both) |
-> | `cargo build --workspace` and `--no-default-features`, **with `RUSTFLAGS=-D warnings`** | pass — this is the one `check.sh` does *not* replicate, since the workflow sets it globally in `env:` |
-> | `cargo test --workspace` with `CHIERO_SMT_SOLVER=/nonexistent` (the `solver: none` matrix leg) | **287 suites, exit 0** |
-> | `cargo xtask check-deps`, `check-vpp-leak`, `check-proof-surface` | pass |
-> | `cargo xtask contract-coverage` | exit 0 — it is a *report*, not a gate (ci.yml says so) |
+> **What the API says.** 53 failures in the last 100 runs, from 2026-08-08 19:35 to
+> 2026-08-10 09:55, and **every run since 10:59 is green** — including both of today's pushes.
+> Two distinct causes, neither of them a candidate:
 >
-> **So the cause is environmental, and these are the candidates I could not test from here:**
+> | failing step | leg | cause |
+> |---|---|---|
+> | **`Format`** (most of them) | **both** | `crates/chiero-cir/tests/dominance_property.rs` was committed unformatted on 2026-08-08 and stayed that way. Verified by checking out `b7db660e` into a worktree: **6 `Diff in` lines under this machine's own rustfmt**. Fixed as a side effect by `db66306` ("a fmt reflow that was left behind") at 08:39 today |
+> | `Test` | `solver: z3` only | the earliest reds and the last one. Not reproduced: the z3 leg passes here, and every run after it is green. Possibly flaky, possibly fixed by the same window — **not diagnosed, and recorded as such** |
 >
-> 1. **A newer stable toolchain.** CI uses `dtolnay/rust-toolchain@stable`; this machine is
->    `1.97.1 (2026-07-14)` and `rustup check` says up to date. If the runner has a newer stable,
->    `RUSTFLAGS: -D warnings` turns any **new rustc lint** into a build failure — the classic
->    green-local/red-CI cause, and it matches "failing for a while" with no code change.
-> 2. **z3 version.** The `solver: z3` leg installs from apt; this machine has **4.8.12**.
->    `ubuntu-latest` ships a newer one, and five `chiero-check` tests assert what a *complete*
->    solver decides.
-> 3. Something outside the workflow file — a runner image change, or a step failing on
->    checkout/network.
+> 📌 **The lesson is not "the local gate was too narrow".** `check.sh` runs `cargo fmt --all
+> --check` as its *first* leg and would have caught this instantly. The file was committed
+> without running it. The same thing happened again on 2026-08-10 with `no_panic_corpus.rs`,
+> caught only because the commit shared a shell line with a `fmt --check` — **a gate that exists
+> and is skipped fails exactly like a gate that does not exist**, and no amount of widening
+> fixes it.
 >
-> ⏭️ **First move for whoever has the log**: it names the failing leg (`solver: none` or
-> `solver: z3`) and the step, which discriminates 1 from 2 immediately. There is no `gh` CLI on
-> this machine, which is why this stops here rather than at an answer.
->
-> ✅ **And the one gap this exposed regardless of the cause is closed** (`17a1d4a`). `check.sh`
-> did not set `RUSTFLAGS=-D warnings`, so a rustc-level warning was red in CI and green
-> locally — a *seventh difference inside* a leg §7.5 already claims to cover. It was written
-> down here that morning as a comment telling a reader to run two commands by hand, which is
-> not a gate. It is now a leg: `cargo check --workspace --all-targets` under the flag (~8 s
-> cold, under a second warm, and its own fingerprint, so it does not invalidate the test
-> artifacts), and the `--no-default-features` build carries it too. **Mutation-tested** — an
-> unused binding turns it red.
->
-> ⚠️ **The tree was green under it**, so this does not explain the failure; it removes the
-> local gate from the list of suspects, which leaves the two environmental candidates above.
+> ⏭️ **The instrument to keep**: `curl -s api.github.com/repos/<owner>/<repo>/actions/runs` and
+> `/actions/runs/<id>/jobs`, both anonymous on a public repo. Two probes name the leg and the
+> step. ⚠️ And the second-order lesson, which cost two days here and repeated with the deploy
+> key an hour later: **"I have no way to check X" is a claim about the world, and it deserves a
+> probe rather than a paragraph.**
 >
 > ### 🎯 DONE-ENOUGH-TO-USE — the bar, answered 2026-08-10
 >
