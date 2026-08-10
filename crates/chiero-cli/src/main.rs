@@ -606,6 +606,29 @@ fn select_tests(o: &Options) -> Result<chiero_tool::Envelope, Fault> {
     }
     let index = chiero_gcov::ingest_native(&dir, &stem)
         .map_err(|e| Fault::Failed(format!("{}: {e:?}", dir.display())))?;
+    // **An index with no test attribution can only select nothing, and saying "0 selected" is
+    // the wrong answer to give.**
+    //
+    // `ingest_native` reads one object's coverage with `test: None` (chiero-gcov:852), so
+    // `index.tests()` is empty and every selection over it is empty *whatever the diff says*.
+    // Reported 2026-08-10 by the first end-to-end user: "CLI select-tests is structurally
+    // empty … every invocation returns 0 selected", found because tutorial 3's console example
+    // runs this path and `tutorials.rs` exercises the library one.
+    //
+    // Selecting needs coverage attributed **per test** — `ingest_native_as` with a `TestId` per
+    // run, which is what a `make test-cov TEST=<name>` loop produces. This flag pair cannot
+    // express that, and widening it is a design question (050 §3). Until it is answered, refuse
+    // rather than answer: an empty selection from an index that could never be non-empty is
+    // exactly the "empty answer" this project spent 2026-08-10 forbidding elsewhere.
+    if index.tests().is_empty() {
+        return Err(Fault::Failed(format!(
+            "{}: the coverage index carries no test attribution, so no test can be selected \
+             from it. `--coverage`/`--stem` ingest one object with no test name; selection \
+             needs per-test coverage (`ingest_native_as`, one `TestId` per test run). This is \
+             a limit of the command, not an answer about your change.",
+            dir.display()
+        )));
+    }
     let (before, after) = programs(o, &f)?;
     // **The index's own answer, not one this command invents.** `validity` compares the
     // sources hashed at ingest against the tree; an index that recorded none can only report

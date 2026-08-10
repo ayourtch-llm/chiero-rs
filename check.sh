@@ -99,7 +99,12 @@ if [ $rc -ne 0 ]; then
   fi
 fi
 passed=$(echo "$out" | grep -E "^test result: ok" | awk -F'[ ;]' '{p+=$4} END {print p+0}')
-failed=$(echo "$out" | grep -E "^test result: FAILED" | awk -F'[ ;]' '{f+=$6} END {print f+0}')
+# **`$6` is not the failure count in every rendering**, and the summary said "0 failed"
+# while a suite reported 31 passed / 1 failed inside — reported 2026-08-10 by the first
+# end-to-end user. The verdict was right (it keys on cargo's exit status) and only the
+# counter was wrong, which is the more insidious half: a reader trusts the number.
+# `failed=N` is the field's own name, so match it rather than counting columns.
+failed=$(echo "$out" | grep -oE "[0-9]+ failed" | awk '{f+=$1} END {print f+0}')
 suites=$(echo "$out" | grep -cE "^test result:")
 if [ $rc -eq 0 ] && [ $both_legs -eq 1 ]; then
   # **The no-solver leg.** `discover()` consults `$CHIERO_SMT_SOLVER` first, so a path that
