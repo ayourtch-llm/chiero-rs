@@ -3437,8 +3437,23 @@ reached 952 lines again, 316 of them finished work:
    `eprintln` is invisible because cargo captures output for passing tests. **103 skip messages
    across the suite** say how wide the class is; most are honest guards for gcc, gcov or VPP, and
    every one of them is a green test that checked nothing in the environment where it printed
-   that line. ⏭️ The cheap first move is not a gate but a *count*: have `check.sh` report how many
-   assertions skipped, the way it reports how many ran. **A skip nobody counts is a pass.**
+   that line. ✅ **Built the same day, and it immediately said something.** `check.sh` runs both legs with
+   `--nocapture` and reports **distinct skips** beside the passes:
+
+   ```text
+   second leg: 2368 passed, 44 distinct skips, exit 0
+   GREEN: 2368 passed across 295 suites, 0 distinct skips, fmt and clippy clean
+   ```
+
+   📌 **Both legs report 2368 passed.** They look identical, and on the solverless one **44
+   assertions did not run** — `ci.yml`'s comment names *five* `chiero-check` tests as the
+   solver-dependent set, and the real figure across the workspace is nearly nine times that. On
+   this machine the count is 0, because VPP, gcc, gcov and z3 are all present; that asymmetry is
+   the point, since the environments where the number is large are the ones where nobody is
+   looking. ⚠️ **The first version of the counter said 102** — it counted *lines*, and
+   `--nocapture` interleaves cargo's progress dots while a helper in a loop prints once per
+   call (56 lines for 26 distinct skips in one subset). Caught by §8.3 step 0 on a subset small
+   enough to count by hand, before the number went anywhere.
 
    ⏭️ The gate to build: a citation from a file whose citing test is `#[ignore]`d does not count.
    Naive "any `#[ignore]` in a citing file" over-flags — a file may hold twenty running tests and

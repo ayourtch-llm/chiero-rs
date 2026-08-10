@@ -102,7 +102,13 @@ if [ $lints -eq 1 ]; then
   fi
 fi
 
-out=$(cargo test --workspace 2>&1)
+# **`--nocapture`, so a skip is countable.** cargo hides a passing test's output, and 103
+# assertions in this suite begin `if !<corpus available> { eprintln!("…skipping…"); return; }`.
+# On a machine without VPP, gcc or a solver those tests print that line and report `ok` — so the
+# contract they carry is asserted by nothing and the run says nothing about it. Found 2026-08-10
+# via 011 c11, whose VPP corpus does not exist on the CI runner. **A skip nobody counts is a
+# pass**, and this is the cheap half of the fix: not a gate, a number that moves.
+out=$(cargo test --workspace -- --nocapture 2>&1)
 rc=$?
 echo "$out" | grep -E "^test result: FAILED|^error(\[|:)" | head -20
 # **The assertion, not just the suite.** This printed the failing suite and nothing else, so a
@@ -126,32 +132,44 @@ passed=$(echo "$out" | grep -E "^test result: ok" | awk -F'[ ;]' '{p+=$4} END {p
 # `failed=N` is the field's own name, so match it rather than counting columns.
 failed=$(echo "$out" | grep -oE "[0-9]+ failed" | awk '{f+=$1} END {print f+0}')
 suites=$(echo "$out" | grep -cE "^test result:")
+# **Distinct messages, not lines.** The vocabulary is what the tests already write, and the
+# first version counted every line: `--nocapture` interleaves cargo's progress dots into the
+# text, and a helper called in a loop prints its skip once per call — 56 lines for 26 distinct
+# skips in one subset. `grep -o` from the keyword drops the dots, `sort -u` drops the repeats.
+# Approximate on purpose: standardising 103 call sites is the expensive half, and a number that
+# moves is useful before it.
+skipped=$(echo "$out" | grep -oiE "(skipping|skipped:).*" | sort -u | wc -l)
 if [ $rc -eq 0 ] && [ $both_legs -eq 1 ]; then
   # **The no-solver leg.** `discover()` consults `$CHIERO_SMT_SOLVER` first, so a path that
   # does not exist is what CI uses to prove the tree works with no solver at all.
   echo "second leg: no solver (CHIERO_SMT_SOLVER=/nonexistent)"
-  out2=$(CHIERO_SMT_SOLVER=/nonexistent/no-solver-here cargo test --workspace --no-fail-fast 2>&1)
+  out2=$(CHIERO_SMT_SOLVER=/nonexistent/no-solver-here cargo test --workspace --no-fail-fast -- --nocapture 2>&1)
   rc=$?
   echo "$out2" | grep -E "^test result: FAILED|^error(\[|:)" | head -20
   if [ $rc -ne 0 ]; then
     echo "$out2" | sed -n '/^failures:$/,$p' | head -40 | sed 's/^/  /'
   fi
   p2=$(echo "$out2" | grep -E "^test result: ok" | awk -F'[ ;]' '{p+=$4} END {print p+0}')
-  echo "second leg: $p2 passed, exit $rc"
+  s2=$(echo "$out2" | grep -oiE "(skipping|skipped:).*" | sort -u | wc -l)
+  # **The number this leg exists to make visible.** With no backend the five `chiero-check`
+  # tests that assert what a *complete* solver decides announce themselves and return; counting
+  # them is the difference between "the solverless configuration passes" and "it passes and here
+  # is what it did not ask".
+  echo "second leg: $p2 passed, $s2 distinct skips, exit $rc"
 fi
 
 if [ $rc -eq 0 ]; then
   if [ $lints -eq 1 ]; then
-    echo "GREEN: $passed passed across $suites suites, fmt and clippy clean"
+    echo "GREEN: $passed passed across $suites suites, $skipped distinct skips, fmt and clippy clean"
     # ⚠️ **Still not identical to CI**, and the remaining differences are environmental rather
     # than commands: CI resolves `dtolnay/rust-toolchain@stable` on the runner, so a newer
     # rustc can introduce a lint this machine's toolchain does not have, and its `solver: z3`
     # leg installs z3 from apt rather than using the one here. `--both-legs` covers the
     # solverless configuration; nothing local can cover a toolchain this machine has not got.
   else
-    echo "GREEN (tests only, lints skipped): $passed passed across $suites suites"
+    echo "GREEN (tests only, lints skipped): $passed passed across $suites suites, $skipped distinct skips"
   fi
 else
-  echo "RED (cargo exit $rc): $passed passed, $failed failed across $suites suites"
+  echo "RED (cargo exit $rc): $passed passed, $failed failed, $skipped distinct skips across $suites suites"
 fi
 exit $rc
