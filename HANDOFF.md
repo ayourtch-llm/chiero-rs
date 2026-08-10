@@ -1887,6 +1887,37 @@ floor asserting that *something was decided* is conditional on a backend. Withou
 `injected_rewrites.rs` would have been red on the `solver: none` leg, where nine of its twelve
 verdicts correctly become `unknown`. ⚠️ Found by running the second leg **before** committing.
 
+### 7.37 The coverage instrument could not see the product surface — 133 uncited contracts
+
+`cargo run -p xtask -- contract-coverage` measured 020–024 (the M1 gate) and 010–015 (the
+frontend, reported). Nothing else. Those are the two groups somebody was building when it was
+written, and it was never widened as the work moved — so **050, the spec an agent consumer
+depends on most, had twenty numbered contracts and no counter saying which any test claims.**
+
+📌 **The same omission is written in that file already, one group earlier**: *"a coverage tool
+that cannot see half the work in flight reports a comfortable number about the half it can"* —
+added when the frontend was invisible to it. The instrument was widened once, for the work in
+flight at the time, and not again. **Ask of an instrument what §8.3 asks of a gate: what is
+outside its corpus?**
+
+| | cited | | | cited |
+|---|---|---|---|---|
+| 030 change impact | 13/19 | | 041 optimization | 10/30 |
+| 031 impact closure | 6/22 | | 042 conformance | 3/31 |
+| 032 test selection | 4/22 | | 050 tool interface | 14/23 |
+| 040 defect analysis | 2/23 | | 060 VPP | 3/18 |
+| | | | **total** | **55/188** |
+
+⚠️ **Uncited is not untested and the number must not be read that way.** This counts citations
+of the form `NNN contract K` — a convention the M1 and frontend tests follow and the product
+tests largely predate. `injected_defects.rs` plainly exercises 040's checkers and cites none of
+its contracts. What the number says is *what nobody has claimed*.
+
+⏭️ **The next move is reading, not building**, and it splits three ways per contract: already
+tested and merely uncited (add the citation), genuinely untested (a red test), or untestable as
+written (a spec amendment, which is what 023 c17's withdrawal was). 040's 2/23 is the place to
+start — it is the operation with a known-ground-truth corpus already sitting next to it.
+
 ### 7.5 How to check the workspace is green — `./check.sh`
 
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
