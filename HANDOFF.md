@@ -2997,6 +2997,29 @@ longer sits between a fresh context and the live work.
    when it succeeds**. That is a trade worth making — but knowingly, and with the numbers re-taken
    afterwards, not as a side effect of a wave that was about something else.
 
+8f. 🆕 **A shift past the operand width is unreported whenever the shifted value is symbolic**,
+   though the rule depends only on the *count*. `chiero-exec/src/lib.rs:3282`:
+
+   ```rust
+   let (Some(xc), Some(yc)) = (a.as_const(x), a.as_const(y)) else {
+       self.symbolic_div_by_zero(...);                  // handled
+       if signed { self.forced_signed_overflow(...); }  // handled
+       return;                                          // the count rule never runs
+   };
+   ```
+
+   `int probe(int x) { return x << 40; }` lowers to `shl i32 %4, 40i32 signed` — the exact shape
+   `chiero-check`'s own test asserts on with constants — and reports **nothing**. C11 6.5.7p3
+   makes it undefined whatever `x` holds, so no solver query is needed: the count is a literal.
+
+   ✅ **The neighbours are fine, which is what makes this narrow.** `x / y` with both symbolic
+   reports `division-by-zero`, so the symbolic fallback works; the shift arm simply is not in it.
+   ⚠️ **Not** the "allows to overflow" case — `x + 2147483647` is silent by design, since
+   `UbKind` distinguishes a path that *forces* overflow from one that merely permits it.
+
+   ⏭️ Likely a small fix: run the count rule when `y` alone is constant. The corpus in §7.31 is
+   where the case belongs, and `undefined_arithmetic.rs`'s constant test guards the existing path.
+
 8e. 🆕 **A wild-pointer dereference is reported as an uninitialized read *of the pointer
    variable*.** Found by the injected-defect corpus (§7.31), then characterised — the finding is
    not wrong that something is amiss, it points at the wrong object and calls it the wrong kind.
