@@ -2988,9 +2988,30 @@ longer sits between a fresh context and the live work.
    `sfdp_services/acl/cli.c`, `tlspicotls/certs.c`, `af_xdp/unformat.c`,
    `sasc/services/flow-quality/counter.c`.
 
-   ⏭️ **What remains is a spend, not a question**: making it the default and re-taking the
-   plugin sweep (~65 min) to bank the ~30 recovered files. It no longer waits on the owner's
-   `-march` decision. Worth it: those numbers
+   ✅ **The spend was taken on the recovered files alone, 2026-08-10 — the delta, not the whole
+   sweep.** Full enumeration rather than a sample: **160 distinct plugin C files are exposed**
+   (the earlier 198 double-counted multiarch entries) and **40 are recovered** — 25%, where the
+   sample had estimated ~30.
+
+   | 40 entries, one per recovered file | |
+   |---|---|
+   | status | 33 `ok`, 5 `cut`, 2 `nofn` |
+   | findings | **489** — but **465 of them from a single `cut` entry**, `snort/daq/dump.c` |
+   | the rest | 24 findings across 32 entries |
+   | `Exact` | **1**, and it is not a defect |
+
+   ⚠️ **The one `Exact` is the known entry-pointer class, checked rather than assumed**:
+   *"null-dereference … where `%774` is a pointer parameter assumed to be possibly null"*. It
+   disappears under `--entry-ptr-nonnull`, which takes the whole recovered set to
+   **`findings=478 exact=0`**. §7.6 records the last `Exact` on this corpus being a false proof;
+   this one is the same class and was tested before being reported.
+
+   📌 **So: 40 files became analysable and no new VPP defect came out.** An honest zero on the
+   findings, a real gain in coverage, and §7.6's "a dominant finding is a lid" held again — 95%
+   of the count was one entry that ran out of budget.
+
+   ⏭️ Still unspent: making `COMPDB_INCLUDES` the default and re-taking the *whole* plugin sweep,
+   which would fold these 40 into the published numbers. Worth it: those numbers
    are measured under flags VPP does not use. ⏭️ The `failed` rows were never saved, so the
    overlap cannot be checked historically; §7.30's sample is the evidence, and its five named
    files are a ready reproduction.
