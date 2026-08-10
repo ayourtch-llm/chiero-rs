@@ -1,5 +1,11 @@
 //! 001 §4 rule 4 / contract 5: VPP-specific knowledge lives only in `chiero-vpp`.
 //!
+//! Also 040 contract 17 — *"`grep -rE 'vec_|pool_|vlib_|clib_' crates/chiero-check/src` yields
+//! no hits"* — which is this rule scoped to one crate. It has been enforced here for every
+//! crate since this gate existed, and was reported uncited until 2026-08-10 only because the
+//! coverage instrument could not see 040 at all (§7.37). A contract met by a gate that does not
+//! name it is indistinguishable, to the counter, from one nobody has looked at.
+//!
 //! This is a property of source text, not of the dependency graph, so it cannot be
 //! checked by `deps::check`. Keeping it in its own module makes the split explicit
 //! rather than leaving rule 4 silently unenforced while the gate reports success.
