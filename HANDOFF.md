@@ -2042,6 +2042,30 @@ internal fact into an answer, ask what it is throwing away.** The remaining cand
 operations whose answers are already positional — `impact`, `expansion-sites`, `explain-macro`
 — which is why they were never the problem.
 
+### 7.41 The same rule from the other side — a field the answer's shape cannot fill
+
+§7.40 was about a layer *dropping* a fact. Pointing its rule at the operations it had not
+touched found the mirror image: a layer **adding** a field the answer cannot have.
+
+| | printed under every | and it is |
+|---|---|---|
+| `check-reachable` | `unreachable` verdict | `witness: (none)`, `why: (none)` |
+| `find-bugs` | finding, of every report | `replay: (none)`, `unwitnessed: (none)` |
+
+An `unreachable` verdict *cannot* have a witness — nothing gets to the line, which is what the
+verdict means — and `unwitnessed` is the reason there is *no* witness, so it cannot sit beside
+one. 📌 **`chiero-tool` had already written this rule down**, for `witness_omitted`: *"exactly
+the training this field must not give a reader, who has to notice it on the one finding where it
+says 10 593."* Neither of these got it, and the field a reader is trained to skip is in both
+cases the one that carries the answer. `drop_null` is that comment made reusable.
+
+The test pins the **invariant**, not the shape: a finding with a witness has no `unwitnessed`,
+and one without a witness must still say why (023 contract 15).
+
+⚠️ **Four transcripts across two tutorials went stale and the gate named each one**; every one
+was regenerated from its own run rather than edited. Eight lines of `(none)` left the pages —
+`verdict: unreachable / line: 6 / proven` is three lines now instead of five.
+
 ### 7.5 How to check the workspace is green — `./check.sh`
 
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
