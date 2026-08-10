@@ -3234,6 +3234,35 @@ reached 952 lines again, 316 of them finished work:
    stay untyped — and the variant's own doc says forming such a pointer "is deliberate in a few
    real idioms". **Owner's call.**
 
+5r. 🆕 **One dereference, two findings — `find_bugs` groups on the *message*, and the message
+   carries a per-path clause.** Found 2026-08-10, immediately after findings learned to carry a
+   line (§7.38), because 040 contract 1's *"fires exactly once"* became a question somebody
+   could ask:
+
+   ```console
+   $ chiero find-bugs dd.c --entry probe        # int probe(int *p){ int *q = 0; return *q; }
+   null-dereference: access at offset 0 of NULL                                   | line 4
+   null-dereference: access at offset 0 of NULL, where %1 is a pointer parameter … | line 4
+   ```
+
+   One access, one line, one fault, reported twice — and `%1` is the parameter, which nothing
+   dereferences. The engine is behaving as specified: 023 contract 20 says it does **not**
+   deduplicate across paths, and the recorded reason is good (collapsing `buf + 64` and
+   `buf + 128` threw away the second's witness). The grouping that a consumer sees is
+   `chiero-tool`'s, and its key is **`(message, span)`** — so the clause *"where %1 is a pointer
+   parameter assumed to be possibly null"*, which is true of one path and not the other, splits
+   one bug in two.
+
+   📌 **A message is a rendering, and using it as identity means any per-path prose becomes a
+   new bug.** The engine's own `FindingKey` is `(kind, span, object, func)` and is exactly
+   right; `chiero_exec::Finding` does not expose `kind` or `object`, so the tool cannot use it.
+   ⏭️ The fix is (kind, span) at minimum — the kind is the slug before the first `:`, which
+   `defect_vocabulary.rs` already parses — keeping the **most specific** message of the group,
+   since every variant is true of some path and the longer one carries the extra clause.
+   ⚠️ **It moves published counts.** §7.6's 231 → 21 and the pinned-40 baseline are grouped
+   numbers, so this needs a re-measure in the same change, not after it. That is why it is an
+   item rather than a commit.
+
 5q. 🆕 **`find-optimizations` proposals name no location at all — and unlike a finding, the
    information was never carried.** The neighbour check on §7.38, which fixed the same class in
    `find-bugs`: an answer must say *where*. A proposal today reads
