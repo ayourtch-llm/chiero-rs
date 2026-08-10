@@ -3079,11 +3079,29 @@ longer sits between a fresh context and the live work.
    store; chiero does not know what."* One fact, two readers — and the symbolic path is the
    reader that did not get the memo.
 
-   ⚠️ **No reproduction, after two attempts**, so this is a lead and not a defect. Reaching it
-   needs an operand the engine cannot translate *and* a symbolic offset at once. Tried and
-   recorded so nobody repeats them: `long double g[4]; g[i & 3] = x;` gaps on `FpToSi 80 -> 32`
-   before the store, and a struct-by-value assignment at a symbolic index produces an unrelated
-   entry-pointer null-deref. It may be unreachable from C.
+   ✅ **Reproduced from C 2026-08-10**, after three earlier attempts failed. The trick is an
+   *unmodelled* value, not an exotic type:
+
+   ```c
+   long double src(void);
+   int probe(int i) { int a[4]; a[0]=0;a[1]=0;a[2]=0;a[3]=0; a[i & 3] = (int) src(); return a[0]; }
+   ```
+
+   `FpToSi 80 -> 32` is unmodelled, so the value is `Value::Undef`; `address_of_value` answers
+   `None` for `Undef`, and the symbolic-offset store declares
+   `a store of an untranslatable value` and returns. The assumption appears in the envelope.
+
+   ⚠️ **Reachable, but the *impact* is still unproven, and the obvious test does not settle
+   it.** The concrete-index twin (`a[0] = (int) src();`) emits **the same assumption** — both
+   paths declare the gap. The difference is only in what memory does afterwards: `:3750` writes
+   a fresh symbol, `:3669` writes nothing and leaves the previous bytes. The envelope shows
+   neither, so a CLI probe cannot tell them apart.
+
+   ⏭️ **What would settle it**: a `chiero-exec` test that stores `Undef` at a symbolic offset
+   over known bytes and then reads them back — stale bytes are the failure the comment at
+   `:3655` names ("a refusal that silently keeps stale bytes is worse than a refusal, because
+   the run then produces a confident wrong answer"). That is a unit test at the memory layer,
+   not a C fixture.
 
    ⏭️ If it is reachable, the fix is the one `:3750` already uses — poison rather than refuse.
 
