@@ -1453,6 +1453,22 @@ Mutation-checked.
 three were audited by eye on 2026-08-10 and all three are tests now; each audit's last act was
 to make itself unnecessary.
 
+🔴 **`find-optimizations` claimed a proof it had not earned — the method's second real
+defect, and the first outside `find-bugs`.** 050 contract 3 makes the distinction load-bearing
+for `find_bugs` ("the string 'no defects found' never appears unqualified"), because an empty
+list is wrong precisely when the search did not finish. This operation answers the same shape
+of question and had no such rule: its fidelity came from `any_advisory` alone.
+
+| program | proposals | verdict |
+|---|---|---|
+| `if (x > 10 && x < 5)` | 2 | `Exact`, proven — correct |
+| the same dead branch behind an unmodelled call | **0** | `Exact`, **proven** — wrong |
+
+📌 **The signal existed and was dropped**: `detect` runs the engine and had `run.fidelity()` in
+hand, returning only the proposals. `detect_reporting` surfaces it and the operation now takes
+the weaker of the two claims. ✅ Fixed: the invisible dead branch is now `Unknown`/not proven;
+the visible one is unchanged.
+
 📌 **`prove_equivalent` too, and it is the operation where a wrong answer is worst.** `x * 2`
 vs `x << 1` proves equivalent; `x + 1` vs `x + 2` differs; **a difference behind an unmodelled
 construct answers `unknown`, not `equivalent`** — no false proof. The existing `unknown` test
@@ -1720,7 +1736,7 @@ at from the analysis side.
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
 three xtask gates were red: a crate whose test *binary* fails to build emits no `test result`
 line at all, so counting successes cannot detect a missing success. `./check.sh` keys on
-cargo's exit status and prints the failing suites first. Current: **2329 passed, 286 suites** (2026-08-10).
+cargo's exit status and prints the failing suites first. Current: **2330 passed, 286 suites** (2026-08-10).
 
 ⏱️ **It now takes over an hour per leg**, and that is the session's dominant cost — see §9's
 note on the corpus. `conversions` and `semantics` are ~55 s each, the two VPP gates ~60 s, and
@@ -3905,6 +3921,15 @@ not an anecdote.*
   nobody had noticed — a corpus case expecting `"uninitialized"` where the enum says
   `uninitialized-read`, passing only because the assertion used `contains`. **The interval
   between "I should re-run this" and the gate is where the drift lives.**
+
+- **Ask every operation what its *empty answer* means.** 050 contract 3 spends a paragraph on
+  it for `find_bugs` — an empty finding list is wrong exactly when the search did not finish —
+  and that rule had not been carried to the operations beside it. Asking it of three others on
+  2026-08-10 found `find_optimizations` reporting `Exact` and `proven` over a function whose
+  branch condition the engine never formed. **The signal was already in hand and thrown away**:
+  `detect` ran the engine, held `run.fidelity()`, and returned only the proposals. ⏭️ The
+  operations still unasked are `layout`, `impact`, `select_tests`, `expansion_sites` and
+  `explain_macro_expansion`.
 
 ### 11.1 About tests and what they can see
 
