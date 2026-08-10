@@ -1988,6 +1988,17 @@ typing the paths ever would.
 > 📌 **Nothing else in §9.1 is blocked.** Every other live item is either a spend already costed
 > above, a historical note kept for its reasoning, or work done this session.
 >
+> ✅ **How to check this list is still complete — two structural sources, not a grep.**
+> Row 6 was **missing** from the first version of this block because it was gathered by searching
+> for phrasings (`owner's call`, `owner decides`) and that entry says *"needs the owner"*.
+>
+> 1. `cargo run -p xtask -- contract-coverage` — an uncited contract is either a missing test or
+>    a contract nobody can meet. Today: **M1 166/166**, M2 **125/126**, and the one is row 6.
+> 2. Classify every `§9.1` item as *owner decision / spend / gated / actionable*. Today: 11 live,
+>    none actionable.
+>
+> Both are mechanical and neither depends on how a sentence happens to be worded.
+>
 > ### ⏭️ START HERE — **§8.3's widening pattern is the standing job, and the heartbeat runs it.**
 >
 > Read **§8.3** first: it is the loop, its yield table, and the trap that let a defect survive
