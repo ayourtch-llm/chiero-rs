@@ -3340,6 +3340,15 @@ reached 952 lines again, 316 of them finished work:
    view: nothing here writes to a source file, so a location is for a reader to navigate by, not
    for a rewriter to consume.
 
+   📌 **`layout` is the same item and was checked at the same time.** Its records name a tag,
+   which a reader can grep, so it is survivable rather than unusable — but
+   `chiero_sema::RecordLayout` has no span either, so both halves of *an answer must say where*
+   need a **producing** layer to start carrying one. That makes this one piece of work rather
+   than two: a span on `chiero_opt::Proposal` set by its detectors, and a span on `RecordLayout`
+   set where sema lays the record out. **The envelope end is already solved** — §7.38's
+   `find_bugs_located` is the shape to copy, including *absent, not null* when no map was given
+   and a registered sample proving it.
+
 5j. 🆕 **`CopyMem` discards the alignment the CIR hands it, so a memcpy and a vector move are the
    same access.**
 
