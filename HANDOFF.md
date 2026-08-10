@@ -1374,6 +1374,13 @@ and an order of magnitude smaller than the sentence I first wrote. Ready reprodu
 `linux-cp/lcp_interface.c`, `sfdp_services/acl/cli.c`, `tlspicotls/certs.c`,
 `af_xdp/unformat.c`, `sasc/services/flow-quality/counter.c`.
 
+✅ **And where both sets of flags work, they agree.** 20 more plugin files, each run under
+harness flags and its own real command: **17 produce byte-identical CIR, 0 differ**, 3 had one
+side fail (consistent with the ~16% above). So the harness's extra include paths never shadowed
+anything that mattered — **8d converts failures into coverage and changes no existing finding**,
+which is what makes its re-take cheap to justify rather than a re-litigation of published
+numbers.
+
 Those land as *"chiero cannot read this"* — **a harness defect wearing a chiero defect's
 clothes**. §8.3's plugin-sweep rows ("31 `failed` rows resolved to six causes") are where it
 hides, and 5f's `--built-only` fixed the neighbouring confusion (files nothing builds) without
@@ -2951,7 +2958,11 @@ longer sits between a fresh context and the live work.
    The pinned 40 is unaffected — checked, not assumed: strict superset, and the CIR is
    byte-identical under real and harness flags for three of its files.
 
-   ⚠️ Re-takes the plugin sweep (~65 min) and changes published numbers. Worth it: those numbers
+   ✅ **It changes no existing finding** — 20 plugin files run both ways give **17 byte-identical
+   CIR and 0 differing** (§7.30), so the extra include paths never shadowed anything. The re-take
+   *adds* the ~30 misattributed files to coverage rather than re-litigating published numbers.
+
+   ⚠️ Re-takes the plugin sweep (~65 min). Worth it: those numbers
    are measured under flags VPP does not use. ⏭️ The `failed` rows were never saved, so the
    overlap cannot be checked historically; §7.30's sample is the evidence, and its five named
    files are a ready reproduction.
