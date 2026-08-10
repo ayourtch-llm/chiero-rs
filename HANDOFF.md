@@ -1887,6 +1887,13 @@ it, because a `findings: 0` over VPP reads identically whether the code is clean
 never fires. These two say something a VPP sweep cannot: the adjudicator and the reachability
 analysis *decide*, from C, through the command, and they decide correctly.
 
+✅ **Both were mutation-tested on 2026-08-10, after §8.3's step 0 was pointed at the day's own
+work: a gate never seen red is a gate whose failure path is untested.** Relabelling a `differs`
+verdict `equivalent` turns `injected_rewrites.rs` red on `abs-at-int-min`, quoting its
+ground-truth argument back; relabelling an `unreachable` verdict `reachable` turns
+`injected_reachability.rs` red on `contradiction`. Both name the case and the reason, which is
+what a corpus of paired cases is for — and neither had been proved able to fail until then.
+
 ⏭️ **The rule both files settled, and it generalises past them.** The wrong answers are
 forbidden **unconditionally** — a false proof is a false proof with or without z3 — and only the
 floor asserting that *something was decided* is conditional on a backend. Without that split
