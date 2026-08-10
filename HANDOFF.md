@@ -103,6 +103,12 @@ five-minute experiment is worse than no contingency.
 - **Remote: `git@github.com:ayourtch-llm/chiero-rs.git`**, first pushed 2026-08-06. The push
   credential is a deploy key in `.deploy/` (gitignored, `700`): `./.deploy/push.sh` adds it to
   an agent scoped to the script and pushes the current branch, `--check` only authenticates.
+  ⚠️ **`git push` on its own fails, and that is by design, not a broken machine.** There is no
+  key in `~/.ssh` and no agent socket, so a plain push answers `Permission denied (publickey)`.
+  On 2026-08-10 that was read as *"this machine cannot push"* and reported to the owner as
+  something only they could do — with the answer already written in this bullet. **This section
+  says "verified, don't re-derive" and the failure was re-deriving one**; §8.3's own step 1,
+  *read the corpus before asserting its edge*, applies to the handoff as much as to a gate.
   Nothing in `.deploy/` is committed — key, script and README are properties of this machine.
 - **Licence: MIT OR Apache-2.0**, both texts at the repository root, every one of the **24**
   packages inheriting the SPDX field (`chiero-probe` was added 2026-08-08). Left for the first publish: the texts are not inside each
