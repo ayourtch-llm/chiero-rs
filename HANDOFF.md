@@ -3400,6 +3400,11 @@ not an anecdote.*
   rather than the absence of a word. This is the false-zero family — a pattern narrower than the
   thing it looks for — turned on one's own verification idioms, which is where it is hardest to
   notice because the output is the part being trusted.
+  ✅ **The repo's own gates were audited afterwards and do this correctly**: `check.sh` keys its
+  GREEN/RED on cargo's exit status and prints counts beside it (§7.5 argues exactly that), and
+  `lint.py` prints its success line only after the failure branch has returned. **The defect was
+  in transient shell, not in the tooling** — which is the harder half to fix, since ad-hoc
+  commands get no review and are exactly where a hurried check goes.
 
 ### 11.1 About tests and what they can see
 
