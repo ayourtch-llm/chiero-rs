@@ -549,7 +549,7 @@ pub mod models {
         // No NULL check here: `Memory::free` owns that rule, and a second copy of it is
         // how `readonly` came to hold on one write path out of three. One place.
         let at = cx.span();
-        let r = cx.mem().free(p.base, at);
+        let r = cx.mem().free_at(p, at);
         let faults = r.faults.clone();
         cx.lift(&faults);
         ModelOutcome::Value(None)

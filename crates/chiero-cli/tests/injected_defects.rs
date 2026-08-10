@@ -206,6 +206,20 @@ const CASES: &[(&str, &str, &str, &str)] = &[
         "int probe(void) { int v = 0; int *p = &v; *p = 5; return v; }",
         "wild-pointer",
     ),
+    (
+        // **An indirect call through a wild pointer.** The NULL case is special-cased at
+        // `chiero-exec/src/lib.rs:8176` and reports `null-dereference`; a wild function
+        // pointer falls through to the candidate list and produces **no finding at all** —
+        // only a degraded run. That site's own comment argues why that is the worse outcome:
+        // "a degraded run says chiero could not follow this, and a reader scanning for
+        // findings sees a clean run — the more misleading of the two ways to be wrong about a
+        // definite fault." Same NULL-has-a-sibling shape as 8e, found by auditing it.
+        "wild_pointer_call",
+        "int probe(void) { int (*f)(void) = (int (*)(void)) 0x1234; return f(); }",
+        "static int g(void) { return 1; }\n\
+         int probe(void) { int (*f)(void) = g; return f(); }",
+        "wild-pointer",
+    ),
 ];
 
 #[test]

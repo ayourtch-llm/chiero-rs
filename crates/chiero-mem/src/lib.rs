@@ -3867,6 +3867,23 @@ impl Memory {
         }
     }
 
+    /// `free(p)`, reporting **the address the caller was given** when it names no object.
+    ///
+    /// [`Memory::free`] takes an `ObjectId` and therefore has no offset to report, so a wild
+    /// free said *"at address 0"* while dereferencing the same pointer said 4660 — right about
+    /// the fault, wrong about where, which is the shape item 8e wore. Callers holding a
+    /// `Pointer` should use this; `free` stays for the ones that hold only an id, where offset
+    /// zero *is* the answer because the whole object is being released.
+    pub fn free_at(&mut self, p: Pointer, at: Span) -> AccessResult<()> {
+        let mut r = self.free(p.base, at);
+        for f in &mut r.faults {
+            if let MemFault::WildPointer { off, .. } = f {
+                *off = p.off;
+            }
+        }
+        r
+    }
+
     pub fn free(&mut self, id: ObjectId, at: Span) -> AccessResult<()> {
         // `free(NULL)` is legal C and a no-op. Models call it constantly, so reporting it
         // is a false positive on correct code.

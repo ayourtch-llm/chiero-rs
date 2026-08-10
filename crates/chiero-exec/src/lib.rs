@@ -8172,18 +8172,31 @@ impl<'m> Engine<'m> {
         // over, degrading. A degraded run says "chiero could not follow this", and a reader
         // scanning for findings sees a clean run — the more misleading of the two ways to be
         // wrong about a definite fault.
+        // **And the same for a wild function pointer**, added 2026-08-10 by auditing the arm
+        // above: `NULL` had a sibling and only one of them was handled. `((int (*)(void))
+        // 0x1234)()` produced **no finding at all** — the candidate filter cannot match an
+        // address that names no object, so the run degraded with "unresolvable callee" and a
+        // reader scanning for findings saw a clean one. That is exactly the outcome the
+        // comment above calls "the more misleading of the two ways to be wrong about a
+        // definite fault", and it applied to the case one line below itself.
         if let Some(Value::Ptr(p)) = self.operand(a, s, op)
-            && p.base == chiero_mem::ObjectId::NULL
+            && matches!(
+                p.base,
+                chiero_mem::ObjectId::NULL | chiero_mem::ObjectId::UNBOUND
+            )
         {
-            self.report_faults(
-                a,
-                s,
-                &[chiero_mem::MemFault::NullDeref {
+            let fault = if p.base == chiero_mem::ObjectId::NULL {
+                chiero_mem::MemFault::NullDeref {
                     off: p.off,
                     at: span,
-                }],
-                span,
-            );
+                }
+            } else {
+                chiero_mem::MemFault::WildPointer {
+                    off: p.off,
+                    at: span,
+                }
+            };
+            self.report_faults(a, s, &[fault], span);
             return;
         }
         // **"Whose signature could be called here" is now a filter and not only a comment.**

@@ -765,3 +765,25 @@ fn object_ids_are_allocated_in_increasing_order() {
         );
     }
 }
+
+/// **A wild `free()` must name the address it was given, not zero.**
+///
+/// `free((void *) 0x1234)` reported *"access through a pointer at address 0"* while a plain
+/// dereference of the same pointer reported 4660. `Memory::free` takes an `ObjectId` and so had
+/// no offset to report, and passed `0` — a finding that is right about the fault and wrong about
+/// where, which is the shape item 8e was: a reader goes looking at the wrong address.
+#[test]
+fn freeing_a_wild_pointer_names_the_address() {
+    let mut m = chiero_mem::Memory::new();
+    let p = chiero_mem::Pointer {
+        base: chiero_mem::ObjectId::UNBOUND,
+        off: 0x1234,
+    };
+    let r = m.free_at(p, chiero_span::Span::DUMMY);
+    let f = r.faults.first().expect("freeing a wild pointer is a fault");
+    let msg = format!("{f}");
+    assert!(
+        msg.contains("4660"),
+        "the fault must name the address it was handed: {msg}"
+    );
+}
