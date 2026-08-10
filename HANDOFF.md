@@ -1969,6 +1969,39 @@ content is not the same as safe.
 ⏭️ **040 c1 is still uncited**: *fires exactly once* is not asserted, only *fires at the right
 line*. That is now a test somebody can write, which it was not this morning.
 
+### 7.39 A message is a rendering, not an identity — and the fix moved no published number
+
+Item 5r, closed the day it was found. `chiero-tool` grouped findings on `(message, span)`, and
+a message carries clauses true of the *path* it came from, so one dereference became two bugs:
+
+```console
+$ chiero find-bugs once.c --entry probe    # int probe(int *p){ int *q = 0; return *q; }
+null-dereference: access at offset 0 of NULL                                    | line 4
+null-dereference: access at offset 0 of NULL, where %1 is a pointer parameter …  | line 4
+```
+
+`p` is never dereferenced. The engine is right — 023 contract 20 says it does not deduplicate
+across paths, and the recorded reason is good: collapsing `buf + 64` and `buf + 128` once threw
+away the second's witness. The grouping a *consumer* sees is `chiero-tool`'s, and it now keys on
+`(kind, span)`, reconstructing the kind from the slug every message starts with — the same
+vocabulary `defect_vocabulary.rs` gates.
+
+📌 **The whole finding is replaced on a merge, not just the longer sentence.** Every variant is
+true of some path and the longer one carries a clause a reader cannot get elsewhere — but the
+witness has to come from the path the message describes, or the report would explain one
+execution and hand over the input to another.
+
+✅ **The pinned 40, re-measured in the same change: `ok=38 cut=2 findings=21 exact=0` —
+byte-identical.** The release binary was rebuilt first and checked on the toy case before the
+run, so this is "the corpus contains no finding of that shape", not "the change was not in the
+binary". ⚠️ **A grouping change whose numbers are taken afterwards is a change nobody can
+check**, which is why the re-measure was an obligation of the commit rather than a follow-up —
+and the *identical* answer is the outcome that most needed the check, since it is
+indistinguishable from a stale measurement without one.
+
+⏭️ 040 contract 1 is now half-citable: *fires at the right span* and *exactly once* both have
+tests, on an injected corpus rather than in the directory 040 c1 names, which was never created.
+
 ### 7.5 How to check the workspace is green — `./check.sh`
 
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
@@ -3234,7 +3267,7 @@ reached 952 lines again, 316 of them finished work:
    stay untyped — and the variant's own doc says forming such a pointer "is deliberate in a few
    real idioms". **Owner's call.**
 
-5r. 🆕 **One dereference, two findings — `find_bugs` groups on the *message*, and the message
+5r. ✅ **CLOSED 2026-08-10 — see §7.39.** One dereference, two findings — `find_bugs` groups on the *message*, and the message
    carries a per-path clause.** Found 2026-08-10, immediately after findings learned to carry a
    line (§7.38), because 040 contract 1's *"fires exactly once"* became a question somebody
    could ask:
