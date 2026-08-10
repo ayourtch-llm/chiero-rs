@@ -1774,7 +1774,19 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 ### 8.3 🔁 THE WIDENING PATTERN — the standing job, and the highest-yield loop found so far
 
 **Every gate has a corpus, and every corpus has an edge. The defects live past the edge.**
-This has now paid out three times in a row, each time on the first run after a widening:
+
+🔥 **The strongest form, and 2026-08-10 is the evidence: widen toward a corpus whose *answer is
+known in advance*.** That day spent a morning on instruments — a controlled size axis, an
+engine probe, a compile-database reader — and found real quadratics that moved **no published
+number**. It then spent an evening on four-line C programs with an injected defect and a matched
+clean control, and found **seven defects in chiero's own checkers and operations**, none of them
+reachable by any VPP corpus. The difference is not effort or cleverness; it is that a
+known-ground-truth corpus can distinguish *"the code is clean"* from *"the checker never
+fires"*, and no amount of real code can. ⏭️ The generalisation that kept paying: **take a rule
+written for one component and ask whether its neighbours obey it** — 050 contract 3's
+empty-answer rule, asked of all nine operations, found two more.
+
+This has now paid out many times, each time on the first run after a widening:
 
 | widened | cost | yield |
 |---|---|---|
@@ -1793,6 +1805,10 @@ This has now paid out three times in a row, each time on the first run after a w
 | **sharpening an oracle** — a feature query's value rather than its truthiness | one wave | §7.11: six rows of the table shipped two waves earlier were wrong, and the old test agreed with every one. The corpus was not widened at all; the *instrument* was |
 | following the **diagnostics the tool itself emitted** — three names it said it did not know | one wave | §7.11: scoped operands + `__has_cpp_attribute`; findings 16 → **14**, and `pr63831-1/2` leave the list. The honesty mechanism turned the next fix into a mechanical one |
 | find-bugs to a **new subsystem**: `vnet/ip/`, 152 entries (never swept) | one sweep, ~20 min | **zero chiero defects — 0 failed, 0 `Exact`.** 143 ok, 7 cut, 9 `Unknown` findings, all one known class. See §7.17 |
+| **a controlled *size* axis** — VPP cannot supply one, its TUs span 1.7x because a TU's size is its header closure | one wave, 2026-08-10 | **6 quadratic scans + an O(B²) representation.** Frontend 22.7 s → 1.7 s on one 32k-statement function; peak RSS **35.6 GB → 494 MB**. ⚠️ And **no published number moved** — see the row below for why that matters |
+| **a corpus of *known* defects**, C through the real CLI, each paired with a minimally-different clean control | one evening, 2026-08-10 | **the richest yield of the project so far: 7 defects** — 5 checkers (a wild-pointer masked through every shape real C uses; a shift rule skipped; a wild call reported as nothing; a wild free naming address 0; a store that kept stale bytes) and 2 operations (§7.31). **It also found two defects in its own controls before finding any in chiero**, which is the argument for pairing |
+| **one rule, asked of its neighbours** — 050 c3's *what does an empty answer mean?*, put to all nine operations | one wave | **2 defects**: `find_optimizations` and `layout` each claimed `proven` over an analysis that had skipped part of its input, with a blind spot naming the skipped part sitting right beside the wrong flag |
+| **a value's siblings** — `ObjectId::NULL` is special-cased, where is `UNBOUND`? | one grep | **3 of the 5 checker defects above.** Two further sentinel audits returned **zero**, and the zeros are what gave the rule its scope: audit *const sentinels*, not enum variants, because a missing enum arm is a compile error |
 | **010 contract 11**, the one contract with no test anywhere — verified by reading, not by trusting §9's note | one wave | **zero defects.** The round trip holds over twelve fixtures incl. splices, macro-body/argument spans and the session's new UCN identifiers |
 | **a new subsystem: all of `vnet/`, 423 entries** (only `vnet/ip/` had ever been swept) | one sweep, ~25 min | **44 findings** (40 after the 7b fix), 0 `Exact`, 0 `timeout`, 0 `noinc` — and two `failed` rows that are **real defects in VPP source the build never compiles**: a function defined twice, and a call with no declaration. gcc agrees on both. The harness lesson is bigger than either: `pick_entries.py` globs the tree, so `failed` mixes "chiero cannot read this" with "nothing can" |
 | **the plugin sweep, one entry per file → three** (477 → 1320) | one sweep, ~65 min | **91 findings against 18**, 3 `Exact` against 1 — and the yield was a *reporting* defect: a `proven: true` null dereference resting entirely on a global's initial value, with the premise unstated. Also 31 `failed` rows resolved to **six** causes, 19 of them the parked `-march` item, and one that is not a chiero defect at all (below) |
