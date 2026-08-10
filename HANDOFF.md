@@ -3409,8 +3409,15 @@ reached 952 lines again, 316 of them finished work:
    ⏭️ The gate to build: a citation from a file whose citing test is `#[ignore]`d does not count.
    Naive "any `#[ignore]` in a citing file" over-flags — a file may hold twenty running tests and
    one deliberate reproduction — so it has to associate each `Covers:`/inline citation with the
-   tests that carry it, or move to per-test citations. 📌 The measurement first: how many of the
-   166 rest on an ignored test? Today's answer is *at least one*, and it was found by hand.
+   tests that carry it, or move to per-test citations. 📌 **The measurement was attempted, and the number is not usable — which is the finding.**
+   A file-level scan (*is every file citing this contract one that contains an `#[ignore]`?*)
+   reports **0 of the 166**, over 170 citations seen. ⚠️ **That zero is worthless and must not be
+   quoted**: 023 c21, the instance found by hand an hour earlier, is *also* cited by
+   `chiero-lower/tests/symbolic.rs`, which has no ignores — so the criterion could not have
+   detected the one case known to exist. A scan that cannot find the example it was built from
+   is measuring its own shape (§8.3: *a green gate is evidence about the corpus, not about the
+   tree*). **Only per-test association answers this**, which is why 5s asks for it rather than
+   for a cheaper approximation.
 
 5r. ✅ **CLOSED 2026-08-10 — see §7.39.** One dereference, two findings — `find_bugs` groups on the *message*, and the message
    carries a per-path clause.** Found 2026-08-10, immediately after findings learned to carry a
