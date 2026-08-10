@@ -56,6 +56,14 @@ const OPS: &[Op] = &[
         ),
     },
     Op {
+        name: "select_tests_named",
+        samples: select_tests_named_samples,
+        never_exact: Some(
+            "the same answer as `select_tests` with the caller's names attached: naming a test \
+             cannot make a historical measurement into a proof",
+        ),
+    },
+    Op {
         name: "impact_envelope",
         samples: impact_samples,
         never_exact: None,
@@ -137,6 +145,43 @@ fn select_tests_samples() -> Vec<Envelope> {
         &Suite::default(),
     );
     vec![changed, unchanged, no_coverage]
+}
+
+/// The same three inputs through the naming variant, because a legend the caller supplied must
+/// not move the fidelity, the blind spots or the count.
+fn select_tests_named_samples() -> Vec<Envelope> {
+    let mut idx = CoverageIndex::default();
+    chiero_gcov::ingest_native_as(&mut idx, TestId(0), &corpus(), "t").expect("fixture");
+    idx.record_outcome(TestId(0), TestOutcome::Passed);
+    let names = [(TestId(0), "t".to_string())];
+
+    let before =
+        Program::parse("t.c", "int main (void)\n{\n  M; M;\n  return 0;\n}\n").expect("parses");
+    let after =
+        Program::parse("t.c", "int main (void)\n{\n  M; M;\n  return 1;\n}\n").expect("parses");
+    vec![
+        chiero_tool::select_tests_named(
+            &impact(&before, &after),
+            &after,
+            &idx,
+            &Suite::default(),
+            &names,
+        ),
+        chiero_tool::select_tests_named(
+            &impact(&before, &before),
+            &before,
+            &idx,
+            &Suite::default(),
+            &names,
+        ),
+        chiero_tool::select_tests_named(
+            &impact(&before, &after),
+            &after,
+            &CoverageIndex::default(),
+            &Suite::default(),
+            &names,
+        ),
+    ]
 }
 
 fn impact_samples() -> Vec<Envelope> {

@@ -67,6 +67,21 @@ const FLAGS: &[Flag] = &[
         about: "At most this many sites. Default 50.",
     },
     Flag {
+        spec: "--test <NAME=PATH>",
+        about: "One test run's coverage: the test's name, then the object\n\
+                without its extension — `--test bfd=build/cov/bfd_main` reads\n\
+                `bfd_main.gcno`/`.gcda`. Repeatable, and a name repeated is one\n\
+                test that touched several objects. This is the flag that lets\n\
+                `select-tests` select: selection needs to know which test\n\
+                covered what, and one unattributed object cannot say.",
+    },
+    Flag {
+        spec: "--coverage-manifest <file>",
+        about: "The same, one NAME<TAB>PATH line per test run — what a\n\
+                `make test-cov TEST=<name>` loop writes. Blank lines and `#`\n\
+                comments are skipped.",
+    },
+    Flag {
         spec: "--coverage <dir>",
         about: "Directory holding a gcov run's `.gcno`/`.gcda` files.",
     },
@@ -224,12 +239,11 @@ const OPS: &[Op] = &[
                 `new/foo.c` is the shape, not two different files.\n\
                 \n\
                 ⚠️ The coverage has to be attributed per test — one gcov run per\n\
-                test, each ingested under its own name. `--coverage`/`--stem` read\n\
-                one object with no test name attached, so an index built only from\n\
-                them can select nothing and this command refuses rather than\n\
-                answering `0 selected`. Per-test ingest is `ingest_native_as` in\n\
-                `chiero-gcov`, which no flag reaches yet.",
-        flags: &["--coverage", "--stem"],
+                test, each named. That is what `--test` and `--coverage-manifest`\n\
+                are for. `--coverage`/`--stem` read one object with no test name\n\
+                attached, so an index built only from them can select nothing, and\n\
+                this command refuses rather than answering `0 selected`.",
+        flags: &["--test", "--coverage-manifest", "--coverage", "--stem"],
     },
     Op {
         name: "expansion-sites",

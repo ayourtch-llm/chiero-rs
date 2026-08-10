@@ -58,10 +58,20 @@ fn run(args: &[String]) -> Run {
 }
 
 /// `other.c` before and after a change to the one function it defines.
+///
+/// **Both copies keep the name `other.c`**, in two directories — the old tree and the new one.
+/// Coverage records source paths as gcov wrote them (030 §5), and `chiero-diff` keys entities by
+/// unit name, so a pair called `before.c`/`after.c` describes a file no coverage run has ever
+/// heard of and the envelope says exactly that: *"`after.c` is not in the coverage index at
+/// all"*. That is the right answer to the wrong question, and it is the trap this project has
+/// hit four times, always in the flattering direction.
 fn before_and_after() -> (PathBuf, PathBuf) {
     let d = scratch();
-    let before = d.join("before.c");
-    let after = d.join("after.c");
+    let (old, new) = (d.join("old"), d.join("new"));
+    std::fs::create_dir_all(&old).expect("scratch");
+    std::fs::create_dir_all(&new).expect("scratch");
+    let before = old.join("other.c");
+    let after = new.join("other.c");
     std::fs::write(
         &before,
         "int main(void){ int v=2; v=v*3; return v>0?0:1; }\n",
@@ -101,12 +111,18 @@ fn a_repeated_test_flag_attributes_coverage_and_selects() {
     );
     let v: serde_json::Value = serde_json::from_str(&r.out)
         .unwrap_or_else(|e| panic!("stdout is not JSON ({e}):\n{}\n---\n{}", r.out, r.err));
-    let text = r.out.clone();
-    assert!(
-        text.contains("other"),
-        "the test that ran `other.c` is the one the change reaches, and it is not in the \
-         answer:\n{v:#}"
+    let tests = v["result"]["tests"].as_array().expect("a tests array");
+    let named: Vec<&str> = tests.iter().filter_map(|t| t["name"].as_str()).collect();
+    assert_eq!(
+        named,
+        vec!["other"],
+        "the change is to `other.c`, so the test that ran `other` is selected and the one that \
+         ran `t` is not — that is the whole product claim:\n{v:#}"
     );
+    // **A number is not an answer a caller can act on.** The ids are this command's own, chosen
+    // when it read the `--test` flags, so handing them back untranslated would make every
+    // consumer keep a second table and join on it.
+    assert_eq!(v["result"]["selected"], 1, "{v:#}");
 }
 
 /// The manifest spelling: what a `make test-cov TEST=<name>` loop writes.

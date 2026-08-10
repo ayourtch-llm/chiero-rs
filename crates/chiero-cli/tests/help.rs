@@ -124,6 +124,10 @@ const FIELD_FLAG: &[(&str, &str)] = &[
     ("limit", "--limit"),
     ("coverage", "--coverage"),
     ("stem", "--stem"),
+    // One field, two spellings — a repeatable flag and a manifest file both fill `tests`, and
+    // an operation that reads it takes both.
+    ("tests", "--test"),
+    ("tests", "--coverage-manifest"),
     ("cache_line", "--cache-line"),
     ("replay", "--replay"),
     ("allow_replay_exec", "--allow-replay-exec"),
@@ -133,35 +137,74 @@ const FIELD_FLAG: &[(&str, &str)] = &[
     ("wall_clock", "--time-budget"),
 ];
 
-/// The flags one operation's implementation consults, by reading `o.<field>` in its body.
-fn flags_read_by(func: &str) -> BTreeSet<String> {
-    let head = format!("\nfn {func}(o: &Options)");
-    let start = MAIN
-        .find(&head)
-        .unwrap_or_else(|| panic!("no `fn {func}(o: &Options)` in main.rs"));
+/// A function's body, with every whitespace character removed.
+///
+/// **Whitespace out first.** rustfmt writes `let entry = o\n        .entry\n        .clone()`, so
+/// a plain `contains("o.entry")` says `prove_equivalent` never reads `--entry` — an
+/// under-detection, which is the direction that makes a gate quietly pass.
+fn body_of(func: &str) -> Option<String> {
+    let head = format!("\nfn {func}(");
+    let start = MAIN.find(&head)?;
     let body = &MAIN[start + 1..];
     let end = body[1..].find("\nfn ").map_or(body.len(), |i| i + 1);
-    // **Whitespace out first.** rustfmt writes `let entry = o\n        .entry\n        .clone()`,
-    // so a plain `contains("o.entry")` says `prove_equivalent` never reads `--entry` — an
-    // under-detection, which is the direction that makes a gate quietly pass.
-    let body: String = body[..end].chars().filter(|c| !c.is_whitespace()).collect();
+    Some(body[..end].chars().filter(|c| !c.is_whitespace()).collect())
+}
+
+/// The flags one operation's implementation consults, by reading `o.<field>` in its body — and
+/// in the body of any helper it hands `o` to.
+///
+/// **Following the helper is not a refinement, it is the difference between a gate and a
+/// nuisance.** `select_tests` used to read `o.coverage` itself; the moment the coverage handling
+/// moved into `coverage_index(o)` this said the operation read no coverage flags at all, and the
+/// page that named them became "advertising an option it ignores". A gate that goes red when
+/// code is *tidied* teaches people to weaken it.
+fn flags_read_by(func: &str) -> BTreeSet<String> {
     let mut flags = BTreeSet::new();
-    for (field, flag) in FIELD_FLAG {
-        // **Whole field, not a prefix.** `o.entry` is a prefix of `o.entry_ptr_nonnull`, so a
-        // substring test would make every operation that reads the assumption flag look as
-        // though it read `--entry` — the flattering direction, and silent.
-        let needle = format!("o.{field}");
-        let mut at = 0;
-        while let Some(i) = body[at..].find(&needle) {
-            let end = at + i + needle.len();
-            at = end;
-            if !body[end..]
+    let mut seen = BTreeSet::new();
+    let mut queue = vec![func.to_string()];
+    while let Some(f) = queue.pop() {
+        if !seen.insert(f.clone()) {
+            continue;
+        }
+        let Some(body) = body_of(&f) else {
+            assert!(f != func, "no `fn {func}(` in main.rs");
+            continue;
+        };
+        for (field, flag) in FIELD_FLAG {
+            // **Whole field, not a prefix.** `o.entry` is a prefix of `o.entry_ptr_nonnull`, so a
+            // substring test would make every operation that reads the assumption flag look as
+            // though it read `--entry` — the flattering direction, and silent.
+            let needle = format!("o.{field}");
+            let mut at = 0;
+            while let Some(i) = body[at..].find(&needle) {
+                let end = at + i + needle.len();
+                at = end;
+                if !body[end..]
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_alphanumeric() || c == '_')
+                {
+                    flags.insert((*flag).to_string());
+                    break;
+                }
+            }
+        }
+        // Anything called as `helper(o` or `helper(&o` — the shape of handing the options on.
+        for (at, _) in body.match_indices("(o") {
+            let after = body[at + 2..].chars().next();
+            if !matches!(after, Some(',') | Some(')')) {
+                continue;
+            }
+            let name: String = body[..at]
                 .chars()
-                .next()
-                .is_some_and(|c| c.is_alphanumeric() || c == '_')
-            {
-                flags.insert((*flag).to_string());
-                break;
+                .rev()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            if !name.is_empty() {
+                queue.push(name);
             }
         }
     }

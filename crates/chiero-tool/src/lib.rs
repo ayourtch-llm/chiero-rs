@@ -450,6 +450,26 @@ pub fn select_tests(
     coverage: &chiero_gcov::CoverageIndex,
     suite: &chiero_select::Suite,
 ) -> Envelope {
+    select_tests_named(impact, program, coverage, suite, &[])
+}
+
+/// The same, with the caller's own names for its tests.
+///
+/// **A `TestId` is a number, and `"test": 3` is not an answer anybody can act on.** The ids are
+/// the caller's — it chose which coverage run each one stands for — so handing them back
+/// untranslated makes the consumer keep a second table and join on it. That is not a judgement
+/// this crate is making about the code, which is what 050 §1's "thin wrapper" rule is about; it
+/// is the caller's own input, returned.
+///
+/// Names are optional and unknown ids simply carry none: a library caller that never had names
+/// loses nothing.
+pub fn select_tests_named(
+    impact: &chiero_diff::ImpactSet,
+    program: &chiero_diff::Program,
+    coverage: &chiero_gcov::CoverageIndex,
+    suite: &chiero_select::Suite,
+    names: &[(chiero_gcov::TestId, String)],
+) -> Envelope {
     let selection = chiero_select::select_with(impact, program, coverage, suite);
     let ranked = selection.ranked();
 
@@ -457,14 +477,18 @@ pub fn select_tests(
         .iter()
         .enumerate()
         .map(|(i, t)| {
-            serde_json::json!({
+            let mut row = serde_json::json!({
                 "test": t.0,
                 "rank": i + 1,
                 "reasons": selection.tests[t]
                     .iter()
                     .map(describe_reason)
                     .collect::<Vec<_>>(),
-            })
+            });
+            if let Some((_, name)) = names.iter().find(|(id, _)| id == t) {
+                row["name"] = serde_json::Value::String(name.clone());
+            }
+            row
         })
         .collect();
 

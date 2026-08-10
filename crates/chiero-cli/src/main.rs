@@ -122,6 +122,14 @@ struct Options {
     limit: Option<usize>,
     coverage: Option<PathBuf>,
     stem: Option<String>,
+    /// `(test name, object path without extension)`, in the order given.
+    ///
+    /// **The pair `--coverage`/`--stem` could not express**, and the reason the command could
+    /// never select anything: one object with no test name attached makes an index whose
+    /// `tests()` is empty, so every selection over it is empty *whatever the diff says*. A test
+    /// that touches several objects repeats its own name; the union is what makes that correct,
+    /// and `ingest_native_as` has taken the `TestId` since the day it was written.
+    tests: Vec<(String, PathBuf)>,
     includes: Vec<PathBuf>,
     defines: Vec<(String, String)>,
     json: bool,
@@ -151,6 +159,64 @@ fn define(d: &str) -> (String, String) {
         Some((k, v)) => (k.to_string(), v.to_string()),
         None => (d.to_string(), "1".to_string()),
     }
+}
+
+/// `NAME=PATH`, where `PATH` is the object without its extension — `build/cov/bfd_main` for
+/// `bfd_main.gcno`/`bfd_main.gcda`.
+///
+/// **One path rather than a directory and a stem**, because that is how a build system names an
+/// object and how a reader reads one; `--coverage`/`--stem` split it in two and the first user
+/// spent three attempts guessing which half wanted what.
+fn test_spec(s: &str) -> Result<(String, PathBuf), Fault> {
+    let Some((name, path)) = s.split_once('=') else {
+        return Err(Fault::Usage(format!(
+            "--test wants NAME=PATH — the test's name, then the coverage object without its \
+             extension, as in `--test bfd=build/cov/bfd_main`. Got `{s}`"
+        )));
+    };
+    if name.is_empty() || path.is_empty() {
+        return Err(Fault::Usage(format!(
+            "--test wants NAME=PATH and one side of `{s}` is empty"
+        )));
+    }
+    Ok((name.to_string(), PathBuf::from(path)))
+}
+
+/// A manifest of `NAME<TAB>PATH` lines — what a `make test-cov TEST=<name>` loop writes.
+///
+/// Blank lines and `#` comments are skipped, because a generated file grows a header.
+fn manifest(p: &Path) -> Result<Vec<(String, PathBuf)>, Fault> {
+    let text = read(p)?;
+    let mut out = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        let line = line.trim_end();
+        if line.trim().is_empty() || line.trim_start().starts_with('#') {
+            continue;
+        }
+        let Some((name, path)) = line.split_once('\t') else {
+            return Err(Fault::Usage(format!(
+                "{}:{}: a manifest line is NAME<TAB>PATH; this one has no tab: `{line}`",
+                p.display(),
+                n + 1
+            )));
+        };
+        if name.is_empty() || path.trim().is_empty() {
+            return Err(Fault::Usage(format!(
+                "{}:{}: a manifest line is NAME<TAB>PATH and one side is empty",
+                p.display(),
+                n + 1
+            )));
+        }
+        out.push((name.to_string(), PathBuf::from(path.trim())));
+    }
+    if out.is_empty() {
+        return Err(Fault::Failed(format!(
+            "{}: no test lines. A manifest is NAME<TAB>PATH per test run; an empty one would \
+             select nothing, which is not an answer about your change.",
+            p.display()
+        )));
+    }
+    Ok(out)
 }
 
 fn need(i: usize, args: &[String], what: &str) -> Result<String, Fault> {
@@ -225,6 +291,15 @@ impl Options {
                 }
                 "--stem" => {
                     o.stem = Some(need(i, args, "--stem")?);
+                    i += 1;
+                }
+                "--test" => {
+                    o.tests.push(test_spec(&need(i, args, "--test")?)?);
+                    i += 1;
+                }
+                "--coverage-manifest" => {
+                    o.tests
+                        .extend(manifest(Path::new(&need(i, args, "--coverage-manifest")?))?);
                     i += 1;
                 }
                 "-I" => {
@@ -512,14 +587,102 @@ fn impact(o: &Options) -> Result<chiero_tool::Envelope, Fault> {
 
 fn select_tests(o: &Options) -> Result<chiero_tool::Envelope, Fault> {
     let f = o.files(2, "select-tests")?;
-    let dir = o
-        .coverage
-        .clone()
-        .ok_or_else(|| Fault::Usage("select-tests needs --coverage <dir>".into()))?;
+    let (index, names) = coverage_index(o)?;
+    let (before, after) = programs(o, &f)?;
+    // **The index's own answer, not one this command invents.** `validity` compares the
+    // sources hashed at ingest against the tree; an index that recorded none can only report
+    // what it knows, and inventing a verdict here would be exactly the second implementation
+    // 050 §1's "thin wrapper" rules out. `select_tests`'s envelope already carries "coverage
+    // is historical" as a blind spot, which is the qualification that always applies.
+    let suite = chiero_select::Suite {
+        tests: index.tests(),
+        validity: index.validity(Path::new(".")),
+    };
+    Ok(chiero_tool::select_tests_named(
+        &chiero_diff::impact(&before, &after),
+        &after,
+        &index,
+        &suite,
+        &names,
+    ))
+}
+
+/// The coverage index `select-tests` will rank against, and the caller's name for each test.
+///
+/// **Two spellings of the same thing, and one that cannot work.** `--test NAME=PATH` is for a
+/// handful of runs typed at a prompt; `--coverage-manifest` is what a `make test-cov
+/// TEST=<name>` loop writes, which is how the first end-to-end user produced the run that
+/// worked. Both land on `ingest_native_as`, which has taken a `TestId` since it was written —
+/// **the library could always do this and only the command line could not say it.**
+///
+/// A name repeated across several objects is one test that touched several: it keeps its id and
+/// the coverage unions, which is what makes a multi-object test correct (`chiero-gcov`'s own
+/// note on `ingest_native_as`).
+fn coverage_index(
+    o: &Options,
+) -> Result<
+    (
+        chiero_gcov::CoverageIndex,
+        Vec<(chiero_gcov::TestId, String)>,
+    ),
+    Fault,
+> {
+    if !o.tests.is_empty() {
+        if o.coverage.is_some() || o.stem.is_some() {
+            return Err(Fault::Usage(
+                "--test/--coverage-manifest and --coverage/--stem are two ways to say where the \
+                 coverage is; give one. Only the first attributes a test, so it is the one that \
+                 can select."
+                    .into(),
+            ));
+        }
+        let mut index = chiero_gcov::CoverageIndex::default();
+        let mut names: Vec<(chiero_gcov::TestId, String)> = Vec::new();
+        for (name, path) in &o.tests {
+            let id = match names.iter().find(|(_, n)| n == name) {
+                Some((id, _)) => *id,
+                None => {
+                    let id = chiero_gcov::TestId(names.len() as u32);
+                    names.push((id, name.clone()));
+                    id
+                }
+            };
+            // **Split here rather than asking the caller for two halves.** `--coverage`/`--stem`
+            // did that and the first user spent three attempts guessing which wanted what.
+            let dir = path.parent().unwrap_or(Path::new("."));
+            let stem = path
+                .file_name()
+                .ok_or_else(|| {
+                    Fault::Usage(format!(
+                        "`{}` names no object; --test wants NAME=PATH, the coverage object \
+                         without its extension",
+                        path.display()
+                    ))
+                })?
+                .to_string_lossy()
+                .into_owned();
+            chiero_gcov::ingest_native_as(&mut index, id, dir, &stem).map_err(|e| {
+                Fault::Failed(format!(
+                    "{}: {e:?} — expected {stem}.gcno and {stem}.gcda in {}",
+                    path.display(),
+                    dir.display()
+                ))
+            })?;
+        }
+        return Ok((index, names));
+    }
+
+    let dir = o.coverage.clone().ok_or_else(|| {
+        Fault::Usage(
+            "select-tests needs coverage: --test NAME=PATH (repeatable) or --coverage-manifest \
+             <file>, one entry per test run"
+                .into(),
+        )
+    })?;
     let stem = o
         .stem
         .clone()
-        .ok_or_else(|| Fault::Usage("select-tests needs --stem <name>".into()))?;
+        .ok_or_else(|| Fault::Usage("--coverage also needs --stem <name>".into()))?;
     if !dir.is_dir() {
         return Err(Fault::Failed(format!("{}: not a directory", dir.display())));
     }
@@ -534,36 +697,18 @@ fn select_tests(o: &Options) -> Result<chiero_tool::Envelope, Fault> {
     // empty … every invocation returns 0 selected", found because tutorial 3's console example
     // runs this path and `tutorials.rs` exercises the library one.
     //
-    // Selecting needs coverage attributed **per test** — `ingest_native_as` with a `TestId` per
-    // run, which is what a `make test-cov TEST=<name>` loop produces. This flag pair cannot
-    // express that, and widening it is a design question (050 §3). Until it is answered, refuse
-    // rather than answer: an empty selection from an index that could never be non-empty is
-    // exactly the "empty answer" this project spent 2026-08-10 forbidding elsewhere.
+    // The pair stays, because reading one object is a thing somebody may want; what it cannot
+    // do is select, and now the refusal names the flags that can.
     if index.tests().is_empty() {
         return Err(Fault::Failed(format!(
             "{}: the coverage index carries no test attribution, so no test can be selected \
-             from it. `--coverage`/`--stem` ingest one object with no test name; selection \
-             needs per-test coverage (`ingest_native_as`, one `TestId` per test run). This is \
-             a limit of the command, not an answer about your change.",
+             from it. `--coverage`/`--stem` ingest one object with no test name. Use `--test \
+             NAME=PATH` once per test run, or `--coverage-manifest <file>` with a NAME<TAB>PATH \
+             line each. This is a limit of the command, not an answer about your change.",
             dir.display()
         )));
     }
-    let (before, after) = programs(o, &f)?;
-    // **The index's own answer, not one this command invents.** `validity` compares the
-    // sources hashed at ingest against the tree; an index that recorded none can only report
-    // what it knows, and inventing a verdict here would be exactly the second implementation
-    // 050 §1's "thin wrapper" rules out. `select_tests`'s envelope already carries "coverage
-    // is historical" as a blind spot, which is the qualification that always applies.
-    let suite = chiero_select::Suite {
-        tests: index.tests(),
-        validity: index.validity(Path::new(".")),
-    };
-    Ok(chiero_tool::select_tests(
-        &chiero_diff::impact(&before, &after),
-        &after,
-        &index,
-        &suite,
-    ))
+    Ok((index, Vec::new()))
 }
 
 fn expansion_sites(o: &Options) -> Result<chiero_tool::Envelope, Fault> {

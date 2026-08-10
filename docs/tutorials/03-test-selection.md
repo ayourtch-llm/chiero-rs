@@ -11,11 +11,36 @@ that broke a test was caught), against **14.3%** for a coverage-only baseline, w
 ## The example
 
 ```console
-$ chiero select-tests before.c after.c --coverage build/ --stem t
+$ chiero select-tests old/other.c new/other.c \
+      --test other=build/cov/other --test t=build/cov/t
+tests:
+  - test: 0
+    rank: 1
+    reasons:
+      - kind: covers_entity
+        entity: main
+        file: other.c
+        line: 1
+        distance: 0
+    name: other
+selected: 1
 ```
 
-`--coverage` is the directory holding the build's `.gcno`/`.gcda`, `--stem` the object's base
-name — the same two things [tutorial 1](01-coverage.md) hands to `ingest_native`.
+`--test NAME=PATH` names one test run and points at the coverage object it produced — `PATH`
+without the extension, so `build/cov/other` reads `other.gcno` and `other.gcda`. Repeat it once
+per test; a name repeated is one test that touched several objects. For a whole suite,
+`--coverage-manifest <file>` reads a `NAME<TAB>PATH` line each, which is what a
+`make test-cov TEST=<name>` loop writes.
+
+**Selection needs to know which test covered what**, and that is the whole reason the flag
+carries a name. `--coverage`/`--stem` read *one* object with no test attached; an index built
+that way can select nothing whatever the change is, so `select-tests` refuses it rather than
+answering `0 selected`. Until 2026-08-10 this tutorial showed that pair, and a first-time user
+found out the hard way.
+
+The two files are the same translation unit before and after — `old/other.c` and
+`new/other.c`, not two differently-named files. Coverage records source paths as gcov wrote
+them, so a pair called `before.c`/`after.c` describes a file no test has ever run.
 
 The inputs are the two tutorials before this one: an index from
 [tutorial 1](01-coverage.md) and an impact set from [tutorial 2](02-change-impact.md).
