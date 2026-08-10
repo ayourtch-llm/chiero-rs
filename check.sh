@@ -55,9 +55,25 @@ if [ $lints -eq 1 ]; then
   # **The no-default-features build**, which nothing else here reaches: `cargo test` builds
   # with default features, so a break in 003 §3's hard constraint — chiero builds and runs
   # linking nothing — was invisible to this gate and caught only by CI. ~0.6 s warm.
-  if ! nodef=$(cargo build --workspace --no-default-features 2>&1); then
+  if ! nodef=$(RUSTFLAGS="-D warnings" cargo build --workspace --no-default-features 2>&1); then
     echo "$nodef" | grep -E "^error" | head -20
     echo "RED (--no-default-features build): CI runs this; the no-link constraint is §3's"
+    exit 1
+  fi
+  # **`RUSTFLAGS: -D warnings`, which is what CI compiles everything under**, and the seventh
+  # difference found *inside* a leg this script already claimed to cover. `.github/workflows/ci.yml`
+  # sets it globally in `env:`, so a plain **rustc** warning — not a clippy lint — is red there
+  # and was green here: a newer stable toolchain adding a lint fails CI with no code change,
+  # which is the shape of the 2026-08-10 "CI has been failing for a while" report. The gap was
+  # written down in this file on 2026-08-10 as a comment telling a reader to run two commands by
+  # hand; a gate that has to be remembered is not one (§8.3).
+  #
+  # `cargo check` rather than `build`: rustc lints fire during checking, it is ~8 s cold and
+  # under a second warm, and its fingerprint is its own — so this leg does not invalidate the
+  # `cargo test` artifacts the long leg below is about to use.
+  if ! warn=$(RUSTFLAGS="-D warnings" cargo check --workspace --all-targets 2>&1); then
+    echo "$warn" | grep -E "^(error|warning)" | head -20
+    echo "RED (rustc -D warnings): a *rustc* warning, which CI compiles as an error"
     exit 1
   fi
   # **023 contract 13a**, and the one CI gate with no test behind it: `check_proof_surface`
@@ -123,13 +139,11 @@ fi
 if [ $rc -eq 0 ]; then
   if [ $lints -eq 1 ]; then
     echo "GREEN: $passed passed across $suites suites, fmt and clippy clean"
-    # ⚠️ **Not the same as CI green.** `.github/workflows/ci.yml` sets `RUSTFLAGS: -D warnings`
-    # for the whole workflow, so a *rustc* warning — not a clippy lint — fails there and passes
-    # here. A newer stable toolchain adding a lint is red in CI with no code change, which is
-    # the shape of the 2026-08-10 report. Run the compile legs the way CI does before
-    # concluding the tree is clean:
-    #     RUSTFLAGS="-D warnings" cargo build --workspace --all-targets
-    #     RUSTFLAGS="-D warnings" cargo build --workspace --no-default-features
+    # ⚠️ **Still not identical to CI**, and the remaining differences are environmental rather
+    # than commands: CI resolves `dtolnay/rust-toolchain@stable` on the runner, so a newer
+    # rustc can introduce a lint this machine's toolchain does not have, and its `solver: z3`
+    # leg installs z3 from apt rather than using the one here. `--both-legs` covers the
+    # solverless configuration; nothing local can cover a toolchain this machine has not got.
   else
     echo "GREEN (tests only, lints skipped): $passed passed across $suites suites"
   fi
