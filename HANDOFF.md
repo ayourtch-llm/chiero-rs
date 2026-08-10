@@ -3942,6 +3942,13 @@ not an anecdote.*
   **`find_optimizations` and `layout` were wrong**, both in the same way — an envelope whose
   prose named what it could not see while its structured claim said `proven`. Both fixed.
 
+- ✅ **And the envelope *shape* holds everywhere** (checked the same day, an honest zero): all
+  eight envelope operations carry `fidelity`, `proven`, `assumptions`, `blind_spots`,
+  `determinism_key` and `truncation`. `cir` is not an envelope operation — it prints 020's text
+  format — so its absence is correct rather than a gap. **The defects were in what the fields
+  *said*, never in whether they were there**, which is worth knowing before hunting further:
+  a missing-field sweep is already done and found nothing.
+
 - **A prose caveat and a structured claim in one envelope must agree.** Both operation defects
   above already carried a blind spot naming exactly what was missed — `layout` even explained
   why it mattered ("not a smaller number but a wrong one") — beside `proven: true`. **The prose
