@@ -505,6 +505,7 @@ dependencies = [
  "chiero-select",
  "chiero-sema",
  "chiero-span",
+ "chiero-vpp",
  "indexmap",
  "serde_json",
 ]

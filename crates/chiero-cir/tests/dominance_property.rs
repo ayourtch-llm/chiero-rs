@@ -21,7 +21,10 @@ use std::collections::BTreeSet;
 struct Rng(u64);
 impl Rng {
     fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         self.0 >> 33
     }
     fn upto(&mut self, n: usize) -> usize {
@@ -69,7 +72,11 @@ fn reachable_without(succ: &[Vec<usize>], removed: Option<usize>) -> BTreeSet<us
 
 /// `%1` is defined in `def` and used in `use_`; everything else is scaffolding.
 fn module_of(succ: &[Vec<usize>], def: usize, use_: usize) -> Module {
-    let i = |kind| Inst { kind, span: Span::DUMMY, generated: false };
+    let i = |kind| Inst {
+        kind,
+        span: Span::DUMMY,
+        generated: false,
+    };
     let c = |v: i128| Operand::Const(Const::Int { bits: 32, val: v });
     let blocks = (0..succ.len())
         .map(|b| {
@@ -77,7 +84,13 @@ fn module_of(succ: &[Vec<usize>], def: usize, use_: usize) -> Module {
             if b == def {
                 insts.push(i(InstKind::Assign {
                     dst: ValueId(1),
-                    rv: RValue::Bin { op: BinOp::Add, a: c(1), b: c(2), ty: CTy::Int(32), signed: true },
+                    rv: RValue::Bin {
+                        op: BinOp::Add,
+                        a: c(1),
+                        b: c(2),
+                        ty: CTy::Int(32),
+                        signed: true,
+                    },
                 }));
             }
             if b == use_ {
@@ -101,7 +114,13 @@ fn module_of(succ: &[Vec<usize>], def: usize, use_: usize) -> Module {
                     f: BlockId(succ[b][1] as u32),
                 },
             };
-            Block { id: BlockId(b as u32), insts, term, gcov_lines: Default::default(), span: Span::DUMMY }
+            Block {
+                id: BlockId(b as u32),
+                insts,
+                term,
+                gcov_lines: Default::default(),
+                span: Span::DUMMY,
+            }
         })
         .collect();
     Module {
@@ -153,16 +172,30 @@ fn a_use_is_rejected_exactly_when_its_definition_does_not_dominate_it() {
             !expected_dominates,
             "case {case}: def=b{def} use=b{use_} succ={succ:?} — the verifier {} but the \
              definition says dominates={expected_dominates}",
-            if got_rejection { "rejected" } else { "accepted" }
+            if got_rejection {
+                "rejected"
+            } else {
+                "accepted"
+            }
         );
         checked += 1;
-        if got_rejection { rejected += 1 } else { accepted += 1 }
+        if got_rejection {
+            rejected += 1
+        } else {
+            accepted += 1
+        }
     }
     // **Both verdicts must actually occur.** A generator that only ever produced dominating
     // pairs would pass this test while checking nothing, which is the shape of every dead gate
     // in this project's history.
-    assert!(checked > 100, "only {checked} usable cases — the generator is too narrow");
-    assert!(rejected > 10, "no non-dominating cases generated ({rejected})");
+    assert!(
+        checked > 100,
+        "only {checked} usable cases — the generator is too narrow"
+    );
+    assert!(
+        rejected > 10,
+        "no non-dominating cases generated ({rejected})"
+    );
     assert!(accepted > 10, "no dominating cases generated ({accepted})");
     eprintln!("dominance property: {checked} cases, {rejected} rejected, {accepted} accepted");
 }
