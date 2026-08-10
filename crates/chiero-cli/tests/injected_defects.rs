@@ -1,5 +1,15 @@
 //! **Do the defect checkers fire at all?** A corpus with known ground truth, both ways.
 //!
+//! Covers: 040 contracts 2 and 20 — a checker firing on a negative fixture fails, naming the
+//! case, and the known-clean subset produces zero findings. Both are the *control* half below,
+//! which is the hard assertion here.
+//!
+//! ⚠️ **Not 040 contract 1**, which asks for more than this file gives: a positive fixture that
+//! fires *exactly once, at the right span*, per checker. The pairing is here and the span check
+//! is not, so citing c1 would be claiming precision this corpus does not measure. (c1 also names
+//! `tests/corpus/checkers/`, a directory that does not exist — the fixtures live in this file
+//! and in `chiero-check/tests/`. The location is stale; the requirement is not.)
+//!
 //! Every VPP sweep this project has published reports two kinds — `null-dereference` and one
 //! `division-by-zero` — while the vocabulary has nine (`out-of-bounds`, `use-after-free`,
 //! `use-after-scope`, `uninitialized-read`, `pointer-outside-object`, `wild-pointer`, …). A

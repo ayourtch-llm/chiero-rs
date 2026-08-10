@@ -192,7 +192,9 @@ fn cite_ids(text: &str) -> Vec<String> {
         // section/punctuation characters to the three digits.
         if at >= 3 {
             let doc = doc_before(bytes, at);
-            if let Some(doc) = doc {
+            if let Some(doc) = doc
+                && !disclaimed(bytes, at.saturating_sub(3))
+            {
                 let mut rest = &text[at + pat.len()..];
                 rest = rest.strip_prefix('s').unwrap_or(rest);
                 // A run of ids joined by `, ` or ` and `, so a sentence about two
@@ -261,6 +263,25 @@ fn cite_ids(text: &str) -> Vec<String> {
 
 /// The `NNN` a citation belongs to, allowing a short `§4,`-style interlude between it and
 /// the word `contract`. Bytes, not `&str`: a `§` three bytes back is not a char boundary.
+/// Whether the words just before a citation *disclaim* it.
+///
+/// **A mention is not a citation, and this scanner could not tell them apart.** Found
+/// 2026-08-10 while reading 040's uncited contracts: a comment saying *"⚠️ **Not 040 contract
+/// 1**, which asks for more than this file gives"* — written precisely to be honest about what
+/// the test does not cover — moved that contract from uncited to cited. Prose that disclaims a
+/// contract inflated the coverage number, which is the one direction a coverage tool must never
+/// move by itself.
+///
+/// The window is short on purpose. Looking back a whole sentence would swallow legitimate
+/// citations like *"is not the same as 021 contract 3"*, where the negation governs something
+/// else; eight bytes reaches `**Not ` and `not ` sitting directly on the number and nothing
+/// further.
+fn disclaimed(bytes: &[u8], at: usize) -> bool {
+    let lo = at.saturating_sub(8);
+    let head = String::from_utf8_lossy(&bytes[lo..at]).to_ascii_lowercase();
+    head.contains("not ")
+}
+
 fn doc_before(bytes: &[u8], at: usize) -> Option<String> {
     let mut end = at;
     // Skip back over at most a dozen bytes of section reference and punctuation.
