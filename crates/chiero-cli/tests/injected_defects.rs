@@ -220,6 +220,28 @@ const CASES: &[(&str, &str, &str, &str)] = &[
          int probe(void) { int (*f)(void) = g; return f(); }",
         "wild-pointer",
     ),
+    (
+        // Two more of `MemFault`'s vocabulary, added 2026-08-10 when a sweep of the enum showed
+        // the corpus had never touched them. Both already worked — guards, not probes.
+        "double_free",
+        "void *malloc(unsigned long); void free(void *);\n\
+         int probe(void) { int *p = malloc(4); if (!p) return 0; free(p); free(p); return 0; }",
+        "void *malloc(unsigned long); void free(void *);\n\
+         int probe(void) { int *p = malloc(4); if (!p) return 0; free(p); return 0; }",
+        "double-free",
+    ),
+    (
+        // ⚠️ `Misaligned` is the one member of the enum deliberately **not** reported: the
+        // engine filters it "until a `ub-strict` mode exists" (chiero-exec/src/lib.rs:3798,
+        // item 5j), because lowering emits `align 1` for a packed member and deriving `want`
+        // from the size would call ordinary legal C misaligned.
+        // `chiero-mem/tests/copy_alignment.rs` pins both halves, so no case for it lives here.
+        "bad_free",
+        "void free(void *);\n         int probe(void) { int v = 1; free(&v); return v; }",
+        "void *malloc(unsigned long); void free(void *);\n\
+         int probe(void) { int *p = malloc(4); if (!p) return 0; free(p); return 0; }",
+        "bad-free",
+    ),
 ];
 
 #[test]
