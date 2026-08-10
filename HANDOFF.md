@@ -1968,6 +1968,24 @@ typing the paths ever would.
 > The archive is linted like this file is. Section numbers did not change, so an old citation
 > still finds its subject.
 >
+> ### 🙋 DECISIONS WAITING ON THE OWNER — the whole list, in one place
+>
+> Six questions accumulated across sessions, each recorded where it arose and therefore scattered.
+> Gathered here with **what it costs and what it unblocks**, so they can be answered in one pass.
+> None is urgent; none can be answered by a wave.
+>
+> | # | question | cost to act | recommendation |
+> |---|---|---|---|
+> | 1 | **020 §4.13b — do CIR pointers stay untyped?** Settles `5i` *and* `5h`, the two dominant `vnet/` finding classes. `pointer-outside-object` fires only for symbolic offsets (§7.31), so the class's size is partly a property of what the checker can see | an architecture decision; no measurement will settle it | the two items cannot progress without it, and they are **34 of the 40** `vnet/` findings |
+> | 2 | **Language level — `__STDC_VERSION__` `201112L` or `201710L`?** (`1d`) VPP builds with no `-std=`, so gcc's default gnu17 applies and every glibc header configures for C17; chiero says C11 | a persona edit, plus a claim about the parser | C17 is editorially near-identical to C11, so the honest answer is probably `201710L` with the delta recorded — but it is a claim about what the parser *is* |
+> | 3 | **Personas defined in a config file** (`1b`) — your idea, 2026-08-08 | a design, then a wave | design first; it is the natural seam for anything target-configuration shaped |
+> | 4 | **Should a sanitizer abort count as confirming a finding?** (§7.32) `-fsanitize=undefined` would turn today's uninformative `completed` replays into `faulted` — measured, exit 134 | three characters to wire; the semantics are the work | ⚠️ **a UBSan abort says *some* UB happened, not that *this* finding's fault did.** A false confirmation is worse than an uninformative one |
+> | 5 | **`--solver-rlimit` for the pinned 40** (§7.24) — two of its rows vary 22/23/24 between runs of one binary, so they cannot be compared | needs a counter-based budget built first; `--solver-rlimit` bounds one query, not a run | **leave it** — `compare.py` excludes the two flagged rows, and 38 of 40 are solid |
+> | 6 | **Two spends**: make `COMPDB_INCLUDES` the default and re-take the plugin sweep (~65 min, recovers ~40 files); and fire the replay gate's gcov build (item 8, `make test-cov`, a separate build tree so the baseline is safe) | ~65 min and one gcov build | both are *additions* — neither re-litigates a published number, and the second is what gets 032 c18 past `recall 0.0%` |
+>
+> 📌 **Nothing else in §9.1 is blocked.** Every other live item is either a spend already costed
+> above, a historical note kept for its reasoning, or work done this session.
+>
 > ### ⏭️ START HERE — **§8.3's widening pattern is the standing job, and the heartbeat runs it.**
 >
 > Read **§8.3** first: it is the loop, its yield table, and the trap that let a defect survive
