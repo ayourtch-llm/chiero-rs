@@ -3092,9 +3092,18 @@ longer sits between a fresh context and the live work.
    that function has neither. `render_loc` turns a dummy span into *"source offset 0"*, so a
    fault raised there names no line — the same "right about the fault, wrong about where" that
    `free` had before `free_at`. Found by the sentinel audit (`Span::DUMMY` is the third
-   sentinel); **not reproduced**, since it needs a promotion to array on an object that is
-   already freed or too large. If it is reachable, the fix mirrors `free_at`: take the pointer,
-   not the id.
+   sentinel); **and now looks unreachable from C rather than merely
+   unreproduced** — three probes, both routes guarded upstream:
+
+   | route | what happens instead |
+   |---|---|
+   | promotion on a **freed** object (`p[i & 3]` after `free(p)`, read and write) | the access path's own state check fires first: `use-after-free`, correctly |
+   | promotion on a **too-large** object (`malloc(1 << 40)` then `p[i & 1023]`) | `alloc` reports `allocation-too-large` with the size named, before promotion |
+
+   So these look like defensive arms behind guards that already hold. ⏭️ **Left as-is
+   deliberately**: a fix with no red is a change nobody can show the value of, and the same
+   reasoning kept 8g a lead. If a future path does reach them, the fix mirrors `free_at` — take
+   the pointer, not the id.
 
 8f. ✅ **CLOSED 2026-08-10 — a shift past the operand width was unreported whenever the shifted value was symbolic**,
    though the rule depends only on the *count*. `chiero-exec/src/lib.rs:3282`:
