@@ -1453,6 +1453,14 @@ Mutation-checked.
 three were audited by eye on 2026-08-10 and all three are tests now; each audit's last act was
 to make itself unnecessary.
 
+🔴 **`layout` claimed one too** — same question, one operation over, and 041 §2 is explicit
+about the stake: *"Only `fidelity == Exact` is a proof, and only `Exact` licenses dropping a
+test in 032"*. A record whose field list cannot be stated (a zero-width bit-field, or a member
+the frontend could not size) left the envelope `Exact`/proven. ⚠️ **The blind spot naming that
+record was already there** — *"a padding number summed over the members that are left is not a
+smaller number but a wrong one"* — so the prose and the structured claim disagreed, and only one
+of them is machine-readable. ✅ Fixed: partial ⇒ `Bounded`.
+
 🔴 **`find-optimizations` claimed a proof it had not earned — the method's second real
 defect, and the first outside `find-bugs`.** 050 contract 3 makes the distinction load-bearing
 for `find_bugs` ("the string 'no defects found' never appears unqualified"), because an empty
@@ -1736,7 +1744,7 @@ at from the analysis side.
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
 three xtask gates were red: a crate whose test *binary* fails to build emits no `test result`
 line at all, so counting successes cannot detect a missing success. `./check.sh` keys on
-cargo's exit status and prints the failing suites first. Current: **2330 passed, 286 suites** (2026-08-10).
+cargo's exit status and prints the failing suites first. Current: **2331 passed, 286 suites** (2026-08-10).
 
 ⏱️ **It now takes over an hour per leg**, and that is the session's dominant cost — see §9's
 note on the corpus. `conversions` and `semantics` are ~55 s each, the two VPP gates ~60 s, and
@@ -3927,9 +3935,17 @@ not an anecdote.*
   and that rule had not been carried to the operations beside it. Asking it of three others on
   2026-08-10 found `find_optimizations` reporting `Exact` and `proven` over a function whose
   branch condition the engine never formed. **The signal was already in hand and thrown away**:
-  `detect` ran the engine, held `run.fidelity()`, and returned only the proposals. ⏭️ The
-  operations still unasked are `layout`, `impact`, `select_tests`, `expansion_sites` and
-  `explain_macro_expansion`.
+  `detect` ran the engine, held `run.fidelity()`, and returned only the proposals. **Asked of seven operations now**: `find_bugs` (has the rule), `check_reachable`,
+  `prove_equivalent`, `impact` and `select_tests` all correct — `select_tests` is the strictest,
+  never claiming `Exact` at all. **`find_optimizations` and `layout` were both wrong**, in the
+  same way: an envelope whose prose named what it could not see while its structured claim said
+  `proven`. ⏭️ Still unasked: `expansion_sites`, `explain_macro_expansion`.
+
+- **A prose caveat and a structured claim in one envelope must agree.** Both operation defects
+  above already carried a blind spot naming exactly what was missed — `layout` even explained
+  why it mattered ("not a smaller number but a wrong one") — beside `proven: true`. **The prose
+  is for a reader and the flag is for a consumer, and only one of them was right.** When adding
+  a caveat, check what the fidelity says.
 
 ### 11.1 About tests and what they can see
 
