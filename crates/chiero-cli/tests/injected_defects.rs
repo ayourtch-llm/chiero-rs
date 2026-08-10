@@ -195,6 +195,17 @@ const CASES: &[(&str, &str, &str, &str)] = &[
         "int probe(int x) { return x << 4; }",
         "shift-past-operand-width",
     ),
+    (
+        // **A write, not a read.** 8e's fix is in `address_term`, which both paths use, but the
+        // masked symptom was always observed on a *load*. This guards the store side: verified
+        // 2026-08-10 that a write through a wild pointer, a write through a struct field and a
+        // read through an array element all report correctly after the fix, so all five shapes
+        // measured as masked are covered.
+        "wild_pointer_write",
+        "int probe(void) { int *p = (int *) 0x1234; *p = 5; return 0; }",
+        "int probe(void) { int v = 0; int *p = &v; *p = 5; return v; }",
+        "wild-pointer",
+    ),
 ];
 
 #[test]
