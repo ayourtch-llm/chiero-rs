@@ -63,10 +63,12 @@ and both gate. Two things it cannot cover, stated because a badge is a claim:
   each one the corpus does not probe, the reason on the record.
 - **`misaligned` is filtered.** Lowering emits `align 1` for a packed member, so reporting it
   would call ordinary legal C misaligned. It returns when there is a `ub-strict` mode.
-- **The language level is C11** (`__STDC_VERSION__` `201112L`). Real builds that pass no
-  `-std=` get gcc's default `gnu17`, so a header configuring itself on that macro may take a
-  different branch under chiero than under your compiler. This is an open decision, not an
-  oversight — see the owner-decision list in `HANDOFF.md` §9.
+- **The language level is C11** (`__STDC_VERSION__` `201112L`) while a build passing no `-std=`
+  gets gcc's default `gnu17`. In principle a header configuring itself on that macro could take
+  a different branch under chiero; **measured 2026-08-10, none does.** Every comparison in
+  `/usr/include` and gcc's own headers is satisfied by both values or by neither — the 25 tests
+  for `> 201710L` are C23 branches — and the whole of VPP contains one use, `< 199901L`, false
+  either way. It stays an open decision (`HANDOFF.md` §9) rather than a live hazard.
 
 ## Test selection
 
