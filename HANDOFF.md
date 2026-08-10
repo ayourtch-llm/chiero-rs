@@ -2028,8 +2028,19 @@ the condition.
 compares a console block to a run, and this change would otherwise have shipped a plausible
 wrong number into the page a reader is most likely to trust.
 
-⏭️ `layout` records are the remaining half: `chiero_sema::RecordLayout` has no span, so that one
-starts in sema rather than in a checker.
+✅ **`layout` closed the same day, and it was the shortest of the three.**
+`chiero_ast::TypeExpr` already carried the span and `lay_out` already had the `TypeId`, so the
+definition's location was one field access away. `incomplete_layout` gets `Span::DUMMY`
+deliberately: a placeholder for a tag whose definition has not been seen is exactly the case
+with nowhere to point, and inventing the *reference's* location would send a reader to a use
+instead of the declaration they asked about.
+
+⏭️ **What the three have in common is worth more than any of them.** Each answer was produced
+by a layer that knew the location and handed it to a layer that dropped it, and in every case
+the fix was shorter than the investigation. The rule to carry: **when a layer converts an
+internal fact into an answer, ask what it is throwing away.** The remaining candidates are the
+operations whose answers are already positional — `impact`, `expansion-sites`, `explain-macro`
+— which is why they were never the problem.
 
 ### 7.5 How to check the workspace is green — `./check.sh`
 
@@ -3348,7 +3359,7 @@ reached 952 lines again, 316 of them finished work:
    numbers, so this needs a re-measure in the same change, not after it. That is why it is an
    item rather than a commit.
 
-5q. 🔶 **HALF CLOSED 2026-08-10 — proposals carry a location (§7.40); `layout` records still do not.** Was: **`find-optimizations` proposals name no location at all — and unlike a finding, the
+5q. ✅ **CLOSED 2026-08-10 — §7.40.** All three operations that answer *here is something about your code* now say where. Was: **`find-optimizations` proposals name no location at all — and unlike a finding, the
    information was never carried.** The neighbour check on §7.38, which fixed the same class in
    `find-bugs`: an answer must say *where*. A proposal today reads
 
