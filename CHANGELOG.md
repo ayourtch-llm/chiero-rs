@@ -42,6 +42,11 @@ Ten operations, each a command and a library call, each returning an
   pair reads one coverage object with no test attached, so an index built from it can select
   nothing whatever the change is. The refusal names the flags that work.
 - `chiero cir <file> --entry <fn>` prints one function rather than a quarter of a million lines.
+- **`find-bugs` groups findings by kind and location rather than by message text.** One access
+  reached on several paths is one entry with a `paths` count, where before a path-specific
+  clause in the message could split it into two. Counts can therefore go *down* for a program
+  whose defects are reached more than one way; re-measured on the pinned 40 VPP entry points,
+  where the answer is unchanged.
 
 ### Fixed
 
