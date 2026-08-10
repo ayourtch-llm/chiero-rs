@@ -3346,8 +3346,12 @@ reached 952 lines again, 316 of them finished work:
    `State::pc` is `(BlockId, usize)` and public, and `CheckerCtx` holds `module` as a *private*
    field with no accessor — so the checker has the position and cannot resolve it. The smallest
    honest fix is an accessor on `CheckerCtx` (`span_of(st)`: the instruction at `pc`, or the
-   block's terminator when `pc` is past the end), which every checker gains at once. Then
-   `Seen`/`Proposal` carry it, and the envelope end is a copy of §7.38. Four crates —
+   block's terminator when `pc` is past the end), which every checker gains at once. Everything it
+   needs is already inside `chiero-exec` and private to it: `State::func()` (line 904) returns
+   the current `FuncId` off the frame stack, and `State::pc` gives the block and the index — so
+   the accessor is a module lookup and a fallback to the block's terminator when `pc` is past
+   the last instruction. Then `Seen`/`Proposal` carry it, and the envelope end is a copy of
+   §7.38. Four crates —
    `chiero-exec`, `chiero-opt`, `chiero-tool`, `chiero-cli` — plus the operations registry and
    `tutorial_transcripts.rs`, which will refuse the changed output and should.
 
