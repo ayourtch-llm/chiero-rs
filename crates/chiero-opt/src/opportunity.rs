@@ -130,6 +130,12 @@ impl OppKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Proposal {
     pub kind: OppKind,
+    /// **Where the proposal is about.** A proposal that names no location is one a reader
+    /// cannot navigate to: `dead_branch` says which side is live and nothing about *which*
+    /// branch, in a translation unit that may be thirty thousand lines. 041 contract 17 keeps
+    /// this a reader's aid rather than a rewriter's input — nothing here writes to a source
+    /// file — but a reader who cannot find the branch cannot judge the proposal either.
+    pub span: chiero_span::Span,
     pub rationale: String,
     pub obligations: Vec<Obligation>,
     /// The constraints that imply the branch, as SMT-LIB.
@@ -260,6 +266,7 @@ fn detect_with(
             Proposal {
                 rationale: s.kind.rationale(advisory),
                 kind: s.kind,
+                span: s.span,
                 obligations,
                 evidence: s.constraints,
                 // No cycle model (§3's rule, which applies to §2 as much): these are real
@@ -279,6 +286,7 @@ fn detect_with(
 /// One thing a detector noticed, before the run's fidelity is known.
 struct Seen {
     kind: OppKind,
+    span: chiero_span::Span,
     constraints: Vec<String>,
     /// Set when *this* observation could not be cleared, whatever the run's fidelity says.
     ///
@@ -315,6 +323,8 @@ impl Checker for DeadBranch {
                 return Vec::new();
             }
             let path: Vec<Term> = st.path.clone();
+            // Before `arena()` borrows `ctx` mutably.
+            let span = ctx.span_of(st);
             let arena = ctx.arena();
             let mut constraints: Vec<String> = path.iter().map(|c| arena.to_smtlib(*c)).collect();
             // The condition itself, so a reader can see what was decided as well as by what.
@@ -324,6 +334,7 @@ impl Checker for DeadBranch {
                 .expect("no other thread holds this")
                 .push(Seen {
                     kind: OppKind::DeadBranch { taken: *t },
+                    span,
                     constraints,
                     // A dead branch's own doubt is the run's: it is decided by whether the
                     // search finished, which `detect` knows and this does not.
@@ -583,6 +594,9 @@ impl Checker for RedundantLoad {
                                 .lock()
                                 .expect("no other thread holds this")
                                 .push(Seen {
+                                    // **The instruction's own span**, which the event carries:
+                                    // the second load is the one a reader would delete.
+                                    span: inst.span,
                                     kind: OppKind::RedundantLoad {
                                         object: key.0,
                                         offset: key.1,
@@ -636,6 +650,8 @@ impl Checker for RedundantLoad {
                                 .lock()
                                 .expect("no other thread holds this")
                                 .push(Seen {
+                                    // The store that is dead, not the read that proved it so.
+                                    span: inst.span,
                                     kind: OppKind::DeadStore {
                                         object: key.0,
                                         offset: key.1,

@@ -2224,6 +2224,21 @@ pub fn find_optimizations(
     module: &chiero_cir::Module,
     cfg: &chiero_opt::opportunity::OppCfg,
 ) -> Envelope {
+    find_optimizations_located(module, cfg, None)
+}
+
+/// The same, with the map that turns each proposal's span into a file and a line.
+///
+/// **A proposal that names no location is one a reader cannot navigate to**, and until
+/// 2026-08-10 that is what this was: `dead_branch` said which side was live and nothing about
+/// *which branch*, in a translation unit that may be thirty thousand lines. 041 contract 17
+/// keeps a location a reader's aid rather than a rewriter's input — nothing here writes to a
+/// source file — but a reader who cannot find the branch cannot judge the proposal either.
+pub fn find_optimizations_located(
+    module: &chiero_cir::Module,
+    cfg: &chiero_opt::opportunity::OppCfg,
+    map: Option<&chiero_span::SourceMap>,
+) -> Envelope {
     if !module.funcs.iter().any(|f| *f.name == cfg.entry) {
         return Envelope::new(
             serde_json::json!({
@@ -2260,6 +2275,13 @@ pub fn find_optimizations(
                             "kind": "dead_store", "object": object, "offset": offset,
                         }),
                 },
+                // Same rule as a finding's (§7.38): `expansion_loc`, and absent rather than
+                // null when there is no map to resolve against.
+                "file": map
+                    .and_then(|m| m.expansion_loc(p.span))
+                    .zip(map)
+                    .map(|(l, m)| m.file(l.file).path().display().to_string()),
+                "line": map.and_then(|m| m.expansion_loc(p.span)).map(|l| l.line),
                 "rationale": p.rationale,
                 "advisory": p.advisory,
                 "benefit": format!("{:?}", p.benefit),
@@ -2275,6 +2297,17 @@ pub fn find_optimizations(
                     })
                     .collect::<Vec<_>>(),
             })
+        })
+        .map(|mut v| {
+            // Absent, not null: `Envelope::render` prints a null as `(none)`, and a caller that
+            // built its module by hand has no file to name.
+            if v["file"].is_null()
+                && let Some(o) = v.as_object_mut()
+            {
+                o.shift_remove("file");
+                o.shift_remove("line");
+            }
+            v
         })
         .collect();
 

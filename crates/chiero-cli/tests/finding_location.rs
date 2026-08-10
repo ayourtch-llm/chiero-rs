@@ -1,4 +1,4 @@
-//! **A finding must say where it is.**
+//! **An answer must say where it is.**
 //!
 //! Found 2026-08-10 while reading 040 contract 1 — *"≥ 1 positive fixture (fires, exactly once,
 //! **at the right span**)"* — and discovering the contract could not be checked from the command
@@ -149,5 +149,49 @@ fn one_access_is_one_finding_however_many_paths_reach_it() {
             .is_some_and(|m| m.contains("pointer parameter")),
         "the group kept the less informative of its messages:\n{}",
         nulls[0]
+    );
+}
+
+/// The same rule, one operation over. A proposal that names no location is one a reader cannot
+/// navigate to — `dead_branch` said which side was live and nothing about *which branch*.
+#[test]
+fn every_proposal_names_a_file_and_a_line() {
+    let p = scratch().join("opt.c");
+    std::fs::write(
+        &p,
+        "int probe (int x)\n{\n  int a[2];\n  a[0] = 1;\n  return a[0] + a[0];\n}\n",
+    )
+    .expect("write");
+    let out = Command::new(bin())
+        .args([
+            "find-optimizations",
+            p.to_str().unwrap(),
+            "--entry",
+            "probe",
+            "--json",
+            "--no-system-headers",
+        ])
+        .output()
+        .unwrap_or_else(|e| panic!("cannot run `{}`: {e}", bin()));
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let v: serde_json::Value =
+        serde_json::from_str(&text).unwrap_or_else(|e| panic!("not JSON ({e}):\n{text}"));
+    let proposals = v["result"]["proposals"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no proposals array:\n{v:#}"));
+    assert!(
+        !proposals.is_empty(),
+        "the fixture must produce a proposal or this test measures nothing:\n{v:#}"
+    );
+    for pr in proposals {
+        assert!(
+            pr["file"].is_string() && pr["line"].is_u64(),
+            "a proposal with no location cannot be acted on:\n{pr:#}"
+        );
+    }
+    // The second `a[0]` is on line 5, and that is the load a reader would remove.
+    assert!(
+        proposals.iter().any(|pr| pr["line"].as_u64() == Some(5)),
+        "no proposal points at the redundant load's own line:\n{v:#}"
     );
 }

@@ -1466,6 +1466,40 @@ impl<'a, 'm> CheckerCtx<'a, 'm> {
         self.a
     }
 
+    /// **Where the state is, as a source span** — what a checker needs to say *where*.
+    ///
+    /// A checker could reach everything else about a state and not this: `State::pc` is public
+    /// and `module` is a private field of this struct, so a checker had the position and no way
+    /// to resolve it. `chiero-opt`'s proposals therefore named no location at all, in a
+    /// translation unit that may be thirty thousand lines — the same defect `find_bugs` had
+    /// until 2026-08-10 (§7.38), one layer further down, and every checker written after this
+    /// one would have inherited it.
+    ///
+    /// The instruction at `pc` when there is one; **the last instruction otherwise**, which is
+    /// where a fork is.
+    ///
+    /// `pc` sits past the last instruction exactly when the state is at the terminator, and a
+    /// `Terminator` carries no span of its own. Falling back to the *block's* span looked
+    /// right and was not: a block's span is where it starts, so every dead branch in an entry
+    /// block was reported at the function's opening line — measured on tutorial 7's
+    /// `classify.c`, where the `if` is on line 3 and the proposal said line 1. **A wrong
+    /// location is worse than none**, because a reader who follows it and finds nothing stops
+    /// trusting the field. The last instruction is the one that computed the condition, which
+    /// is where a reader would look for the branch.
+    pub fn span_of(&self, st: &State) -> Span {
+        let cur = st.func();
+        let Some(f) = self.module.funcs.iter().find(|f| f.id == cur) else {
+            return Span::DUMMY;
+        };
+        let Some(b) = f.blocks.iter().find(|b| b.id == st.pc.0) else {
+            return Span::DUMMY;
+        };
+        match b.insts.get(st.pc.1) {
+            Some(i) => i.span,
+            None => b.insts.last().map_or(b.span, |i| i.span),
+        }
+    }
+
     /// This checker's memory for the current state, downcast to its own type.
     ///
     /// Panics if the type does not match what [`Checker::initial_state`] returned, which

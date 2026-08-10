@@ -573,10 +573,12 @@ fn find_optimizations(o: &Options) -> Result<chiero_tool::Envelope, Fault> {
         .entry
         .clone()
         .ok_or_else(|| Fault::Usage("find-optimizations needs --entry <fn>".into()))?;
-    let m = lower(&f[0], &read(&f[0])?, o.frontend()).map_err(Fault::Failed)?;
-    Ok(chiero_tool::find_optimizations(
+    let (m, map) =
+        frontend::lower_located(&f[0], &read(&f[0])?, o.frontend()).map_err(Fault::Failed)?;
+    Ok(chiero_tool::find_optimizations_located(
         &m,
         &chiero_opt::opportunity::OppCfg::new(entry),
+        Some(&map),
     ))
 }
 

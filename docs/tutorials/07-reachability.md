@@ -28,6 +28,8 @@ proposals:
   - kind:
       kind: dead_branch
       reachable_side: true
+    file: classify.c
+    line: 4
     rationale: the false side of this branch cannot be taken: the path condition already decides it
     advisory: false
     benefit: Unquantified
@@ -41,6 +43,8 @@ proposals:
       kind: redundant_load
       object: 2
       offset: 0
+    file: classify.c
+    line: 4
     rationale: object 2 at offset 0 is loaded twice with nothing between that could have written it, so the second load could reuse the first
     advisory: false
     benefit: Unquantified

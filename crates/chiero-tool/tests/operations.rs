@@ -113,6 +113,11 @@ const OPS: &[Op] = &[
         samples: find_bugs_located_samples,
         never_exact: None,
     },
+    Op {
+        name: "find_optimizations_located",
+        samples: find_optimizations_located_samples,
+        never_exact: None,
+    },
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -215,6 +220,42 @@ fn find_bugs_located_samples() -> Vec<Envelope> {
                 assert!(
                     f.get("file").is_none() && f.get("line").is_none(),
                     "a finding built with no source map still carries a location: {f}"
+                );
+            }
+        }
+    }
+    out
+}
+
+/// The same inputs as `find_optimizations`, through the variant that resolves each proposal's
+/// span — and with no map, which is the configuration in which the location must be *absent*.
+fn find_optimizations_located_samples() -> Vec<Envelope> {
+    let nested = "func @f(%0: i32) -> i32 {\nentry:\n  .line 1\n  %1 = cmp sgt i32 %0, 0i32\n                    br %1, bb1, bb4\nbb1:\n  .line 2\n  %2 = cmp sgt i32 %0, 0i32\n                    br %2, bb2, bb3\nbb2:\n  .line 3\n  ret 1i32\nbb3:\n  .line 4\n                    ret 2i32\nbb4:\n  .line 5\n  ret 3i32\n}";
+    let plain = "func @f(%0: i32) -> i32 {\nentry:\n  .line 1\n  ret %0\n}";
+    let out: Vec<Envelope> = vec![
+        chiero_tool::find_optimizations_located(
+            &m(nested),
+            &chiero_opt::opportunity::OppCfg::new("f"),
+            None,
+        ),
+        chiero_tool::find_optimizations_located(
+            &m(plain),
+            &chiero_opt::opportunity::OppCfg::new("f"),
+            None,
+        ),
+        chiero_tool::find_optimizations_located(
+            &m(plain),
+            &chiero_opt::opportunity::OppCfg::new("nope"),
+            None,
+        ),
+    ];
+    for e in &out {
+        let v: serde_json::Value = serde_json::from_str(&e.to_json()).expect("valid JSON");
+        if let Some(ps) = v["result"]["proposals"].as_array() {
+            for p in ps {
+                assert!(
+                    p.get("file").is_none() && p.get("line").is_none(),
+                    "a proposal built with no source map still carries a location: {p}"
                 );
             }
         }
