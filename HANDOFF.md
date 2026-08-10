@@ -1933,6 +1933,42 @@ two contracts read there produced one of each kind:
   redundant blind spot. Recommend the amendment; the behaviour is right and the contract is
   older than the field.
 
+### 7.38 A finding said what was wrong and never where — found by reading a contract
+
+The most useful defect of the day, and it came out of §7.37's list rather than out of any
+corpus. Reading 040 contract 1 — *"≥ 1 positive fixture (fires, exactly once, **at the right
+span**)"* — the question *how would a test check the span?* had no answer: `find-bugs` printed
+
+```text
+findings:
+  - message: null-dereference: access at offset 0 of NULL
+    paths: 1
+```
+
+and nothing else. **`chiero_exec::Finding` has carried `span` since it was written, and the
+envelope dropped it.** In a translation unit that is a megabyte of expanded headers, a reader
+who cannot be told where has to re-run the search by hand; an agent cannot act at all. The map
+was built three lines away in `frontend::lower`, used for every diagnostic in that file, and
+then discarded — one return value from the operation that needed it most.
+
+📌 **Why it survived: every test of `find_bugs` builds its module from hand-written CIR**, where
+there is no source map and therefore nothing to lose. The same shape as the day's other gaps —
+a surface tested through a path no caller uses — one layer down from where
+`injected_defects.rs` found it.
+
+`expansion_loc`, not `spelling_loc`: a defect inside a macro body belongs, for a reader, at the
+place the macro was *used*, which is what gcov sees (030 §1) and what finding deduplication
+already keys on (040 c11).
+
+⚠️ **Three gates refused this change and all three were right.** `operations.rs` demanded
+samples for the new public function; `tutorial_transcripts.rs` refused tutorial 6, whose console
+block no longer matched a real run; and `select_tests_cli.rs` failed once in a full `cargo test`
+and never in isolation — four concurrent tests writing the same `old/other.c`, where identical
+content is not the same as safe.
+
+⏭️ **040 c1 is still uncited**: *fires exactly once* is not asserted, only *fires at the right
+line*. That is now a test somebody can write, which it was not this morning.
+
 ### 7.5 How to check the workspace is green — `./check.sh`
 
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
