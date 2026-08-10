@@ -3665,12 +3665,25 @@ impl<'m> Engine<'m> {
                         self.lowering_gap(s, i.span, "a volatile store at a symbolic offset");
                         return;
                     }
+                    // **Declaring the gap is half the obligation; the other half is not
+                    // keeping the old bytes.** The comment above states the rule and the
+                    // *concrete*-offset path obeys it — its `Some(Value::Undef)` arm havocs
+                    // the range. This path used to `return`, so `a[i & 3] = (int) src()` with
+                    // an unmodelled `src` left `a` exactly as it was and a later read answered
+                    // the pre-store value with confidence. One fact, two readers.
+                    //
+                    // **The whole object, because the offset is symbolic**: nothing here knows
+                    // which byte was hit, so every byte the store could have reached becomes
+                    // unknown. Over-approximating is the safe direction — the alternative is
+                    // the confident wrong answer 021 §3.1 forbids.
                     let Some(v) = self.operand(a, s, val) else {
                         self.lowering_gap(s, i.span, "a store of an untranslatable value");
+                        self.havoc_whole_object(a, s, base, i.span);
                         return;
                     };
                     let Some(vt) = self.address_of_value(a, s, v, i.span) else {
                         self.lowering_gap(s, i.span, "a store of a value with no term");
+                        self.havoc_whole_object(a, s, base, i.span);
                         return;
                     };
                     // Byte by byte, least significant first, mirroring the load's
@@ -6580,6 +6593,38 @@ impl<'m> Engine<'m> {
     /// Split out because two callers need it — `cmp_operand` and the `Store` handler — and
     /// the first draft implemented it in one and refused in the other, which regressed two of
     /// wave 195's properties at once. One implementation, so they cannot disagree.
+    /// Every byte of `base` becomes unknown.
+    ///
+    /// **Declaring a gap is half the obligation; the other half is not keeping the old bytes.**
+    /// `exec_inst`'s comment states the rule — *"a refusal that silently keeps stale bytes is
+    /// worse than a refusal, because the run then produces a confident wrong answer"* — and the
+    /// concrete-offset store path obeys it. The symbolic path used to `return` instead, so
+    /// `a[i & 3] = (int) src()` with an unmodelled `src` left `a` untouched and a later read
+    /// answered the pre-store value with confidence (item 8g).
+    ///
+    /// **The whole object, because the offset is symbolic**: nothing here knows which byte the
+    /// store reached, so every byte it could have reached becomes unknown. Over-approximating
+    /// is the safe direction.
+    fn havoc_whole_object(
+        &mut self,
+        a: &mut TermArena,
+        s: &mut State,
+        base: chiero_mem::ObjectId,
+        span: Span,
+    ) {
+        let Some(size) = s.mem.size_of_pub(base) else {
+            return;
+        };
+        let r = s.mem.havoc_range_reporting(
+            a,
+            chiero_mem::Pointer { base, off: 0 },
+            size,
+            chiero_mem::HavocFill::Uninitialized,
+            span,
+        );
+        self.report_faults(a, s, &r.faults, span);
+    }
+
     fn address_of_value(
         &mut self,
         a: &mut TermArena,
