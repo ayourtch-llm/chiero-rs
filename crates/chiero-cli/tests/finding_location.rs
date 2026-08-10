@@ -317,3 +317,38 @@ fn a_finding_carries_only_the_fields_it_can_have() {
         );
     }
 }
+
+/// The third site of the same shape: `prove-equivalent`'s `differs` verdict printed
+/// `replay: (none)` immediately above a blind spot saying, in words, that no harness was
+/// compiled. `Replay` has no constructor yet, so the key was null on *every* answer this
+/// operation has ever given.
+#[test]
+fn a_differs_verdict_does_not_print_a_key_that_is_always_empty() {
+    let d = scratch();
+    let (a, b) = (d.join("abs1.c"), d.join("abs2.c"));
+    std::fs::write(&a, "int probe (int x) { return x < 0 ? -x : x; }\n").expect("write");
+    std::fs::write(&b, "int probe (int x) { return x & 0x7fffffff; }\n").expect("write");
+    let out = Command::new(bin())
+        .args([
+            "prove-equivalent",
+            a.to_str().unwrap(),
+            b.to_str().unwrap(),
+            "--entry",
+            "probe",
+            "--json",
+            "--no-system-headers",
+        ])
+        .output()
+        .unwrap_or_else(|e| panic!("cannot run `{}`: {e}", bin()));
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let v: serde_json::Value =
+        serde_json::from_str(&text).unwrap_or_else(|e| panic!("not JSON ({e}):\n{text}"));
+    // The corpus in `injected_rewrites.rs` pins that this pair differs; here only the shape.
+    if v["result"]["verdict"] == "differs" {
+        assert!(
+            v["result"].get("replay").is_none_or(|r| !r.is_null()),
+            "`replay` is null on every `differs` this operation can produce, and the blind \
+             spot below it already says so:\n{v:#}"
+        );
+    }
+}

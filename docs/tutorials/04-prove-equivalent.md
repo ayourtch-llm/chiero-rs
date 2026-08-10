@@ -43,7 +43,6 @@ observation:
   after: 2147483647
   after_signed: 2147483647
   width: 32
-replay: (none)
 proven — this holds for all inputs (Exact)
   blind spot: no replay harness was compiled (041 §1.3), so the divergence is chiero's semantics and has not been demonstrated against a compiler
 ```

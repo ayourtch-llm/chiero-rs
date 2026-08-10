@@ -732,12 +732,19 @@ fn envelope_for(v: chiero_opt::Equivalence) -> Envelope {
             observation,
             replay,
         } => {
-            let result = serde_json::json!({
-                "verdict": "differs",
-                "input": input.bindings.iter().map(binding_json).collect::<Vec<_>>(),
-                "observation": divergence_json(&observation),
-                "replay": serde_json::Value::Null,
-            });
+            // `replay` is dropped when it is null — which is *every* answer today, since
+            // `Replay` has no constructor — because the blind spot two lines down says the same
+            // thing in words. The key stays in the literal so that building a `Replay` makes it
+            // appear rather than requiring somebody to remember to add it back.
+            let result = drop_null(
+                serde_json::json!({
+                    "verdict": "differs",
+                    "input": input.bindings.iter().map(binding_json).collect::<Vec<_>>(),
+                    "observation": divergence_json(&observation),
+                    "replay": serde_json::Value::Null,
+                }),
+                &["replay"],
+            );
             let env = Envelope::new(result, Fidelity::Exact);
             match replay {
                 // Unreachable today — `Replay` has no constructor — and written as a match
