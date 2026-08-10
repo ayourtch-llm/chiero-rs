@@ -1837,6 +1837,30 @@ consumer can act on, so `select_tests_named` carries the caller's own names back
 | `chiero-tool/tests/operations.rs` | a new public function returning an `Envelope` with no samples — 050 contracts 1 and 4b are quantified over operations | registered, with the declaration that naming a test cannot make a historical measurement a proof |
 | `chiero-cli/tests/help.rs` | `select-tests --help` advertising `--coverage`, once the coverage handling moved into a helper | the gate now follows an operation into any function it hands `o` to. **A gate that goes red when code is *tidied* teaches people to weaken it** |
 
+### 7.35 A paired C corpus for `prove-equivalent` — an honest zero worth having
+
+§8.3's strongest form — *widen toward a corpus whose answer is known in advance* — pointed at
+the operation next door to the one that paid. `injected_defects.rs` exists because every
+published `find-bugs` number came through the CLI while every test drove hand-written CIR, and
+it found seven defects in a morning. `prove-equivalent` was in the same position:
+`chiero-tool/tests/prove_equivalent.rs` is eight `Module`s built by hand, and a caller starts at
+C. `crates/chiero-cli/tests/injected_rewrites.rs` is twelve rewrites through the real command.
+
+| really equivalent | really different |
+|---|---|
+| `x + 0` → `x`; `x * 2u` → `x << 1`; De Morgan; unsigned reassociation; branch → select; a concrete loop → its closed form | abs at `INT_MIN`; `x / 2` → `x >> 1`; an unsigned compare cast to signed; an off-by-one bound; `%` versus `&` on a negative; a moved parenthesis in a shift |
+
+📌 **All twelve are decided correctly — no false proof, no false accusation.** That is a real
+result rather than a null one: it says the adjudicator is in much better shape than the defect
+checkers were, measured from the surface a caller uses rather than from the one the tests used.
+
+⚠️ **And it would have turned half of CI red.** With `CHIERO_SMT_SOLVER=/nonexistent` — a
+*supported* configuration (022 contract 2) with its own CI leg — nine of the twelve become
+`unknown`, which is the correct answer and not a failure. The rule the file settled on is worth
+reusing: **the wrong answers are forbidden unconditionally, because a false proof is a false
+proof with or without z3; only the floor that says *something was decided* is conditional on a
+backend.** Found by running the second leg before committing rather than after.
+
 ### 7.5 How to check the workspace is green — `./check.sh`
 
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
