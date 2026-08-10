@@ -102,6 +102,10 @@ findings to 1:
 | `--entry-ptr-nonnull` | the entry's pointer parameters are not null. Removes real paths, so the envelope records it. |
 | `--report-invented-bounds` | show accesses that cross a bound *chiero* invented behind an entry pointer. Off by default; the count is always reported. |
 
+**[What chiero cannot do](docs/LIMITS.md)** is one page, and it is the other thing to read
+first: the supported platform, what each operation does not compare, and where an empty answer
+is a limit of the tool rather than a fact about your code.
+
 The [tutorials](docs/tutorials/) are the fastest way in. Each is a complete worked example you
 can paste and run, and every transcript on those pages came from a real run:
 
