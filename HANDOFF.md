@@ -2662,6 +2662,16 @@ reached 952 lines again, 316 of them finished work:
      discriminator. Read the corpus before asserting its edge (§8.3 step 1).
    - `vnet/ip*` and `plugins/*/` beyond one function per file are untouched by the find-bugs
      sweep; `pick_entries.py --per-file N <files>` takes a list.
+     ⚠️ **Do this *after* `COMPDB_INCLUDES` is the default, not before** (2026-08-10). A plugin
+     sweep run today measures ~40 files under flags VPP does not use — they fail to preprocess
+     for want of an `-I` and land as "chiero cannot read this" (§7.30). Widening first would
+     add rows to a `failed` column that the flag fix then empties, and the numbers would not be
+     comparable across the change.
+     📌 **And expect the yield to be a lid, not a list** (§11.2). The 40 recovered files swept
+     on 2026-08-10 gave 489 findings of which **465 came from one `cut` entry**, and the single
+     `Exact` was the known entry-pointer class. A wider slice of the same kind is the corpus
+     move this file already warns about — *a corpus of a new kind beats a wider slice of the
+     same kind*.
 
 3z. **⚠️ Original entry, kept for the general form.** `compile_commands.json` is one command away,
    and two contracts have been blocked on its absence since M2.** `docs/reviews/m2-frontend-notes.md` records *"`…/compile_commands.json`
