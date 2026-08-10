@@ -50,6 +50,7 @@ envelope where the two disagree.
 - [`../specs/`](../specs/) — the numbered specifications each crate is written against. Every
   one ends with testable contracts the suite cites by number, and most record what the
   alternative was and why it lost.
-- `chiero --help` — the nine commands, and the flags each takes.
+- `chiero --help` — every command; `chiero <operation> --help` — one command's arguments and
+  the options it actually reads.
 - `tests/corpus/vpp-findings/` — the same operations pointed at real VPP, with the numbers and
   the script that produced them.

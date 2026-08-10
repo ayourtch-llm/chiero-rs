@@ -44,7 +44,8 @@ is worth two minutes before anything else.
 | where a macro came from | `chiero explain-macro` | ✅ |
 | what a macro expands into, everywhere | `chiero expansion-sites` | ✅ |
 
-Each is a command *and* a library call; `chiero --help` lists all nine.
+Each is a command *and* a library call. `chiero --help` lists every operation; `chiero <operation> --help` gives one operation's arguments and the options it reads, which
+is a handful rather than the full list.
 
 **Verified against the whole of VPP** (~1.5M lines): 1,871 translation units parse and lower
 with **zero** refusals — the three remaining diagnostics are VPP's own ISO C divergences, which
@@ -87,7 +88,8 @@ proven — this holds for all inputs (Exact)
   blind spot: no replay harness was compiled (041 §1.3), so the divergence is chiero's semantics and has not been demonstrated against a compiler
 ```
 
-`chiero --help` lists all nine operations. Every one of them prints an
+`chiero --help` lists every operation, and `chiero <operation> --help` narrows the option list
+to the ones that operation reads. Every one of them prints an
 [envelope](#the-one-rule-worth-knowing-first); `--json` gives the machine-readable form.
 
 Three flags are worth knowing before pointing `find-bugs` at real code, because they are the

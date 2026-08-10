@@ -141,11 +141,28 @@ fn flags_read_by(func: &str) -> BTreeSet<String> {
         .unwrap_or_else(|| panic!("no `fn {func}(o: &Options)` in main.rs"));
     let body = &MAIN[start + 1..];
     let end = body[1..].find("\nfn ").map_or(body.len(), |i| i + 1);
-    let body = &body[..end];
+    // **Whitespace out first.** rustfmt writes `let entry = o\n        .entry\n        .clone()`,
+    // so a plain `contains("o.entry")` says `prove_equivalent` never reads `--entry` — an
+    // under-detection, which is the direction that makes a gate quietly pass.
+    let body: String = body[..end].chars().filter(|c| !c.is_whitespace()).collect();
     let mut flags = BTreeSet::new();
     for (field, flag) in FIELD_FLAG {
-        if body.contains(&format!("o.{field}")) {
-            flags.insert((*flag).to_string());
+        // **Whole field, not a prefix.** `o.entry` is a prefix of `o.entry_ptr_nonnull`, so a
+        // substring test would make every operation that reads the assumption flag look as
+        // though it read `--entry` — the flattering direction, and silent.
+        let needle = format!("o.{field}");
+        let mut at = 0;
+        while let Some(i) = body[at..].find(&needle) {
+            let end = at + i + needle.len();
+            at = end;
+            if !body[end..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+            {
+                flags.insert((*flag).to_string());
+                break;
+            }
         }
     }
     flags

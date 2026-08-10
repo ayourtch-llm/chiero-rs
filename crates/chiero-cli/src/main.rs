@@ -12,99 +12,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 mod frontend;
+mod help;
 
 use frontend::{Frontend, lower};
-
-const USAGE: &str = "\
-chiero — a symbolic C execution environment
-
-USAGE:
-    chiero <operation> [args] [options]
-
-OPERATIONS:
-    prove-equivalent <before.c> <after.c> --entry <fn>
-            Adjudicate a rewrite. Either a proof that the two agree for every
-            input, or a concrete input at which they do not.  (041 §1)
-
-    find-bugs <file.c> --entry <fn>
-            Run 040's defect checkers from a function. An empty list is an
-            answer only when the envelope says the search finished.  (050 §3)
-
-    check-reachable <file.c> --entry <fn> --line <n>
-            Can execution get to that line? Proved-nothing-does and
-            chiero-did-not are different answers, and it says which.  (050 §3)
-
-    layout <file.c> [--cache-line <n>]
-            Cache-line and padding analysis of the structs in a translation
-            unit. Proposals only — nothing is ever rewritten.  (041 §3)
-
-    find-optimizations <file.c> --entry <fn>
-            Proposals with obligations and benefit labels. Never rewrites
-            anything.  (041 §2)
-
-    impact <before.c> <after.c>
-            What a source change reaches — through calls, types, globals and
-            macro expansions.  (031)
-
-    select-tests <before.c> <after.c> --coverage <dir> --stem <name>
-            Which tests are worth running for that change, ranked, with the
-            reason for each.  (032)
-
-    expansion-sites <file.c> --macro <NAME> [--cursor <n>] [--limit <n>]
-            Every place a macro expands in this translation unit.  (050 §3)
-
-    cir <file.c> [--entry <fn>]
-            Print the lowered module in 020's normative textual format. The
-            answer is about chiero rather than about your program, so it
-            carries no envelope -- it round-trips instead.
-
-    explain-macro <file.c> --line <n> [--col <n>]
-            What macro chain produced the code on a line, innermost first.
-
-OPTIONS:
-    --cache-line <n>
-                    Cache-line size in bytes for `layout`. Default 64.
-    --json          Print the envelope as JSON. Default is a human rendering.
-    --replay        Emit a C harness demonstrating a `differs` verdict.
-    --allow-replay-exec
-                    Compile and run that harness. Off by default: this builds
-                    and executes code, so a caller has to ask.  (050 §6)
-    -I <dir>        Add an include path. Repeatable.
-    --no-system-headers
-                    Do not ask the C compiler where its own headers are. On by
-                    default, because real C includes <stdio.h>.
-    --report-invented-bounds
-                    Show bounds findings against the object chiero invents behind
-                    an entry pointer. Off by default: chiero knows neither the
-                    caller's object size nor where in it the pointer points, so
-                    those say nothing about your program. The count is always
-                    reported, shown or not.
-    --time-budget <secs>
-                    Stop `find-bugs` and `check-reachable` after that many seconds
-                    and print what was found so far. Decimals allowed; 0 means no
-                    limit, as in timeout(1). Default 60. A run that ends here is
-                    marked `nondeterministic_abort`: where it stopped depends on
-                    the machine, so the answer is a measurement.  (023 §8.1)
-    --solver-rlimit <units>
-                    Stop any single solver query after that many of z3's work
-                    units. 0 (the default) is no limit. Unlike --time-budget this
-                    is deterministic — work units do not move with machine speed
-                    or thread count — so a run cut by it is an ordinary answer
-                    rather than a measurement, and it is the only bound that
-                    reaches inside one long query.  (023 §8)
-    --entry-ptr-nonnull
-                    Assume the pointer parameters of --entry are not null. For a
-                    helper whose callers check, the null path is one the program
-                    does not have. Removes real paths, so it is recorded as an
-                    assumption in the envelope.
-    -D <k[=v]>      Define a macro. Repeatable.
-    -h, --help      This text.
-
-Every operation prints an ENVELOPE: the result, plus `fidelity`, `proven`,
-`assumptions` and `blind_spots`. `proven` is true only when the answer holds for
-all inputs. An empty result is not the same as a clean one — see
-docs/tutorials/05-envelope.md.
-";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -133,7 +43,16 @@ fn main() -> ExitCode {
             }
         }
         Err(Fault::Usage(m)) => {
-            eprintln!("chiero: {m}\n\n{USAGE}");
+            // **The page for the operation they were trying to run**, when they named one. The
+            // global page answers "which operations are there", and somebody who typed
+            // `select-tests` has already answered that; what they are missing is which of
+            // eighteen options this one reads. Reported 2026-08-10 by the first end-to-end user,
+            // who met exactly this: a usage error about `--stem`, answered with every operation.
+            let page = args
+                .first()
+                .and_then(|a| help::op_help(a))
+                .unwrap_or_else(help::usage);
+            eprintln!("chiero: {m}\n\n{page}");
             ExitCode::from(2)
         }
         Err(Fault::Failed(m)) => {
@@ -156,7 +75,7 @@ fn run(args: &[String]) -> Result<String, Fault> {
         return Err(Fault::Usage("no operation given".into()));
     }
     if args.iter().any(|a| a == "-h" || a == "--help") {
-        return Ok(USAGE.to_string());
+        return Ok(help::op_help(&args[0]).unwrap_or_else(help::usage));
     }
 
     let opts = Options::parse(&args[1..])?;
