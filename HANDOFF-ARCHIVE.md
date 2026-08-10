@@ -1694,3 +1694,606 @@ fabrication the review could construct.
 Probes: ~~`$SCRATCH/rev5` (20 fixtures, `cargo run -- <name>`); `$SCRATCH/replayprobe` (13)~~ —
 **both lost** (§9.2). They were never committed.
 
+## Closed 2026-08-10 — the checker and operation defects
+
+Seven defects found and fixed in one evening by a corpus of *known* defects, none of them
+reachable by any VPP corpus. Moved out of §9.1 the same day; the live entry for each idea
+is in [HANDOFF.md](HANDOFF.md), and the reasoning is here.
+
+8h. ✅ **CLOSED 2026-08-10 — `NULL` had two more unhandled siblings, found by auditing 8e.**
+   8e's own conclusion was *look at representations and guard clauses*, so every
+   `ObjectId::NULL` site was checked for a missing `UNBOUND` case. 13 sites, 7 `NULL`-only, two
+   of them real defects:
+
+   | | |
+   |---|---|
+   | **an indirect call through a wild pointer produced no finding at all** | `chiero-exec/src/lib.rs:8176` special-cases `NULL`; a wild function pointer fell through to the candidate filter, which cannot match an address naming no object, so the run degraded with *"unresolvable callee"* and a reader scanning for findings saw a clean one. ⚠️ **That site's own comment calls this "the more misleading of the two ways to be wrong about a definite fault"** — and it was true of the case one line below itself |
+   | **`free((void *) 0x1234)` reported "at address 0"** | while dereferencing the same pointer reported 4660. `Memory::free` takes an `ObjectId` and had no offset. `free_at(p)` added for callers holding a `Pointer`; `free` stays where offset zero really is the answer |
+
+   Corpus 13/15 → **14/15**, full suite GREEN 2324/284, pinned 40 byte-identical.
+
+   📌 **Three defects from one question**: *`NULL` is special-cased — where is its sibling?*
+   8e was `address_term`, and these two were the call site and the free path. The audit took
+   one grep and three probes.
+
+   ✅ **The audit was then widened twice, and both came back honest zeros — which is what
+   sharpened it into a rule.**
+
+   | pair audited | result |
+   |---|---|
+   | `ObjState::Freed` vs `OutOfScope` | **zero.** Two `Freed`-only sites, both in `free`, and the `kind != Heap` arm beside them already covers the sibling: an out-of-scope stack object is a `BadFree` |
+   | `DYNAMIC_EXTENT` (`u64::MAX` as a VLA marker) | **zero.** All four `count.saturating_mul(elem)` sites are guarded; the two raw `.count` reads are `chiero-opt`'s benign `!= 1` and `ArenaShape::count`, which is 021 §6's lazy-object shaping and never comes from an `AllocaDecl` |
+
+   📌 **The rule the zeros produced: audit *const sentinels*, not enum variants.** A missing
+   enum arm is a compile error; `NULL`/`UNBOUND`/`DYNAMIC_EXTENT` are `const` values with no
+   exhaustiveness checking anywhere. That is why every defect landed on the sentinel pair and
+   none on the enums, and it is the cheapest place to look next.
+
+8g. ✅ **CLOSED 2026-08-10 — confirmed and fixed.** Was: inspected, not reproduced — two `lowering_gap` sites in the symbolic-offset store path
+   return without writing.** `chiero-exec/src/lib.rs:3669` ("a store of an untranslatable value")
+   and `:3673` ("a store of a value with no term") both `return` after declaring the gap. That is
+   **8e's exact shape**: the store does not happen, so a later read accuses the program of never
+   storing what it did store.
+
+   📌 **Its concrete-offset sibling already knows.** The site at `:3750` writes a *fresh symbol*
+   instead of refusing, and its comment says why: *"wave 195's draft refused to write and made a
+   later read accuse the program of never storing what it had just stored. The program did
+   store; chiero does not know what."* One fact, two readers — and the symbolic path is the
+   reader that did not get the memo.
+
+   ✅ **Reproduced from C 2026-08-10**, after three earlier attempts failed. The trick is an
+   *unmodelled* value, not an exotic type:
+
+   ```c
+   long double src(void);
+   int probe(int i) { int a[4]; a[0]=0;a[1]=0;a[2]=0;a[3]=0; a[i & 3] = (int) src(); return a[0]; }
+   ```
+
+   `FpToSi 80 -> 32` is unmodelled, so the value is `Value::Undef`; `address_of_value` answers
+   `None` for `Undef`, and the symbolic-offset store declares
+   `a store of an untranslatable value` and returns. The assumption appears in the envelope.
+
+   ⚠️ **Reachable, but the *impact* is still unproven, and the obvious test does not settle
+   it.** The concrete-index twin (`a[0] = (int) src();`) emits **the same assumption** — both
+   paths declare the gap. The difference is only in what memory does afterwards: `:3750` writes
+   a fresh symbol, `:3669` writes nothing and leaves the previous bytes. The envelope shows
+   neither, so a CLI probe cannot tell them apart.
+
+   ✅ **Settled the way the entry said it would have to be** — a memory-layer test, since no
+   envelope can distinguish the two paths: `crates/chiero-exec/tests/undef_symbolic_store.rs`.
+   Both sites now havoc the whole object before returning, matching the concrete path.
+
+   ⚠️ **The first assertion was wrong, and the failure is the interesting part.** I asserted
+   the stale byte would *change*. It does not: `HavocFill::Uninitialized` clears the
+   initialization mask, not the contents, so `0x11` is still sitting there. **The defect was
+   never the byte — it was chiero answering with it.** The test asserts the read comes back as
+   a question (a fault, or no value), which is what the rule at `:3655` is actually about.
+   Verified red by removing the havoc call, green with it.
+
+   📌 **The reproduction needed an unmodelled *value*, not an exotic type.** Three earlier
+   attempts reached for `long double` and structs and found other gaps first; `FpToSi 80 -> 32`
+   yields `Value::Undef`, and `address_of_value` answers `None` for exactly that.
+
+   ⏭️ If it is reachable, the fix is the one `:3750` already uses — poison rather than refuse.
+
+   🔍 **A third of the same shape, also unreproduced: `Span::DUMMY` in `promote_to_array`.**
+   `chiero-mem/src/lib.rs:3652/3712/3718` build faults with `off: 0, at: Span::DUMMY` because
+   that function has neither. `render_loc` turns a dummy span into *"source offset 0"*, so a
+   fault raised there names no line — the same "right about the fault, wrong about where" that
+   `free` had before `free_at`. Found by the sentinel audit (`Span::DUMMY` is the third
+   sentinel); **and now looks unreachable from C rather than merely
+   unreproduced** — three probes, both routes guarded upstream:
+
+   | route | what happens instead |
+   |---|---|
+   | promotion on a **freed** object (`p[i & 3]` after `free(p)`, read and write) | the access path's own state check fires first: `use-after-free`, correctly |
+   | promotion on a **too-large** object (`malloc(1 << 40)` then `p[i & 1023]`) | `alloc` reports `allocation-too-large` with the size named, before promotion |
+
+   So these look like defensive arms behind guards that already hold. ⏭️ **Left as-is
+   deliberately**: a fix with no red is a change nobody can show the value of, and the same
+   reasoning kept 8g a lead. If a future path does reach them, the fix mirrors `free_at` — take
+   the pointer, not the id.
+
+8f. ✅ **CLOSED 2026-08-10 — a shift past the operand width was unreported whenever the shifted value was symbolic**,
+   though the rule depends only on the *count*. `chiero-exec/src/lib.rs:3282`:
+
+   ```rust
+   let (Some(xc), Some(yc)) = (a.as_const(x), a.as_const(y)) else {
+       self.symbolic_div_by_zero(...);                  // handled
+       if signed { self.forced_signed_overflow(...); }  // handled
+       return;                                          // the count rule never runs
+   };
+   ```
+
+   `int probe(int x) { return x << 40; }` lowers to `shl i32 %4, 40i32 signed` — the exact shape
+   `chiero-check`'s own test asserts on with constants — and reports **nothing**. C11 6.5.7p3
+   makes it undefined whatever `x` holds, so no solver query is needed: the count is a literal.
+
+   ✅ **The neighbours are fine, which is what makes this narrow.** `x / y` with both symbolic
+   reports `division-by-zero`, so the symbolic fallback works; the shift arm simply is not in it.
+   ⚠️ **Not** the "allows to overflow" case — `x + 2147483647` is silent by design, since
+   `UbKind` distinguishes a path that *forces* overflow from one that merely permits it.
+
+   ✅ **Order-dependence, the other default checker, is fine** — checked after this, because
+   "three checkers seem dead" was the first reading. `f() + h()` with both writing one global
+   reports; sequencing them is clean. My probe for it had been `a[i++] + i`, the wrong shape
+   entirely. **Two of the three "dead" checkers were my fixtures**, and only the shift arm is
+   real.
+
+   ✅ **Fixed:** the count rule now runs in the symbolic fallback beside `symbolic_div_by_zero`,
+   guarded on the count alone. `shift_past_width` went red → green (§7.31 is 10/13), the full
+   suite is GREEN 2323/284, and the pinned 40 is byte-identical — a **control** rather than a
+   check, since VPP would need a constant shift past the width to move it.
+
+8e. ✅ **CLOSED 2026-08-10 — a wild-pointer dereference was reported as an uninitialized read
+   *of the pointer variable*.** Found by the injected-defect corpus (§7.31), then characterised — the finding is
+   not wrong that something is amiss, it points at the wrong object and calls it the wrong kind.
+
+   ```c
+   int probe(void) { int *zebra = (int *) 0x1234; return *zebra; }
+   ```
+   → `uninitialized-read: read at offset 0 of zebra touches bit 0, which was never written`
+
+   `zebra` **is** written, on the line above. What is uninitialized is the invented object at
+   `0x1234`, and the sentence sends a reader to the wrong line.
+
+   | probe | result |
+   |---|---|
+   | `0x1234`, `0x100000`, `0xdeadbeef000` | **identical message every time** — so it is *not* an address colliding with a real object |
+   | `int v = 7; int *p = (int *)(long) &v; return *p;` | **clean, no findings** — provenance works, so the deref path is fine in general |
+   | a write, `*(int *)0x1234 = 5` | same message |
+   | `wild-pointer` | exists (`MemFault::WildPointer`, `chiero-mem/src/lib.rs:1102`) and fires in `chiero-mem`'s own tests, so the kind is not missing |
+
+   ✅ **Fixed:** `address_term` special-cased `NULL` and fell through for `UNBOUND`, where
+   `addr_of` cannot answer — so the store never happened. `int_to_ptr` already puts the address
+   in `off`, so the arm is symmetric with `NULL`: base 0, address in `off`, and
+   `remember_provenance` carries `UNBOUND` so the access still faults as a wild pointer. The
+   `NULL` arm one line above documents the identical failure mode in its own comment.
+
+   📌 **Re-swept afterwards (§11.2), and the finding count is the wrong place to look.** On the
+   40 recovered plugin files: `findings=489 exact=1` **unchanged**, no new kinds, no
+   `wild-pointer`. But the masked path itself moved:
+
+   | | before | after |
+   |---|---|---|
+   | envelopes hitting *"the address of an unplaced object"* | **3** | **1** |
+   | lowering gaps across the set | 84 | **80** |
+   | assumptions | 663 | **658** |
+
+   Two real plugin files — `sasc/service.c` and `sfdp_services/acl/acl_sample.c` — stopped
+   giving up on a store they can now model. The remaining 1 is legitimate: `addr_of` also
+   answers `None` for a genuinely unplaced object. **So the fix bought fidelity on real code
+   without changing a single finding**, which is a result a findings-only comparison would have
+   reported as "no effect".
+
+   ⚠️ **The pinned 40 did not move, and the reason is measurable rather than hopeful**: 26 of
+   its 40 envelopes reach `IntToPtr` with no provenance, but **0** reach "unplaced object" — the
+   masked store — in either that corpus or the 40 recovered plugin files. VPP's `IntToPtr`
+   addresses resolve to real objects. **So this defect affected every shape real C uses and was
+   unreachable by every VPP corpus this project has**, which is §7.31's justification as a
+   number.
+
+   🗄️ **Mechanism, kept for the reasoning — it was a round-trip through memory.**
+   Delete the variable and the answer is correct:
+
+   ```c
+   int probe(void) { return *(int *) 0x1234; }
+   ```
+   → `wild-pointer: access through a pointer at address 4660 matching no known object`
+
+   The difference is those two instructions:
+
+   ```
+   %0 = inttoptr i32 4660i32 to ptr
+   store ptr %0 -> %1        ; %1 = addrlocal zebra
+   %3 = load ptr, %2         ; read it back
+   %4 = load i32, %3         ; and dereference
+   ```
+
+   `int_to_ptr` correctly yields `Pointer { base: UNBOUND, off: 4660 }`
+   (`chiero-mem/src/lib.rs:801`, and the stack starts at `0x7fff_0000_0000` so 4660 collides
+   with nothing). **Storing that pointer writes no bytes**, so `zebra`'s slot stays
+   uninitialized, the load reports *that*, and the wild-pointer finding never happens. The
+   uninitialized-read is not even wrong about `zebra` in chiero's model — it is a **mask**, and
+   the real defect is upstream of it.
+
+   ⚠️ **Scope, measured 2026-08-10 across four shapes — it is not one fixture.**
+
+   | shape | result |
+   |---|---|
+   | `int *p = (int *) 0x1234; return *p;` | masked |
+   | `struct S s; s.p = (int *) 0x1234; return *s.p;` | masked |
+   | `int *a[2]; a[0] = (int *) 0x1234; return *a[0];` | masked |
+   | `deref((int *) 0x1234)` — through a **parameter** | masked |
+   | `return *(int *) 0x1234;` | **the only shape that reports** |
+
+   ✅ **And the mask does not generalise — checked, because the larger hypothesis was scarier.**
+   Through the same parameter shape, `null-dereference`, `out-of-bounds`, `division-by-zero` and
+   `use-after-free` all report correctly. So the defect is specific to
+   `Pointer { base: UNBOUND }` being stored, not to parameter passing or to the memory model,
+   and the fix has one place to go. `use_after_free_via_parameter` is in the corpus as a guard
+   for exactly that: the direct forms never store, so they cannot catch a fix that breaks
+   ordinary pointer round-trips.
+
+   **So the `wild-pointer` checker is close to unreachable in real C**, which always names a
+   pointer before using it. Parameter passing masks it too, which means it cannot survive a
+   function boundary. That reframes 8e from a reporting nit to a checker that effectively does
+   not run — and it is consistent with no VPP sweep ever having produced one.
+
+8d. 🔶 **Point the measurement harness at the compile database instead of a hand-kept flag list**
+   (§7.30). ✅ **The capability landed 2026-08-09**: `cargo run -p xtask -- compile-flags --db
+   <db> <source>` prints what the build actually passes, reading a database and never running
+   one. ⏭️ **What remains is flipping `measure.sh` over to it**, which re-takes the plugin sweep.
+
+   📌 **It already reports two things the harness never passed.** Every unit carries
+   `-march=x86-64-v2 -mtune=generic` — the archive records that **7 of 11 failed plugin entries
+   were exactly this**, `__SSE4_2__` undefined so `clib_crc32c_with_init` never defined. ⚠️ That
+   is the **parked** `-march` item; reported, not started. And `vnet/ip/ip4_forward.c` has
+   **four** multiarch variants, each with its own `-DCLIB_MARCH_VARIANT`, so "the flags for a
+   file" is 1:N and the command prints every one.
+
+   *Original entry:* `builddb` already parses one and is used by nothing that produces a published
+   number. **198 of 935 plugin C units (21%) are exposed to include paths `measure.sh` never
+   passes**, and a 32-file random sample says **~16% actually fail because of it** — on the
+   order of 30 files, reported as chiero's failure when they are the harness's (§7.30).
+
+   The pinned 40 is unaffected — checked, not assumed: strict superset, and the CIR is
+   byte-identical under real and harness flags for three of its files.
+
+   ⛔ **STOP — flipping the harness is the parked `-march` item, and this entry said otherwise
+   for two commits.** The database's flags include `-march=x86-64-v2 -mtune=generic`; the pinned
+   40 run that way keeps its summary line and **26 of 38 envelopes differ** (§7.30). The
+   "changes no existing finding" claim came from comparing *include paths only*, which is a
+   different question. `COMPDB=<db>` is implemented in `measure.sh`, **opt-in, and must not be
+   made the default without the owner** — it is the parked item wearing a flag-hygiene disguise.
+
+   ✅ **The safe half is built and measured: `COMPDB_INCLUDES=<db> ./measure.sh`.** Include
+   paths from the build, nothing else — `xtask compile-flags --includes-only`, which is tested
+   to drop `-march`/`-mtune`/`-D`/`-U`/`-std` because that filter *is* the line between
+   recovering a file and silently changing what target the analysis is about.
+
+   | mode | pinned 40 envelopes |
+   |---|---|
+   | includes only | **38/38 identical** — a true no-op |
+   | full compile command | **26 of 38 differ** — the parked item |
+
+   All five §7.30 reproductions go **FAIL → ok**: `linux-cp/lcp_interface.c`,
+   `sfdp_services/acl/cli.c`, `tlspicotls/certs.c`, `af_xdp/unformat.c`,
+   `sasc/services/flow-quality/counter.c`.
+
+   ✅ **The spend was taken on the recovered files alone, 2026-08-10 — the delta, not the whole
+   sweep.** Full enumeration rather than a sample: **160 distinct plugin C files are exposed**
+   (the earlier 198 double-counted multiarch entries) and **40 are recovered** — 25%, where the
+   sample had estimated ~30.
+
+   | 40 entries, one per recovered file | |
+   |---|---|
+   | status | 33 `ok`, 5 `cut`, 2 `nofn` |
+   | findings | **489** — but **465 of them from a single `cut` entry**, `snort/daq/dump.c` |
+   | the rest | 24 findings across 32 entries |
+   | `Exact` | **1**, and it is not a defect |
+
+   ⚠️ **The one `Exact` is the known entry-pointer class, checked rather than assumed**:
+   *"null-dereference … where `%774` is a pointer parameter assumed to be possibly null"*. It
+   disappears under `--entry-ptr-nonnull`, which takes the whole recovered set to
+   **`findings=478 exact=0`**. §7.6 records the last `Exact` on this corpus being a false proof;
+   this one is the same class and was tested before being reported.
+
+   📌 **So: 40 files became analysable and no new VPP defect came out.** An honest zero on the
+   findings, a real gain in coverage, and §7.6's "a dominant finding is a lid" held again — 95%
+   of the count was one entry that ran out of budget.
+
+   ⏭️ Still unspent: making `COMPDB_INCLUDES` the default and re-taking the *whole* plugin sweep,
+   which would fold these 40 into the published numbers. Worth it: those numbers
+   are measured under flags VPP does not use. ⏭️ The `failed` rows were never saved, so the
+   overlap cannot be checked historically; §7.30's sample is the evidence, and its five named
+   files are a ready reproduction.
+
+8b. ✅ **RESOLVED 2026-08-09 as a side effect of the replay probe** — the build ran, cmake
+   regenerated, and **zero** `CMakeLists.txt` are now newer than `build.ninja` (was four). The
+   qualification below no longer applies to numbers taken after 2026-08-09 21:58.
+
+   ⚠️ **New fingerprint: `sha256:d8e4a04713923a31`** (was `5447e4661663b86c`). The pinned 40 was
+   re-taken against it and is **byte-identical** — 38/38 comparable envelopes, `findings=21`.
+   §7.21's rule says explain that rather than bank it: the fingerprint covers the 1506 generated
+   API headers, and the pinned 40 is `vppinfra/` and `vlib/`, which barely include them. **The
+   corpus moved in a part this instrument does not reach.**
+
+   🗄️ *Original entry:* **The build graph is four `CMakeLists.txt` behind `src/`, and that qualifies every VPP
+   number in this file.** Measured 2026-08-08: `build.ninja` was generated at 23:31:38 on
+   2026-08-05 and the tree moved 22 seconds later. Checked rather than feared — `vnet/sfdp`, the
+   subsystem those changes add, **is** in the database with 21 entries, so no subsystem is hidden.
+
+   And the "1967 C compilations over 1562 sources" figure decomposes cleanly, which it had never
+   been made to do:
+
+   | | |
+   |---|---|
+   | 1967 compilations, 1562 distinct sources | 208 sources built more than once (multiarch) |
+   | **147 of the 1562 are generated** | `*.api_test2.c` under the build dir, not under `src/` |
+   | 1415 are `src/`'s own | and **137 of `src/`'s 1552 `.c` are never compiled here** — `drivers/armada` 18, `drivers/octeon` 11, `plugins/perfmon` 10, `tools/g2` 10 |
+
+   The last row is what `pick_entries.py --built-only` exists for: a sweep that globs the tree
+   reports "chiero cannot read this" for files **nothing** builds.
+
+## `5i` — the `pointer-outside-object` investigation, as it stood before 2026-08-10
+
+The live entry in [HANDOFF.md](HANDOFF.md) §9.1 carries the conclusion and the fact that
+settles half of it. Kept because the reduction, the measurements and the rejected
+hypotheses are the only survey of this class anyone has done.
+
+5i. 🆕 **The other dominant `vnet/` class, `pointer-outside-object` (19 of 44 before the 7b fix,
+   **15 of 40** after — see below), and a precise
+   open question.** They cluster on a very common C idiom: a **static array indexed by a value
+   from a lazily-materialised struct**, where the program *does* guard the index.
+
+   `vnet/dev/counters.c`:
+
+   ```c
+   char *units[] = { [VNET_DEV_CTR_UNIT_BYTES] = "bytes", … };   /* 5 pointers, 40 bytes */
+   if (c->unit < ARRAY_LEN (units) && units[c->unit])
+   ```
+
+   chiero: *"a pointer into units (40 bytes) can be computed at offset 48, which is outside it"*.
+   Offset 48 is index 6, and `c->unit < 5` excludes it.
+
+   ✅ **Settled by reading, and it is the opposite of the tempting answer.** The check is
+   `self.probe(a, s, &[out])` where `out` is `offset < 0 || offset > size-1`, and `probe` builds
+   `PathCondition::from_parts(s.path.clone(), …)` — so the query is *"given this path, can the
+   offset be outside?"* **It is fully path-sensitive**, and the witness comes from the model
+   rather than from `obj_size`, which a comment there records as a fix for exactly the
+   naming-an-impossible-input failure.
+
+   So `PointerOutsideObject` is **not** reporting an unconstrained range, and the design is not
+   the noisy one. What follows is sharper: offset 48 is satisfiable *under chiero's path
+   condition*, which means that condition is **weaker than the program's guard**. The envelope's
+   own assumptions point at why — `NoInformation` twice and `UnmodeledCall` — and 023 §3 takes a
+   branch the solver cannot decide *anyway*, leaving the state `path_unchecked`. An undecided
+   `c->unit < ARRAY_LEN (units)` therefore never constrains the offset.
+
+   📌 **And the envelope names what weakened the path — it is not an undecided branch.** Repeated
+   through the assumptions: `ModelApproximate :: 'format': havoc: symbolic contents, reachable
+   pointers to depth 1 — N object(s) invalidated`. `format` is VPP's unmodeled printf-alike, and
+   the code reads:
+
+   ```c
+   s = format (s, "%s", c->name);                       /* havoc invalidates c's object */
+   if (c->unit < ARRAY_LEN (units) && units[c->unit])   /* c->unit read from havoc'd memory */
+   ```
+
+   ❌ **Hypothesis raised and refuted the same hour — do not chase it again.** The story was that
+   repeated reads of one address in havoc'd memory yield *different* symbols, so the guard binds
+   one and the subscript another. Tested directly: an unmodeled call, then two `load i32` of the
+   same address, then `br (a != b)`. **One state, returning 0** — the inequality is decided false,
+   so havoc'd reads are stable. 021 §6's twin holds already: not knowing a value is not
+   permission to give it two.
+
+   ⚠️ **The cause is still open, but reading the full finding records narrows it and corrects two
+   things I had asserted.** Fidelity is **`Unknown`**, not `Approximated` — that was generalised
+   from the out-of-bounds class and is wrong for this one. And the duplicate pairs are not a
+   deduplication gap: `units[c->unit]` appears in *both* the guard and the body, so two source
+   sites give two findings, which is right.
+
+   The `unwitnessed` text is the lead: *"this path reads the contents of an object written by code
+   with no model (ObjectId(38)), **whose value is a whole array rather than a number**"*. The
+   havoc'd object was promoted to an SMT **`Array`** (020 §4.13b's `ite_threshold`), and there is
+   no witness because a witness binds numbers.
+
+   ✅ **Tested through `Array` too, and this is the answer.** Same shape — promote an object past
+   `ite_threshold` with a symbolic-offset store, then two `load i32` of one address, branch on
+   `a != b`. `Bytes` gave **one** state; `Array` gives **two**, `fidelity: Unknown`, and the
+   assumptions say it outright, once per load:
+
+   > `a load produced no value, so its result is invented`
+
+   ⚠️⚠️ **RETRACTED WITHIN THE HOUR — the probe did not test what I claimed.** I wrote that "a load
+   from an `Array`-promoted object invents per read" and that this explains the `units` finding.
+   The probe promoted an object with a symbolic-offset store and then read a byte **nothing had
+   ever written**. That byte is *genuinely uninitialized*, and inventing a fresh value per read
+   may well be correct there — reading indeterminate memory twice is not obliged to agree.
+
+   The `units` case is a **different** input: `format` havocs the object, and 024 contract 21e
+   makes an unmodeled extern's havoc `HavocInit::Symbolic`, **not** `Uninitialized` — precisely
+   because "an unmodeled extern handed a pointer *wrote* something there". Symbolic contents
+   should read back stably.
+
+   ✅ **All three combinations are now tested, and the story is dead.**
+
+   | object | contents | two reads of one address |
+   |---|---|---|
+   | `Bytes` | havoc'd (symbolic) | **stable** — one state |
+   | `Array`-promoted | havoc'd (symbolic) | **stable** — one state |
+   | `Array`-promoted | never written | unstable — two states, and defensible: reading indeterminate memory twice is not obliged to agree |
+
+   So unstable reads do **not** explain the `units` finding, and the guard-versus-subscript story
+   is finished. What remains true and unexplained: the offset check is path-sensitive (it probes
+   `s.path`), the guard is `c->unit < 5`, and offset 48 is nonetheless satisfiable.
+
+   ✅ **The free check is done and it sharpens the contradiction rather than resolving it.**
+   `chiero-lower` short-circuits `&&` properly (`lib.rs` ~3756: a block for the right operand, a
+   short-circuit block, a join), so `units[c->unit]` is lowered into a block reached **only when
+   `c->unit < ARRAY_LEN (units)` is true**. The `PtrAdd` is downstream of the guard.
+
+   ❗ **So the pieces contradict, and that is the state to hand over.** The offset check probes
+   `s.path`; the `PtrAdd` sits under the guard; reads are stable in every representation tested;
+   and the report only fires on `CheckResult::Sat`, meaning the solver **found a model** where the
+   path holds *and* the offset is 48. With `c->unit < 5` on the path, index 6 should be
+   unsatisfiable. One of those four is false and none is obviously so.
+
+   ✅✅ **REPRODUCED 2026-08-08, minimally.** `chiero cir` (built for this) showed the guard and
+   the subscript each `load i8` from `c + 34` *separately* — so the guard constrains load **A**
+   and the subscript uses load **B**, and the finding exists only if `A < 5` and `B * 8 == 48`,
+   i.e. `A != B`. Reducing from there:
+
+   | fixture | result |
+   |---|---|
+   | two loads, same block, `Bytes` + havoc | stable |
+   | two loads, same block, `Array`-promoted + havoc | stable |
+   | two loads, same block, `Array`-promoted, never written | unstable — and defensible |
+   | lazy object, guarded, **no** havoc | **constrained**: indices 0..4 only |
+   | the same with the guard's `udiv 40/8` unfolded | constrained |
+   | **lazy object + havoc + guard** | **offset 48** — the VPP message exactly |
+
+   **The ingredient is the havoc *plus* the fork.** Two loads in one block after a havoc agree;
+   two loads either side of a branch do not. A guard that binds one of them constrains nothing.
+
+   The reproduction is committed as `probe_lazy_two_loads` in `chiero-tool/tests/find_bugs.rs`,
+   **`#[ignore]`d** — it fails, and the suite stays green, so the next person gets an executable
+   minimal case rather than a paragraph: `cargo test -p chiero-tool -- --ignored probe_lazy`.
+
+   📌 This is 021 §6's family — *not knowing a value is not permission to give it two* — and
+   §11.3's rule applies: **do not fix the site; ask which read path does not end in a stable
+   symbol across a fork.**
+
+   ✅ **MEASURED AT THE MEMORY BOUNDARY, 2026-08-08** — after two wrong mechanisms guessed from
+   reading source:
+
+   ```text
+   READ obj=2 off=0 value=Some(Term(3))   raw=[] live=[]   <- the guard's load
+   READ obj=2 off=0 value=Some(Term(27))  raw=[] live=[]   <- the subscript's load
+   ```
+
+   **Two reads of one address return different terms**, no faults, on the non-null path. The
+   guard binds `Term(3)`; the subscript indexes with `Term(27)`; nothing relates them, so index 6
+   is satisfiable and the pointer lands at offset 48.
+
+   Three controls, each measured:
+
+   | change | result |
+   |---|---|
+   | remove the `call` | **passes** — a lazy object alone is stable |
+   | add a load *before* the call | **passes** — the object is materialised first |
+   | `--entry-ptr-nonnull`, as the VPP run used | still fails — the null path is not it |
+
+   **The ingredient is a lazy object plus an unmodeled call.** The call's havoc promotes the
+   object, and reads afterwards mint a fresh symbol each time instead of returning the one that
+   is there.
+
+   ⚠️⚠️ **Two mechanisms were asserted on this entry before this and both were wrong** —
+   *"havoc'd reads are unstable"* and *"the havoc's write fails and the loop breaks silently"* —
+   each plausible, each taken from reading the source. The `READ` line above is the first
+   statement here measured at the boundary the values actually cross. **On this entry, instrument
+   the boundary; do not reason about the code.**
+
+   ✅✅ **FIXED 2026-08-08 — 021 contract 7b, written then met.** `materialize_fresh` asked
+   `o.sym_at(k)` (the `Bytes` side) and stored a promoted object's mint into `arr.data` alone, so
+   the question went to one representation and the answer into the other and **every read minted
+   afresh**. The symbol is now recorded on both; `probe_lazy_two_loads` loses its `#[ignore]` and
+   is the contract's test.
+
+   📌 **It is `memoize_via`'s bug one field over** — that helper exists because "the
+   initialization lives in an array, so writing the mask was a no-op there", the `init` mask was
+   fixed and `sym` was left. A `sym_via` twin would have been the third copy of one asymmetry
+   waiting for a fourth field, so both sides are written in one place instead.
+
+   ⚠️⚠️ **RE-MEASURED, AND THE PREDICTION WAS WRONG.** I said the sweep should lose *most* of the
+   19 `pointer-outside-object` findings. Same 417 entries, same flags, only the fix different:
+
+   | kind | before | after |
+   |---|---|---|
+   | `pointer-outside-object` | 19 | **15** |
+   | out-of-bounds | 17 | 17 |
+   | null-dereference / uninitialized-read | 4 / 4 | 4 / 4 |
+   | **total** | **44** | **40** |
+
+   **It accounts for 4, not 19.** The fix is right and contract 7b is met, but the class has more
+   than one cause and I attributed all of it to the first one I found — the fourth time on this
+   entry that a whole category got pinned on a single mechanism.
+
+   🔍 **Two of the remaining 15 sampled (2026-08-08) — and they are not defects at all.** Both
+   index an array with a value **nothing in the function checks**:
+
+   - `vnet/dpo/lookup_dpo.c`: `lookup_input_names[lkd->lkd_input]`, where `lkd` comes from
+     `lookup_dpo_get(index)` — a lazily-materialized object, so `lkd_input` is unconstrained.
+   - `vnet/dpo/dvr_dpo.c`: `dvr_dpo_db[dproto]`, where `dproto` is an **entry parameter** of enum
+     type indexing a six-element array.
+
+   Neither has a guard. chiero is **right**: call `dvr_dpo_add_or_lock` with `dproto = 9` and you
+   index out of bounds; C's enum type does not stop you. These are true statements conditional on
+   UCSE's premise — the same family as `globals_at_initial_value`, and a **signal-to-noise**
+   question rather than a correctness one: is *"this function does not validate its enum
+   parameter"* worth a finding?
+
+   **Eight of fifteen sampled, all the same shape**, and the remaining seven share the array
+   naming:
+
+   | site | index | guard |
+   |---|---|---|
+   | `lookup_input_names[lkd->lkd_input]` | field of a lazy object | none |
+   | `dvr_dpo_db[dproto]` | entry parameter, enum type | none |
+   | `qos_source_names[qs]` | `va_arg (*args, int)` | none |
+   | `mfib_entry_src_vfts[msrc->mfes_src]` | field of a lazy object | none |
+   | `fed_formatters[fed->mfd_type](fed, s)` | field of a lazy object — **then called** | none |
+   | `ip_null_action_strings[ind->ind_action]` | field of a lazy object | none |
+   | `ip4_main.fib_masks[len]` | prefix-length parameter | none |
+   | `ip_null_dpos[indi]` | derived index | none |
+
+   Every array in all fifteen is a small `static` dispatch or format table — `*_names`,
+   `*_strings`, `*_vfts`, `*_db`, `*_cfg`. **The class is: a static table indexed by an
+   enum-shaped value that the function does not check.** chiero is right about every one; C's
+   enum type constrains nothing at the ABI, and `va_arg(*args, int)` least of all.
+
+   📌 **So the open question is a policy one, and it belongs to the owner.** These are true, they
+   are numerous, and they are almost certainly not what a reader wants first. Options, none free:
+   accept them as findings; constrain an enum-typed entry value to its declared range (which C
+   does not guarantee and VPP's `format_qos_source` visibly does not); or keep them and **rank**
+   — 050's envelope already carries the machinery to say "true, and here is the premise", which
+   is how `globals_at_initial_value` handles the same tension.
+
+   ✅ **Census finished — all eleven distinct arrays read — and it found the exception.** Ten are
+   the shape above. **One is not:**
+
+   ```c
+   const char *strings[sizeof (vnet_hw_if_caps_t) * 8] = { … };   /* one entry per bit */
+   int bit = get_lowest_set_bit_index (caps);
+   if (strings[bit]) …                                            /* vnet/interface/caps.c */
+   ```
+
+   The index **is** bounded — by `get_lowest_set_bit_index`'s postcondition, one entry per bit of
+   the type — and chiero cannot see it. That is a **second cause**: not "the function does not
+   check" but "the check is a helper's contract chiero does not model". It wants a different
+   answer from the other ten, and grouping by message would have hidden it.
+
+   ⚠️ **Finishing the census is what found it.** At eight samples the shape looked universal and I
+   had already written it up that way; the eleventh site disproved it. Twice on this entry a class
+   has looked like one cause and been more — 19 findings that were 4, and now ten-of-eleven that
+   is ten-and-one. **Read the last one.** `pointer-outside-object` says the offset can leave the object; that can
+   happen for as many reasons as there are ways to lose a constraint. The next one needs the same
+   treatment from scratch — pick one, `chiero cir` it, instrument the boundary — and not the
+   assumption that it is this bug again.
+
+   §10 exists for exactly this: **re-measure after a fix, not only before.** The prediction was
+   confident, cheap to check, and wrong.
+
+   *(Historical, and the reason the fix landed in this order: 021 was silent, so it needed a
+   sentence before it needed code.)* §3.1 says a lazily-materialized object is "fully `Yes` with unknown *values*", and
+   contract 7 says reading its bytes yields no finding — **neither says that two reads of one
+   address give the same value.** No written contract is violated by the behaviour above, which
+   is exactly how it survived.
+
+   So the design decision is: *state* that a byte's value is stable within a path once
+   materialized, add it as a contract, and then the implementation follows and is testable. The
+   committed reproduction becomes its test. ⚠️ Do not fix the code first — a rule this basic
+   being absent is why 021 §6's family keeps recurring, and the eleventh instance will land the
+   same way if only the tenth site is patched.
+
+   *(Historical: the blocker before this was a missing instrument, not a missing idea.)* Settling it needs the
+   *actual lowered CIR* for `format_vnet_dev_counter_name` — which term the guard constrains and
+   which term the `PtrAdd` uses — and **there is no way to dump it**: no CLI operation prints a
+   module, and 020's textual format is reachable only from Rust. §4.11 lists `get_cfg` among the
+   tool operations and it does not exist.
+
+   📌 **So the next move is to build that**, not to guess a fifth time: a `chiero cir <file.c>
+   [--entry <fn>]` that prints the lowered module in 020's normative textual format. It is small,
+   it is specified, the printer already exists and is round-trip tested — and every remaining
+   question on this entry is one `grep` away once the CIR can be read.
+
+   📌 And read `chiero-lower/tests/symbolic_offset_store.rs` first: it carries six waves of
+   analysis of this exact sentence, ending at a real cause — `report_faults` discharges faults for
+   *reporting* and the value decision then consults the **raw** list, so a proof that was paid for
+   is ignored where the value is chosen. `a_concrete_byte_written_before_promotion_survives_it`
+   passes, so that half is fixed. **Do not re-derive any of that.**
+
+   Between this and 5h, **36 of the 44 `vnet/` findings are characterised**: one class traced to
+   an architectural cause, one to a precise open question. Neither is chiero claiming something
+   false — fidelity is `Approximated` throughout and the assumptions name the causes.
