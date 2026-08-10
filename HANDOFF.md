@@ -1413,7 +1413,7 @@ hand-written CIR; this is the path every published number actually took.)
 
 | | |
 |---|---|
-| recall | **10/13** — the six memory faults, plus `wild_pointer_direct`, `use_after_free_via_parameter`, `order_dependence` and `shift_past_width` |
+| recall | **12/13** — everything except `pointer_outside_object`, which is a judgement call rather than a defect |
 | reach | **both** default checkers (`OrderDependence`, `UndefinedArithmetic`), not only memory faults |
 | controls | **0 false positives** |
 
@@ -3053,8 +3053,8 @@ longer sits between a fresh context and the live work.
    suite is GREEN 2323/284, and the pinned 40 is byte-identical — a **control** rather than a
    check, since VPP would need a constant shift past the width to move it.
 
-8e. 🆕 **A wild-pointer dereference is reported as an uninitialized read *of the pointer
-   variable*.** Found by the injected-defect corpus (§7.31), then characterised — the finding is
+8e. ✅ **CLOSED 2026-08-10 — a wild-pointer dereference was reported as an uninitialized read
+   *of the pointer variable*.** Found by the injected-defect corpus (§7.31), then characterised — the finding is
    not wrong that something is amiss, it points at the wrong object and calls it the wrong kind.
 
    ```c
@@ -3072,7 +3072,20 @@ longer sits between a fresh context and the live work.
    | a write, `*(int *)0x1234 = 5` | same message |
    | `wild-pointer` | exists (`MemFault::WildPointer`, `chiero-mem/src/lib.rs:1102`) and fires in `chiero-mem`'s own tests, so the kind is not missing |
 
-   ✅ **Mechanism found — it is a round-trip through memory, and chiero is right without one.**
+   ✅ **Fixed:** `address_term` special-cased `NULL` and fell through for `UNBOUND`, where
+   `addr_of` cannot answer — so the store never happened. `int_to_ptr` already puts the address
+   in `off`, so the arm is symmetric with `NULL`: base 0, address in `off`, and
+   `remember_provenance` carries `UNBOUND` so the access still faults as a wild pointer. The
+   `NULL` arm one line above documents the identical failure mode in its own comment.
+
+   ⚠️ **The pinned 40 did not move, and the reason is measurable rather than hopeful**: 26 of
+   its 40 envelopes reach `IntToPtr` with no provenance, but **0** reach "unplaced object" — the
+   masked store — in either that corpus or the 40 recovered plugin files. VPP's `IntToPtr`
+   addresses resolve to real objects. **So this defect affected every shape real C uses and was
+   unreachable by every VPP corpus this project has**, which is §7.31's justification as a
+   number.
+
+   🗄️ **Mechanism, kept for the reasoning — it was a round-trip through memory.**
    Delete the variable and the answer is correct:
 
    ```c
