@@ -323,3 +323,65 @@ fn write_pair() -> chiero_tool::ReplaySources {
         flags: Vec::new(),
     }
 }
+
+/// Two programs that **differ**, where the difference is invisible to chiero.
+///
+/// `g` returns an 80-bit float with no body, and `FpToSi 80 -> 32` is one of 023 §7's
+/// approximated gaps — so neither side's result is a value chiero can reason about, and the
+/// `+ 1` between them cannot be seen.
+const HIDDEN_A: &str = "\
+func @f() -> i32 {
+entry:
+  .line 1
+  %0 = call @g()
+  %1 = fptosi f80 %0 to i32
+  ret %1
+}
+
+func @g() -> f80";
+
+const HIDDEN_B: &str = "\
+func @f() -> i32 {
+entry:
+  .line 1
+  %0 = call @g()
+  %1 = fptosi f80 %0 to i32
+  %2 = add i32 %1, 1i32
+  ret %2
+}
+
+func @g() -> f80";
+
+/// **The false proof is the worst answer this tool can give**, and this is the shape that would
+/// produce one.
+///
+/// The `unknown` already covered above is a function compared *with itself* under a config that
+/// cannot decide — an honest "I could not tell" about programs that are in fact the same. This
+/// is the dangerous twin: the programs genuinely **differ**, and the difference sits behind a
+/// construct chiero does not model. Answering `equivalent` here would licence a rewrite that
+/// changes behaviour, on chiero's authority.
+///
+/// Verified against the CLI on real C the same day: `(int) g((long double) x)` against the same
+/// `+ 1` answers `unknown`.
+///
+/// ⚠️ **What this test cannot see, checked rather than assumed.** Making the two sides
+/// *identical* leaves it passing — chiero answers `unknown` for this shape either way. So it
+/// does **not** show that chiero noticed the `+ 1`; it shows that chiero never claims a proof
+/// it does not have. That is the property worth guarding (a false `equivalent` is the worst
+/// answer this tool can give), but a future change making `f80` decidable would need a
+/// stronger case here, and this comment is the warning that it would pass regardless.
+#[test]
+fn a_difference_chiero_cannot_model_is_never_proven_equivalent() {
+    let cfg = chiero_opt::EquivCfg::new("f");
+    let env = prove_equivalent(&m(HIDDEN_A), &m(HIDDEN_B), &cfg);
+    let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
+    assert_ne!(
+        v["result"]["verdict"], "equivalent",
+        "the programs differ by one; claiming equivalence because the difference is \
+         unmodelled is a false proof: {v}"
+    );
+    assert!(
+        !env.proven,
+        "and nothing about this run may be marked proven: {v}"
+    );
+}
