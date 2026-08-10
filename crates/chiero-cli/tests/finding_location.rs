@@ -287,3 +287,33 @@ fn a_verdict_carries_only_the_fields_its_shape_can_have() {
         "a `reachable` verdict without its witness is a guess:\n{live:#}"
     );
 }
+
+/// The same rule, in the operation that wrote it down. Every `find-bugs` finding printed
+/// `replay: (none)` and `unwitnessed: (none)` — two lines under every finding of every report,
+/// and `unwitnessed` is *the reason there is no witness*, so it cannot coexist with one.
+#[test]
+fn a_finding_carries_only_the_fields_it_can_have() {
+    let v = find_bugs("shape.c", NULL_DEREF);
+    let findings = v["result"]["findings"].as_array().expect("findings");
+    assert!(!findings.is_empty(), "nothing to check:\n{v:#}");
+    for f in findings {
+        if f["witness"].is_array() {
+            assert!(
+                f.get("unwitnessed").is_none(),
+                "a finding with a witness carries `unwitnessed`, which is the reason there is \
+                 no witness:\n{f:#}"
+            );
+        } else {
+            // 023 contract 15: a witness, or the reason there is none. Never neither.
+            assert!(
+                f.get("unwitnessed").is_some(),
+                "a finding with no witness must say why:\n{f:#}"
+            );
+        }
+        assert!(
+            f.get("replay").is_none_or(|r| !r.is_null()),
+            "`replay` is null on every finding when no harness was emitted, and the envelope \
+             already carries that as a blind spot:\n{f:#}"
+        );
+    }
+}

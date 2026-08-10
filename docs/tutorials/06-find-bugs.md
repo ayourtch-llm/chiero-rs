@@ -26,7 +26,6 @@ findings:
     file: average.c
     line: 5
     paths: 1
-    replay: (none)
     fidelity: Unknown
     solver: z3
     witness:
@@ -40,12 +39,10 @@ findings:
         value: 0
         signed: 0
         pinned: false
-    unwitnessed: (none)
   - message: division-by-zero: SDiv by a divisor the path allows to be zero
     file: average.c
     line: 6
     paths: 2
-    replay: (none)
     fidelity: Exact
     solver: z3
     witness:
@@ -54,7 +51,6 @@ findings:
         value: 0
         signed: 0
         pinned: true
-    unwitnessed: (none)
 budgets:
   hit:
     - max_loop_iters (8) reached on the back edge BlockId(3) -> BlockId(1) in `average`

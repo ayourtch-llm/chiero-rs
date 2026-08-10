@@ -789,6 +789,24 @@ const WITNESS_RENDER_LIMIT: usize = 64;
 /// **Absent, not null** — `Envelope::render` prints a null as `(none)`, and a line reading
 /// `witness_omitted: (none)` under every result is how a reader learns to skip the one that says
 /// 10 593.
+/// Drop a key whose value is `null`.
+///
+/// **`Envelope::render` prints a JSON null as `(none)`**, so a key that a verdict's *shape*
+/// cannot fill puts `witness: (none)` under every `unreachable` answer — and the one verdict
+/// where the witness is the whole answer is then the one a reader has been trained to skip.
+/// `find_bugs` ruled on this for `witness_omitted` and `check_reachable` never got the rule.
+/// `shift_remove` because the envelope preserves key order (050 §1).
+fn drop_null(mut v: serde_json::Value, keys: &[&str]) -> serde_json::Value {
+    if let Some(o) = v.as_object_mut() {
+        for k in keys {
+            if o.get(*k).is_some_and(serde_json::Value::is_null) {
+                o.shift_remove(*k);
+            }
+        }
+    }
+    v
+}
+
 fn witness_result(
     mut result: serde_json::Value,
     omitted: Option<serde_json::Value>,
@@ -1289,7 +1307,12 @@ pub fn find_bugs_located(
                     o.shift_remove("file");
                     o.shift_remove("line");
                 }
-                v
+                // And for the two that a finding's *shape* decides. `unwitnessed` is the reason
+                // there is no witness, so it cannot coexist with one — 023 contract 15 wants one
+                // of the pair, and printing both with one always `(none)` is how a reader learns
+                // to skip the line that matters. `replay` is null for every finding when no
+                // source was given, which the envelope already carries as a blind spot.
+                drop_null(v, &["unwitnessed", "replay"])
             })
             .collect();
 
@@ -1558,12 +1581,15 @@ pub fn check_reachable(module: &chiero_cir::Module, cfg: &BugCfg, line: u32) -> 
         if decided {
             return clock(Envelope::new(
                 witness_result(
-                    serde_json::json!({
-                        "verdict": "reachable",
-                        "line": line,
-                        "witness": witness.shown,
-                        "why": serde_json::Value::Null,
-                    }),
+                    drop_null(
+                        serde_json::json!({
+                            "verdict": "reachable",
+                            "line": line,
+                            "witness": witness.shown,
+                            "why": serde_json::Value::Null,
+                        }),
+                        &["why"],
+                    ),
                     witness.omitted,
                 ),
                 Fidelity::Exact,
@@ -1628,23 +1654,29 @@ pub fn check_reachable(module: &chiero_cir::Module, cfg: &BugCfg, line: u32) -> 
             "a cut run cannot prove unreachability"
         );
         return Envelope::new(
-            serde_json::json!({
-                "verdict": "unreachable",
-                "line": line,
-                "witness": serde_json::Value::Null,
-                "why": serde_json::Value::Null,
-            }),
+            drop_null(
+                serde_json::json!({
+                    "verdict": "unreachable",
+                    "line": line,
+                    "witness": serde_json::Value::Null,
+                    "why": serde_json::Value::Null,
+                }),
+                &["witness", "why"],
+            ),
             Fidelity::Exact,
         );
     }
     clock(
         Envelope::new(
-            serde_json::json!({
-                "verdict": "not_shown_reachable",
-                "line": line,
-                "witness": serde_json::Value::Null,
-                "why": cut.join("; "),
-            }),
+            drop_null(
+                serde_json::json!({
+                    "verdict": "not_shown_reachable",
+                    "line": line,
+                    "witness": serde_json::Value::Null,
+                    "why": cut.join("; "),
+                }),
+                &["witness"],
+            ),
             fidelity,
         )
         .with_blind_spot(

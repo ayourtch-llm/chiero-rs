@@ -63,8 +63,6 @@ proven — this holds for all inputs (Exact)
 $ chiero check-reachable classify.c --entry classify --line 6
 verdict: unreachable
 line: 6
-witness: (none)
-why: (none)
 proven — this holds for all inputs (Exact)
 ```
 
@@ -86,7 +84,6 @@ witness:
     value: 1
     signed: 1
     pinned: true
-why: (none)
 proven — this holds for all inputs (Exact)
 ```
 
@@ -122,7 +119,6 @@ int loop_then (int n)
 $ chiero check-reachable loopy.c --entry loop_then --line 7
 verdict: not_shown_reachable
 line: 7
-witness: (none)
 why: max_loop_iters (8) reached on the back edge BlockId(3) -> BlockId(1) in `loop_then`
 not proven — within this run's bounds (Bounded)
   blind spot: no path chiero explored reached this line, and the search was not complete — the line may still be reachable
