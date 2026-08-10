@@ -6,12 +6,21 @@ use chiero_span::SourceMap;
 use std::process::{Command, Stdio};
 
 fn compiler_tokens(compiler: &str, src: &str) -> Vec<String> {
+    // **An error naming what was looked for**, which is this project's house style and was not
+    // followed here: a bare `unwrap` on a missing `clang` printed a `NotFound` with no name, so
+    // a reader learned that *something* could not be spawned. Reported 2026-08-10 by the first
+    // end-to-end user, who hit it on a box without clang.
     let mut child = Command::new(compiler)
         .args(["-E", "-P", "-std=gnu11", "-x", "c", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
-        .unwrap();
+        .unwrap_or_else(|e| {
+            panic!(
+                "cannot run `{compiler}` as the preprocessor oracle: {e}. It is looked up on \
+                 PATH; install it or run with the other compiler."
+            )
+        });
     std::io::Write::write_all(child.stdin.as_mut().unwrap(), src.as_bytes()).unwrap();
     let output = child.wait_with_output().unwrap();
     assert!(
