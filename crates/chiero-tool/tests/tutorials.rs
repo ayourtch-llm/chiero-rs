@@ -444,6 +444,7 @@ fn tutorial_08_layout() {
     // `char; long; char;` — 24 bytes that would be 16.
     let session = Record {
         tag: "session".into(),
+        span: chiero_span::Span::DUMMY,
         size: 24,
         align: 8,
         packed: false,
@@ -489,6 +490,7 @@ fn tutorial_08_layout() {
     // A wire format: the finding is true and acting on it is a protocol change.
     let wire = Record {
         tag: "pkt_hdr".into(),
+        span: chiero_span::Span::DUMMY,
         size: 68,
         align: 1,
         packed: true,

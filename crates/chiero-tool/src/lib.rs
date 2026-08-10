@@ -2034,6 +2034,19 @@ pub fn layout_envelope(
     records: &[chiero_opt::locality::Record],
     cfg: &chiero_opt::locality::LocalityCfg,
 ) -> Envelope {
+    layout_envelope_located(records, cfg, None)
+}
+
+/// The same, with the map that turns each record's definition span into a file and a line.
+///
+/// A tag is greppable, which made this the least urgent of the three operations that answer
+/// *here is something about your code* — and not the same as an answer. A tag defined in a
+/// header reached from twenty translation units is defined in exactly one of them.
+pub fn layout_envelope_located(
+    records: &[chiero_opt::locality::Record],
+    cfg: &chiero_opt::locality::LocalityCfg,
+    map: Option<&chiero_span::SourceMap>,
+) -> Envelope {
     let rendered: Vec<serde_json::Value> = records
         .iter()
         .map(|r| {
@@ -2043,11 +2056,25 @@ pub fn layout_envelope(
                 .collect();
             serde_json::json!({
                 "tag": r.tag,
+                "file": map
+                    .and_then(|m| m.expansion_loc(r.span))
+                    .zip(map)
+                    .map(|(l, m)| m.file(l.file).path().display().to_string()),
+                "line": map.and_then(|m| m.expansion_loc(r.span)).map(|l| l.line),
                 "size": r.size,
                 "align": r.align,
                 "packed": r.packed,
                 "proposals": proposals,
             })
+        })
+        .map(|mut v| {
+            if v["file"].is_null()
+                && let Some(o) = v.as_object_mut()
+            {
+                o.shift_remove("file");
+                o.shift_remove("line");
+            }
+            v
         })
         .collect();
 

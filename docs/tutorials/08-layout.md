@@ -22,6 +22,8 @@ struct session {
 $ chiero layout sess.c
 records:
   - tag: session
+    file: sess.c
+    line: 1
     size: 24
     align: 8
     packed: false
@@ -74,6 +76,8 @@ struct pkt_hdr {
 $ chiero layout wire.c
 records:
   - tag: pkt_hdr
+    file: wire.c
+    line: 1
     size: 68
     align: 1
     packed: true

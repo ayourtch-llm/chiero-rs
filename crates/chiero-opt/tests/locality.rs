@@ -29,6 +29,7 @@ use chiero_opt::locality::*;
 fn one_field_at(offset: u64) -> Record {
     Record {
         tag: "s".into(),
+        span: chiero_span::Span::DUMMY,
         size: offset + 8,
         align: 8,
         packed: false,
@@ -76,6 +77,7 @@ fn a_field_crossing_a_line_boundary_is_reported_and_one_that_fits_is_not() {
 fn padded() -> Record {
     Record {
         tag: "p".into(),
+        span: chiero_span::Span::DUMMY,
         size: 24,
         align: 8,
         packed: false,
@@ -140,6 +142,7 @@ fn a_struct_whose_layout_escapes_gets_an_advisory_proposal_that_says_so() {
     // is true, and acting on it is a protocol change.
     let header = Record {
         tag: "hdr".into(),
+        span: chiero_span::Span::DUMMY,
         size: 68,
         align: 8,
         packed: false,
@@ -257,6 +260,7 @@ fn the_proposals_are_deterministic() {
 fn a_well_packed_struct_yields_no_proposals() {
     let tight = Record {
         tag: "t".into(),
+        span: chiero_span::Span::DUMMY,
         size: 16,
         align: 8,
         packed: false,
@@ -297,6 +301,7 @@ fn a_well_packed_struct_yields_no_proposals() {
 fn a_padding_proposal_says_where_the_padding_is() {
     let r = Record {
         tag: "p".into(),
+        span: chiero_span::Span::DUMMY,
         size: 24,
         align: 8,
         packed: false,
@@ -355,6 +360,7 @@ fn a_padding_proposal_says_where_the_padding_is() {
 fn the_padding_it_names_and_the_padding_it_recovers_are_reconciled() {
     let r = Record {
         tag: "p".into(),
+        span: chiero_span::Span::DUMMY,
         size: 24,
         align: 8,
         packed: false,
@@ -427,6 +433,7 @@ fn a_bit_field_run_is_one_member_and_the_padding_around_it_is_counted() {
     };
     let r = Record {
         tag: "q".into(),
+        span: chiero_span::Span::DUMMY,
         size: 12,
         align: 4,
         packed: false,
@@ -487,6 +494,7 @@ fn a_bit_field_run_is_one_member_and_the_padding_around_it_is_counted() {
 fn bit_fields_that_already_pack_tight_yield_no_proposal() {
     let r = Record {
         tag: "with_bits".into(),
+        span: chiero_span::Span::DUMMY,
         size: 16,
         align: 8,
         packed: false,
@@ -549,6 +557,7 @@ fn bit_fields_that_already_pack_tight_yield_no_proposal() {
 fn the_reorder_moves_a_bit_field_run_whole_rather_than_repacking_it() {
     let r = Record {
         tag: "z".into(),
+        span: chiero_span::Span::DUMMY,
         size: 8,
         align: 4,
         packed: false,

@@ -118,6 +118,11 @@ const OPS: &[Op] = &[
         samples: find_optimizations_located_samples,
         never_exact: None,
     },
+    Op {
+        name: "layout_envelope_located",
+        samples: layout_located_samples,
+        never_exact: None,
+    },
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -263,6 +268,31 @@ fn find_optimizations_located_samples() -> Vec<Envelope> {
     out
 }
 
+/// `layout`'s samples through the locating variant, with no map — the configuration in which
+/// the two keys must be absent rather than null.
+fn layout_located_samples() -> Vec<Envelope> {
+    use chiero_opt::locality::LocalityCfg;
+    let (padded, wire) = layout_records();
+    let cfg = LocalityCfg::default();
+    let out: Vec<Envelope> = vec![
+        chiero_tool::layout_envelope_located(std::slice::from_ref(&padded), &cfg, None),
+        chiero_tool::layout_envelope_located(&[wire], &cfg, None),
+        chiero_tool::layout_envelope_located(&[], &cfg, None),
+    ];
+    for e in &out {
+        let v: serde_json::Value = serde_json::from_str(&e.to_json()).expect("valid JSON");
+        if let Some(rs) = v["result"]["records"].as_array() {
+            for r in rs {
+                assert!(
+                    r.get("file").is_none() && r.get("line").is_none(),
+                    "a record built with no source map still carries a location: {r}"
+                );
+            }
+        }
+    }
+    out
+}
+
 fn impact_samples() -> Vec<Envelope> {
     let before = Program::parse(
         "geom.c",
@@ -352,10 +382,12 @@ fn find_optimizations_samples() -> Vec<Envelope> {
     ]
 }
 
-fn layout_samples() -> Vec<Envelope> {
-    use chiero_opt::locality::{Field, LocalityCfg, Record};
+/// The two records both layout sample sets use — one padded, one that escapes.
+fn layout_records() -> (chiero_opt::locality::Record, chiero_opt::locality::Record) {
+    use chiero_opt::locality::{Field, Record};
     let padded = Record {
         tag: "p".into(),
+        span: chiero_span::Span::DUMMY,
         size: 24,
         align: 8,
         packed: false,
@@ -378,9 +410,16 @@ fn layout_samples() -> Vec<Envelope> {
     };
     let wire = Record {
         tag: "hdr".into(),
+        span: chiero_span::Span::DUMMY,
         packed: true,
         ..padded.clone()
     };
+    (padded, wire)
+}
+
+fn layout_samples() -> Vec<Envelope> {
+    use chiero_opt::locality::LocalityCfg;
+    let (padded, wire) = layout_records();
     vec![
         chiero_tool::layout_envelope(std::slice::from_ref(&padded), &LocalityCfg::default()),
         // A layout that escapes: proposals, all advisory.
@@ -859,6 +898,7 @@ fn a_layout_with_an_unstatable_record_is_not_proven() {
     };
     let rec = |complete: bool| Record {
         tag: "S".into(),
+        span: chiero_span::Span::DUMMY,
         size: 8,
         align: 4,
         packed: false,

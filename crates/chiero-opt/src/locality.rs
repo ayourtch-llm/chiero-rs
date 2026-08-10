@@ -68,6 +68,9 @@ pub struct BitExtent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Record {
     pub tag: String,
+    /// Where the record is defined. `Span::DUMMY` when the caller has none — a hand-built
+    /// description in a test, or a record with no definition to point at.
+    pub span: chiero_span::Span,
     pub size: u64,
     pub align: u64,
     /// `__attribute__((packed))`. §3 names it as one of the things that makes a layout

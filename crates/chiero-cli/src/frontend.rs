@@ -207,7 +207,11 @@ pub(crate) fn lower_located(
 /// `externally_visible` is left `false` here and set by the caller's own knowledge. That is the
 /// wrong default in isolation — §3 wants the unprovable case treated as observable — so the
 /// caller is told to decide, and `chiero layout` says in the envelope which it assumed.
-pub(crate) fn records(path: &Path, src: &str, f: Frontend) -> Result<Vec<Record>, String> {
+pub(crate) fn records(
+    path: &Path,
+    src: &str,
+    f: Frontend,
+) -> Result<(Vec<Record>, chiero_span::SourceMap), String> {
     let tu = preprocess(path, src, f)?;
     let mut oracle = chiero_parse::ScopedTypedefs::new();
     // **GNU C, not strict ISO.** The tree under analysis is built by gcc or clang with their
@@ -320,6 +324,7 @@ pub(crate) fn records(path: &Path, src: &str, f: Frontend) -> Result<Vec<Record>
         }
         out.push(Record {
             tag: tag.to_string(),
+            span: l.span,
             size: l.size,
             align: l.align,
             packed: l.packed,
@@ -328,7 +333,7 @@ pub(crate) fn records(path: &Path, src: &str, f: Frontend) -> Result<Vec<Record>
             fields_complete,
         });
     }
-    Ok(out)
+    Ok((out, tu.source_map))
 }
 
 #[cfg(test)]

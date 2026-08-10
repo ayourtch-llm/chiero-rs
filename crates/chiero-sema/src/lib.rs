@@ -273,6 +273,11 @@ pub enum ArrayLen {
 /// 014 §3, computed per record and cached.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecordLayout {
+    /// Where the record is **defined** — `TypeExpr::span`, which the parser already records.
+    ///
+    /// A layout answer without one names a tag and leaves a reader to find it; a tag defined in
+    /// a header reached from twenty translation units is in exactly one of them.
+    pub span: chiero_span::Span,
     pub size: u64,
     pub align: u64,
     pub fields: Vec<FieldLayout>,
@@ -4234,6 +4239,8 @@ impl Cx<'_> {
         }
         let size = round_up(round_up(size_bits, 8) / 8, align);
         RecordLayout {
+            // The definition's own span, which the parser already recorded on the type.
+            span: self.ast.ty(node).span,
             size,
             align,
             fields,
@@ -4900,6 +4907,10 @@ fn is_incomplete(a: &Analysis, ty: TyId) -> bool {
 /// either.
 fn incomplete_layout(is_union: bool) -> RecordLayout {
     RecordLayout {
+        // **No definition, so no span.** A placeholder is exactly the case where there is
+        // nowhere to point, and inventing the reference's location would send a reader to a
+        // use rather than to the declaration they asked about.
+        span: chiero_span::Span::DUMMY,
         size: 0,
         align: 1,
         fields: Vec::new(),

@@ -559,12 +559,17 @@ fn cir(o: &Options) -> Result<String, Fault> {
 
 fn layout(o: &Options) -> Result<chiero_tool::Envelope, Fault> {
     let f = o.files(1, "layout")?;
-    let records = frontend::records(&f[0], &read(&f[0])?, o.frontend()).map_err(Fault::Failed)?;
+    let (records, map) =
+        frontend::records(&f[0], &read(&f[0])?, o.frontend()).map_err(Fault::Failed)?;
     let cfg = chiero_opt::locality::LocalityCfg {
         cache_line_bytes: o.cache_line.unwrap_or(64),
         counts: Vec::new(),
     };
-    Ok(chiero_tool::layout_envelope(&records, &cfg))
+    Ok(chiero_tool::layout_envelope_located(
+        &records,
+        &cfg,
+        Some(&map),
+    ))
 }
 
 fn find_optimizations(o: &Options) -> Result<chiero_tool::Envelope, Fault> {
