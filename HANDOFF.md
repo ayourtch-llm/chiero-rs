@@ -3935,11 +3935,12 @@ not an anecdote.*
   and that rule had not been carried to the operations beside it. Asking it of three others on
   2026-08-10 found `find_optimizations` reporting `Exact` and `proven` over a function whose
   branch condition the engine never formed. **The signal was already in hand and thrown away**:
-  `detect` ran the engine, held `run.fidelity()`, and returned only the proposals. **Asked of seven operations now**: `find_bugs` (has the rule), `check_reachable`,
-  `prove_equivalent`, `impact` and `select_tests` all correct — `select_tests` is the strictest,
-  never claiming `Exact` at all. **`find_optimizations` and `layout` were both wrong**, in the
-  same way: an envelope whose prose named what it could not see while its structured claim said
-  `proven`. ⏭️ Still unasked: `expansion_sites`, `explain_macro_expansion`.
+  `detect` ran the engine, held `run.fidelity()`, and returned only the proposals. ✅ **Asked of all nine operations, 2026-08-10 — the sweep is complete.** Seven were already
+  right: `find_bugs` (which is where the rule is written), `check_reachable`, `prove_equivalent`,
+  `impact`, `select_tests` (strictest — never claims `Exact` at all), `expansion_sites`
+  (`Bounded` + a truncation record under `--limit`, verified) and `explain_macro_expansion`.
+  **`find_optimizations` and `layout` were wrong**, both in the same way — an envelope whose
+  prose named what it could not see while its structured claim said `proven`. Both fixed.
 
 - **A prose caveat and a structured claim in one envelope must agree.** Both operation defects
   above already carried a blind spot naming exactly what was missed — `layout` even explained
