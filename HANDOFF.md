@@ -1968,6 +1968,44 @@ typing the paths ever would.
 > The archive is linted like this file is. Section numbers did not change, so an old citation
 > still finds its subject.
 >
+> ### 🔴 CI IS RED AND I COULD NOT REPRODUCE IT — what is ruled out, 2026-08-10
+>
+> The owner reports GitHub CI on `ayourtch-llm/chiero-rs` failing "for a while" while
+> `./check.sh` is green locally. ⚠️ **That is §8.3's third form pointed at this project's own
+> gates** — a local gate narrower than CI, or runner drift — so it is worth more than anything
+> in the queue below.
+>
+> **Every step of `.github/workflows/ci.yml` was run locally, exactly as written. All pass:**
+>
+> | CI step | local result |
+> |---|---|
+> | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` | pass (`check.sh` covers both) |
+> | `cargo build --workspace` and `--no-default-features`, **with `RUSTFLAGS=-D warnings`** | pass — this is the one `check.sh` does *not* replicate, since the workflow sets it globally in `env:` |
+> | `cargo test --workspace` with `CHIERO_SMT_SOLVER=/nonexistent` (the `solver: none` matrix leg) | **287 suites, exit 0** |
+> | `cargo xtask check-deps`, `check-vpp-leak`, `check-proof-surface` | pass |
+> | `cargo xtask contract-coverage` | exit 0 — it is a *report*, not a gate (ci.yml says so) |
+>
+> **So the cause is environmental, and these are the candidates I could not test from here:**
+>
+> 1. **A newer stable toolchain.** CI uses `dtolnay/rust-toolchain@stable`; this machine is
+>    `1.97.1 (2026-07-14)` and `rustup check` says up to date. If the runner has a newer stable,
+>    `RUSTFLAGS: -D warnings` turns any **new rustc lint** into a build failure — the classic
+>    green-local/red-CI cause, and it matches "failing for a while" with no code change.
+> 2. **z3 version.** The `solver: z3` leg installs from apt; this machine has **4.8.12**.
+>    `ubuntu-latest` ships a newer one, and five `chiero-check` tests assert what a *complete*
+>    solver decides.
+> 3. Something outside the workflow file — a runner image change, or a step failing on
+>    checkout/network.
+>
+> ⏭️ **First move for whoever has the log**: it names the failing leg (`solver: none` or
+> `solver: z3`) and the step, which discriminates 1 from 2 immediately. There is no `gh` CLI on
+> this machine, which is why this stops here rather than at an answer.
+>
+> 📌 **And one gap this exposed regardless of the cause:** `check.sh` does not set
+> `RUSTFLAGS=-D warnings`, so a rustc-level warning is red in CI and green locally. That is a
+> real narrowness in the local gate — §7.5 lists `check.sh` as covering six of CI's ten
+> commands, and this is a *seventh difference inside* one it claims to cover.
+>
 > ### 🙋 DECISIONS WAITING ON THE OWNER — the whole list, in one place
 >
 > Seven questions accumulated across sessions, each recorded where it arose and therefore

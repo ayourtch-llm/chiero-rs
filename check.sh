@@ -118,6 +118,13 @@ fi
 if [ $rc -eq 0 ]; then
   if [ $lints -eq 1 ]; then
     echo "GREEN: $passed passed across $suites suites, fmt and clippy clean"
+    # ⚠️ **Not the same as CI green.** `.github/workflows/ci.yml` sets `RUSTFLAGS: -D warnings`
+    # for the whole workflow, so a *rustc* warning — not a clippy lint — fails there and passes
+    # here. A newer stable toolchain adding a lint is red in CI with no code change, which is
+    # the shape of the 2026-08-10 report. Run the compile legs the way CI does before
+    # concluding the tree is clean:
+    #     RUSTFLAGS="-D warnings" cargo build --workspace --all-targets
+    #     RUSTFLAGS="-D warnings" cargo build --workspace --no-default-features
   else
     echo "GREEN (tests only, lints skipped): $passed passed across $suites suites"
   fi
