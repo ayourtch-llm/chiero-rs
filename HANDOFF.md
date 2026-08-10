@@ -3340,6 +3340,17 @@ reached 952 lines again, 316 of them finished work:
    view: nothing here writes to a source file, so a location is for a reader to navigate by, not
    for a rewriter to consume.
 
+   🔧 **The plumbing, traced 2026-08-10 so nobody re-derives it.** The blocker is one layer
+   further down than it looks: a proposal is raised by a `Checker` from an `Event`, and
+   **neither the event nor `CheckerCtx` can reach a span**. `Event::Fork` carries `st: &State`,
+   `State::pc` is `(BlockId, usize)` and public, and `CheckerCtx` holds `module` as a *private*
+   field with no accessor — so the checker has the position and cannot resolve it. The smallest
+   honest fix is an accessor on `CheckerCtx` (`span_of(st)`: the instruction at `pc`, or the
+   block's terminator when `pc` is past the end), which every checker gains at once. Then
+   `Seen`/`Proposal` carry it, and the envelope end is a copy of §7.38. Four crates —
+   `chiero-exec`, `chiero-opt`, `chiero-tool`, `chiero-cli` — plus the operations registry and
+   `tutorial_transcripts.rs`, which will refuse the changed output and should.
+
    📌 **`layout` is the same item and was checked at the same time.** Its records name a tag,
    which a reader can grep, so it is survivable rather than unusable — but
    `chiero_sema::RecordLayout` has no span either, so both halves of *an answer must say where*
