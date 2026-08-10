@@ -1413,7 +1413,7 @@ hand-written CIR; this is the path every published number actually took.)
 
 | | |
 |---|---|
-| recall | **16/17** — everything except `pointer_outside_object`, which is a judgement call rather than a defect |
+| recall | **18/19** — everything except `pointer_outside_object`, which is a judgement call rather than a defect |
 | reach | **both** default checkers (`OrderDependence`, `UndefinedArithmetic`), not only memory faults |
 | controls | **0 false positives** |
 
@@ -1434,6 +1434,13 @@ member, and `chiero-mem/tests/copy_alignment.rs` already pins both halves. ✅ *
 compiler — and demands every slug have a corpus case or an `EXCLUDED` entry **with a reason**.
 ⚠️ **It failed on its first run:** the corpus said `"uninitialized"` where the vocabulary says
 `uninitialized-read`, passing only because the assertion used `contains`.
+
+✅ **Extended to `UbKind` as well** — `ub_phrase`'s match is the second exhaustive vocabulary,
+and 023 §6.1 makes both channels' kinds one namespace. Two more slugs had never been probed and
+both already worked: `float-to-integer-conversion-out-of-range` (`(int) 1e30`) and
+`signed-overflow` **forced** by a path (`if (x > 2147483000) return x + 1000;`).
+⚠️ `may-signed-overflow` is excluded *with the measurement* — `return x + 1;` reports nothing,
+and that is right: the weaker claim would fire on every addition in existence.
 
 📌 **Reach is healthy — seven probes, an honest zero, 2026-08-10.** The two defects this
 corpus found were about *representation* (`UNBOUND`, 8e) and *a guard clause* (8f), so the
