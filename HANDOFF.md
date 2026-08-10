@@ -3039,6 +3039,14 @@ longer sits between a fresh context and the live work.
    | `deref((int *) 0x1234)` — through a **parameter** | masked |
    | `return *(int *) 0x1234;` | **the only shape that reports** |
 
+   ✅ **And the mask does not generalise — checked, because the larger hypothesis was scarier.**
+   Through the same parameter shape, `null-dereference`, `out-of-bounds`, `division-by-zero` and
+   `use-after-free` all report correctly. So the defect is specific to
+   `Pointer { base: UNBOUND }` being stored, not to parameter passing or to the memory model,
+   and the fix has one place to go. `use_after_free_via_parameter` is in the corpus as a guard
+   for exactly that: the direct forms never store, so they cannot catch a fix that breaks
+   ordinary pointer round-trips.
+
    **So the `wild-pointer` checker is close to unreachable in real C**, which always names a
    pointer before using it. Parameter passing masks it too, which means it cannot survive a
    function boundary. That reframes 8e from a reporting nit to a checker that effectively does
