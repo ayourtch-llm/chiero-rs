@@ -124,6 +124,22 @@ const CASES: &[(&str, &str, &str, &str)] = &[
         "wild-pointer",
     ),
     (
+        // **A guard for the fix to 8e, not a probe.** Fixing "storing an `UNBOUND` pointer
+        // writes no bytes" means touching how pointers are stored, and NULL/heap/stack
+        // pointers must keep surviving that round-trip. Measured 2026-08-10: null,
+        // out-of-bounds, division-by-zero and use-after-free all report correctly through a
+        // parameter, so the mask is specific to `UNBOUND` rather than general to crossing a
+        // function boundary. This is the most involved of those flows.
+        "use_after_free_via_parameter",
+        "void *malloc(unsigned long); void free(void *);\n\
+         static int rd(int *q) { return *q; }\n\
+         int probe(void) { int *p = malloc(4); if (!p) return 0; *p = 1; free(p); return rd(p); }",
+        "void *malloc(unsigned long); void free(void *);\n\
+         static int rd(int *q) { return *q; }\n\
+         int probe(void) { int *p = malloc(4); if (!p) return 0; *p = 1; int v = rd(p); free(p); return v; }",
+        "use-after-free",
+    ),
+    (
         // **Through a parameter — the shape real code actually uses.** Masked the same way
         // (item 8e); measured 2026-08-10 alongside a struct field and an array element, which
         // mask identically. Every route that puts the pointer in memory before dereferencing
