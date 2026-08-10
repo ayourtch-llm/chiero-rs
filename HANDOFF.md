@@ -1915,8 +1915,23 @@ its contracts. What the number says is *what nobody has claimed*.
 
 ⏭️ **The next move is reading, not building**, and it splits three ways per contract: already
 tested and merely uncited (add the citation), genuinely untested (a red test), or untestable as
-written (a spec amendment, which is what 023 c17's withdrawal was). 040's 2/23 is the place to
-start — it is the operation with a known-ground-truth corpus already sitting next to it.
+written (a spec amendment, which is what 023 c17's withdrawal was). 040 is the place to start —
+it is the operation with a known-ground-truth corpus already sitting next to it — and the first
+two contracts read there produced one of each kind:
+
+- ✅ **040 c17** (`grep -rE 'vec_|pool_|vlib_|clib_' crates/chiero-check/src` yields no hits) —
+  **already enforced, merely unnamed.** `check-vpp-leak` has applied 001 contract 5's rule to
+  every crate since the gate existed. Citation added; 040 is 3/23.
+- 🔴 **040 c16** (*"`blind_spots` is non-empty in every report produced by v1"*) — **contradicted
+  by a documented, deliberate behaviour, so it is a spec question rather than a missing test.**
+  `expansion_sites_envelope` on a page of a larger population is `Bounded` with *empty*
+  `blind_spots` and `assumptions`: the qualification is real and complete and lives in
+  `truncation`, which 050 §2 gives its own field precisely so a reader does not have to find it
+  in prose. `operations.rs` says so in as many words — *"a test that demanded a blind spot there
+  would have been demanding the qualification be said twice."* **Owner call**: amend c16 to
+  050 §2's form (the envelope must carry the qualification *somewhere structural*), or accept a
+  redundant blind spot. Recommend the amendment; the behaviour is right and the contract is
+  older than the field.
 
 ### 7.5 How to check the workspace is green — `./check.sh`
 
