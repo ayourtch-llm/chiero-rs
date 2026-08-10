@@ -24,6 +24,21 @@ use std::path::Path;
 /// **A filter, not a rewrite.** `-o`, `-c`, `-MD` and friends are about producing an object file
 /// and mean nothing to a frontend; everything that changes *what the preprocessor sees* is kept,
 /// which is why `-U` and `-m…` are here beside the obvious two.
+/// The **include paths only** — the half that is safe to adopt.
+///
+/// ⛔ `frontend_flags` also returns `-march=…`, and taking that from the database is the
+/// **parked** target-configuration item, not flag hygiene: the pinned 40 run with full database
+/// flags keeps its summary line while 26 of 38 envelopes differ (§7.30). Include paths are
+/// separable — 20 plugin files run under harness includes and real includes gave 17
+/// byte-identical CIR and 0 differing — so this recovers the files that fail for want of a
+/// header without changing what target the analysis is about.
+pub fn include_flags(args: &[String]) -> Vec<String> {
+    frontend_flags(args)
+        .into_iter()
+        .filter(|f| f.starts_with("-I") || f.starts_with("-isystem") || f.starts_with("-include"))
+        .collect()
+}
+
 pub fn frontend_flags(args: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     let mut i = 0;
@@ -53,6 +68,16 @@ pub fn frontend_flags(args: &[String]) -> Vec<String> {
 
 /// `compile-flags [--db <path>] <source>` — print one line of flags per matching unit.
 pub fn compile_flags(db_path: &Path, src: &Path) -> Result<Vec<String>, String> {
+    flags_of(db_path, src, false)
+}
+
+/// As [`compile_flags`], but include paths only — see [`include_flags`] for why that is the
+/// separable half.
+pub fn include_only(db_path: &Path, src: &Path) -> Result<Vec<String>, String> {
+    flags_of(db_path, src, true)
+}
+
+fn flags_of(db_path: &Path, src: &Path, includes_only: bool) -> Result<Vec<String>, String> {
     let json = std::fs::read_to_string(db_path)
         .map_err(|e| format!("cannot read {}: {e}", db_path.display()))?;
     let db = chiero_vpp::builddb::BuildDb::parse(&json)?;
@@ -63,7 +88,14 @@ pub fn compile_flags(db_path: &Path, src: &Path) -> Result<Vec<String>, String> 
         .units()
         .iter()
         .filter(|u| u.src.to_string_lossy().ends_with(&want))
-        .map(|u| frontend_flags(&u.args).join(" "))
+        .map(|u| {
+            let f = if includes_only {
+                include_flags(&u.args)
+            } else {
+                frontend_flags(&u.args)
+            };
+            f.join(" ")
+        })
         .collect();
     if hits.is_empty() {
         // **Not an empty answer.** A file the build never compiles has no flags, and a caller

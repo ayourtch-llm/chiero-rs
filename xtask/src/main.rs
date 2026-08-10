@@ -452,9 +452,11 @@ fn cc_report() -> ExitCode {
 fn compile_flags_cmd() -> ExitCode {
     let mut args = std::env::args().skip(2);
     let (mut db, mut src) = (None, None);
+    let mut inc_only = false;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--db" => db = args.next(),
+            "--includes-only" => inc_only = true,
             other => src = Some(other.to_string()),
         }
     }
@@ -462,8 +464,12 @@ fn compile_flags_cmd() -> ExitCode {
         eprintln!("usage: compile-flags --db <compile_commands.json> <source>");
         return ExitCode::FAILURE;
     };
-    match xtask::compile_flags::compile_flags(std::path::Path::new(&db), std::path::Path::new(&src))
-    {
+    let (db, src) = (std::path::Path::new(&db), std::path::Path::new(&src));
+    match if inc_only {
+        xtask::compile_flags::include_only(db, src)
+    } else {
+        xtask::compile_flags::compile_flags(db, src)
+    } {
         Ok(lines) => {
             for l in lines {
                 println!("{l}");

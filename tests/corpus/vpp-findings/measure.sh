@@ -98,7 +98,12 @@ while IFS=$'\t' read -r f fn; do
   # the hand-kept list is the fallback there, because refusing to measure a file the sweep was
   # asked about would be a silent hole rather than a reported one.
   flags="$INC $own $DEF"
-  if [ -n "${COMPDB:-}" ]; then
+  if [ -n "${COMPDB_INCLUDES:-}" ]; then
+    # **The safe half: the build's include paths, and nothing else.** Recovers the files that
+    # fail because a header is not on the path, without touching the target configuration.
+    real=$("$XTASK" compile-flags --includes-only --db "$COMPDB_INCLUDES" "$f" 2>/dev/null | head -1)
+    [ -n "$real" ] && flags="$real $DEF"
+  elif [ -n "${COMPDB:-}" ]; then
     real=$("$XTASK" compile-flags --db "$COMPDB" "$f" 2>/dev/null | head -1)
     [ -n "$real" ] && flags="$real"
   fi

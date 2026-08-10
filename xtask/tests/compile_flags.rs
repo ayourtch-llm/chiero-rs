@@ -81,3 +81,36 @@ fn a_multiarch_source_reports_every_variant() {
     assert_eq!(got.len(), 2, "both variants: {got:?}");
     assert!(got[1].contains("CLIB_MARCH_VARIANT"), "{got:?}");
 }
+
+/// **`--includes-only` must not leak the target configuration.**
+///
+/// Taking the whole compile command from the database is the parked `-march` item: the pinned 40
+/// run that way keeps its summary line while 26 of 38 envelopes differ. Include paths are the
+/// separable half — 20 plugin files gave 17 byte-identical CIR under harness vs real includes —
+/// so this filter is the line between "recover files that cannot find a header" and "change what
+/// target the analysis is about". A regression here would cross that line silently.
+#[test]
+fn includes_only_drops_march_and_defines() {
+    use xtask::compile_flags::include_flags;
+    let got = include_flags(&v(&[
+        "cc",
+        "-I/a",
+        "-DX=1",
+        "-march=x86-64-v2",
+        "-mtune=generic",
+        "-std=gnu11",
+        "-isystem",
+        "/sys",
+        "-U",
+        "Y",
+        "-c",
+        "f.c",
+    ]));
+    assert_eq!(
+        got,
+        v(&["-I/a", "-isystem/sys"]),
+        "only include paths survive: -march and -mtune are the parked item, and -D/-U/-std \
+         change the program rather than where its headers are"
+    );
+    assert!(!got.iter().any(|f| f.contains("march")), "{got:?}");
+}
