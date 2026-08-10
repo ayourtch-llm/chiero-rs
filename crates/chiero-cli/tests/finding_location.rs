@@ -108,3 +108,46 @@ fn the_line_is_the_one_the_defect_is_on() {
         "a finding names a file that is not the one analysed:\n{v:#}"
     );
 }
+
+/// One access, one fault, one entry — 040 contract 1's *"exactly once"*, which became a question
+/// somebody could ask the moment findings carried a line.
+///
+/// **The parameter is the point.** `p` is never dereferenced; `q` is. Before 2026-08-10 this
+/// produced *two* findings at the same line, identical but for a clause about `p` that is true
+/// on one path and not the other — because the consumer grouped on the message, and a message
+/// is a rendering rather than an identity.
+#[test]
+fn one_access_is_one_finding_however_many_paths_reach_it() {
+    let src = "int probe (int *p)\n{\n  int *q = 0;\n  return *q;\n}\n";
+    let v = find_bugs("once.c", src);
+    let findings = v["result"]["findings"].as_array().expect("findings");
+    let nulls: Vec<&serde_json::Value> = findings
+        .iter()
+        .filter(|f| {
+            f["message"]
+                .as_str()
+                .is_some_and(|m| m.starts_with("null-dereference:"))
+        })
+        .collect();
+    assert_eq!(
+        nulls.len(),
+        1,
+        "one dereference of one null pointer is one finding, on however many paths:\n{v:#}"
+    );
+    // **And the paths are counted rather than dropped.** "1 finding" and "1 finding on 2 paths"
+    // are different facts, and the second is what says the parameter split the search.
+    assert!(
+        nulls[0]["paths"].as_u64().unwrap_or(0) >= 2,
+        "the merged entry must say how many paths reached it:\n{}",
+        nulls[0]
+    );
+    // The kept message is the more specific one: every variant is true of some path, and the
+    // longer carries the clause a reader cannot get anywhere else.
+    assert!(
+        nulls[0]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("pointer parameter")),
+        "the group kept the less informative of its messages:\n{}",
+        nulls[0]
+    );
+}
