@@ -29,6 +29,8 @@ Ten operations, each a command and a library call, each returning an
 - **`select-tests` works from the command line.** `--test NAME=PATH`, once per test run, or
   `--coverage-manifest <file>` with a `NAME<TAB>PATH` line each. The selection carries the
   caller's own test names back, so a consumer does not have to join on `TestId` integers.
+- **Every `find-bugs` finding names a file and a line.** The engine had carried the span all
+  along; the envelope dropped it, so a report said what was wrong and never where.
 - **`--march <name>`** targets the compiler persona (it had been accepted since 2026-08-09 and
   documented nowhere).
 - **`--solver-rlimit <units>`**, a deterministic budget in solver work units — unlike a wall
