@@ -1442,6 +1442,17 @@ both already worked: `float-to-integer-conversion-out-of-range` (`(int) 1e30`) a
 ⚠️ `may-signed-overflow` is excluded *with the measurement* — `return x + 1;` reports nothing,
 and that is right: the weaker claim would fire on every addition in existence.
 
+✅ **And the checker registry itself.** `every_default_checker_is_accounted_for` pins
+`default_checkers()`: adding a checker there changes what **every** `find-bugs` run does, and
+now cannot happen without the corpus noticing. It records *how* each is reached (a checker
+fires kinds, so `UndefinedArithmetic` is covered through its four `UbKind` cases) and asserts
+`UnionPun`'s deliberate absence, so that reasoning and the registry cannot drift apart.
+Mutation-checked.
+
+📌 **Three registries gated — `MemFault`'s kinds, `UbKind`'s kinds, the checker list.** All
+three were audited by eye on 2026-08-10 and all three are tests now; each audit's last act was
+to make itself unnecessary.
+
 📌 **Reach is healthy — seven probes, an honest zero, 2026-08-10.** The two defects this
 corpus found were about *representation* (`UNBOUND`, 8e) and *a guard clause* (8f), so the
 obvious next question was whether **depth** defeats the checkers. It does not:
@@ -1691,7 +1702,7 @@ at from the analysis side.
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
 three xtask gates were red: a crate whose test *binary* fails to build emits no `test result`
 line at all, so counting successes cannot detect a missing success. `./check.sh` keys on
-cargo's exit status and prints the failing suites first. Current: **2326 passed, 286 suites** (2026-08-10).
+cargo's exit status and prints the failing suites first. Current: **2327 passed, 286 suites** (2026-08-10).
 
 ⏱️ **It now takes over an hour per leg**, and that is the session's dominant cost — see §9's
 note on the corpus. `conversions` and `semantics` are ~55 s each, the two VPP gates ~60 s, and
