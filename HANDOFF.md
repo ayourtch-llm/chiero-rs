@@ -3234,6 +3234,27 @@ reached 952 lines again, 316 of them finished work:
    stay untyped — and the variant's own doc says forming such a pointer "is deliberate in a few
    real idioms". **Owner's call.**
 
+5q. 🆕 **`find-optimizations` proposals name no location at all — and unlike a finding, the
+   information was never carried.** The neighbour check on §7.38, which fixed the same class in
+   `find-bugs`: an answer must say *where*. A proposal today reads
+
+   ```text
+   - kind: dead_branch
+     reachable_side: true
+     rationale: ...
+   ```
+
+   in a translation unit that may be 30 000 lines. `layout` is weaker but survivable — it names
+   the record's tag, which a reader can grep — and `find-bugs` is fixed. This one is the real
+   gap, and it is **deeper than the fix that preceded it**: `chiero_exec::Finding` had `span`
+   and the envelope dropped it, whereas `chiero_opt::Proposal` has no span field, so the
+   detectors in `chiero-opt` have to record one before the envelope can print it. `OppKind`
+   carries `object`/`offset` for the load and store cases and nothing positional for
+   `dead_branch`.
+   ⏭️ Start at the detector, not the envelope. And 041 contract 17 is the constraint to keep in
+   view: nothing here writes to a source file, so a location is for a reader to navigate by, not
+   for a rewriter to consume.
+
 5j. 🆕 **`CopyMem` discards the alignment the CIR hands it, so a memcpy and a vector move are the
    same access.**
 
