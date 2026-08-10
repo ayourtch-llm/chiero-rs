@@ -3455,6 +3455,16 @@ reached 952 lines again, 316 of them finished work:
    call (56 lines for 26 distinct skips in one subset). Caught by §8.3 step 0 on a subset small
    enough to count by hand, before the number went anywhere.
 
+   📌 **Which contracts CI cannot assert, named.** The runner has no VPP checkout, so the tests
+   carrying **011 c11** (every VPP source lexes without panicking), **012 c17** (all 1967 TUs
+   preprocess) and **060 c1** (the compile database parses) skip or stay ignored there; they are
+   asserted *here* and nowhere else. ✅ Checked while measuring this: the nine test files that
+   mention `/home/ubuntu/vpp` either guard on existence or are `#[ignore]`d — the three with
+   neither turned out to reference it in a comment or as a *lookup key* into a checked-in
+   fixture, not as a filesystem read, so nothing degrades silently to an empty corpus. **A
+   contributor reading a green CI badge is reading a claim with three named holes in it**, and
+   that is worth a line in the README before it is worth a gate.
+
    ⏭️ The gate to build: a citation from a file whose citing test is `#[ignore]`d does not count.
    Naive "any `#[ignore]` in a citing file" over-flags — a file may hold twenty running tests and
    one deliberate reproduction — so it has to associate each `Covers:`/inline citation with the
