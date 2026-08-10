@@ -111,6 +111,66 @@ fn slugs_in_kind_match() -> BTreeSet<String> {
         .collect()
 }
 
+/// **Every checker in `default_checkers()` is one the corpus knows about.**
+///
+/// The two vocabularies above answer "which *kinds* has nobody probed". This answers the
+/// registry question beside it: adding a checker to the defaults changes what every
+/// `find-bugs` run does, and it should not be possible to do that silently. There are only
+/// three checkers today, which is exactly when a list like this is cheap to keep honest.
+#[test]
+fn every_default_checker_is_accounted_for() {
+    // How each is reached from `injected_defects.rs`. A checker fires *kinds*, so the corpus
+    // covers it through those rather than by name.
+    const KNOWN: &[(&str, &str)] = &[
+        (
+            "OrderDependence",
+            "the `order_dependence` case — two calls in one unsequenced region",
+        ),
+        (
+            "UndefinedArithmetic",
+            "its `UbKind` slugs: div_zero, shift_past_width, signed_overflow_forced,              float_cast_out_of_range",
+        ),
+    ];
+    let src = std::fs::read_to_string(root().join("crates/chiero-check/src/lib.rs"))
+        .expect("read chiero-check");
+    let body = src
+        .split_once("pub fn default_checkers()")
+        .and_then(|(_, r)| r.split_once('}'))
+        .map(|(b, _)| b.to_string())
+        .expect("default_checkers has a body");
+
+    let registered: Vec<&str> = KNOWN
+        .iter()
+        .map(|(n, _)| *n)
+        .filter(|n| body.contains(*n))
+        .collect();
+    assert_eq!(
+        registered.len(),
+        KNOWN.len(),
+        "a checker listed here is no longer in `default_checkers()` — drop it from KNOWN:          body = {body}"
+    );
+
+    // The direction that matters: something in the defaults that nobody here has heard of.
+    for line in body.lines() {
+        let Some((_, rest)) = line.trim().split_once("Box::new(") else {
+            continue;
+        };
+        let name = rest.split("::").next().unwrap_or("").trim();
+        assert!(
+            KNOWN.iter().any(|(k, _)| *k == name),
+            "`{name}` is in `default_checkers()` and unknown to the defect corpus. Every              `find-bugs` run now uses it. Add a case to injected_defects.rs and an entry to              KNOWN saying how it is reached."
+        );
+    }
+
+    // `UnionPun` is deliberately absent from the defaults — chiero follows gcc, which defines
+    // union punning, so it "exists for the projects that want the stricter reading rather than
+    // for this one". Asserted so the comment and the registry cannot drift apart.
+    assert!(
+        !body.contains("UnionPun"),
+        "UnionPun joined the defaults — it is off by design (chiero-check/src/lib.rs:27), so          either that reasoning changed or this is a mistake"
+    );
+}
+
 #[test]
 fn every_memfault_kind_is_probed_or_excluded_with_a_reason() {
     let mut vocabulary = slugs_in_kind_match();
