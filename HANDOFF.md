@@ -3391,6 +3391,16 @@ not an anecdote.*
   is for a reader and the flag is for a consumer, and only one of them was right.** When adding
   a caveat, check what the fidelity says.
 
+- **A check that prints its own reassurance cannot report the bad case.** Twice on 2026-08-10:
+  `git status --short | head -3; echo "(empty = clean)"` — the echo fires either way, so a dirty
+  tree and a clean one look identical, and "tree clean" was reported for several cycles while
+  two files sat uncommitted. And `cargo test … | grep FAILED; echo "(no FAILED = green)"` printed
+  green while the *build* had failed and no test had run at all.
+  **Print the number, not the verdict**: `git status --porcelain | wc -l`, and a test count
+  rather than the absence of a word. This is the false-zero family — a pattern narrower than the
+  thing it looks for — turned on one's own verification idioms, which is where it is hardest to
+  notice because the output is the part being trusted.
+
 ### 11.1 About tests and what they can see
 
 - **A test can pass for the wrong reason, and it happens in a recognisable shape.** Diagnosing
