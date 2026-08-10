@@ -84,6 +84,44 @@ int area (int w) { return SCALE (w) * w; }
 int volume (int w) { return area (w) * w; }
 ";
 
+/// **Tutorial 2's "reading a real file" section, compiled.** The one drift the first
+/// end-to-end user reported that nobody could find on 2026-08-10 was about `FileLoader::load`
+/// — and the reason it could not be found is that no tutorial mentioned `FileLoader` at all.
+/// `Program::parse` follows no `#include`, so the moment a reader points chiero at a real
+/// translation unit they meet a trait the documentation had never named, and they guessed at
+/// its signature. It returns `io::Result`, and this is where that is now written down.
+#[test]
+fn tutorial_02_reading_a_real_file_with_its_includes() {
+    struct Disk;
+    impl chiero_diff::FileLoader for Disk {
+        fn load(&mut self, path: &std::path::Path) -> std::io::Result<String> {
+            std::fs::read_to_string(path)
+        }
+    }
+
+    let dir = std::env::temp_dir().join(format!("chiero-tut2-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("scratch");
+    std::fs::write(dir.join("scale.h"), "#define SCALE(x) ((x) * 2)\n").expect("write");
+    let src = "#include \"scale.h\"\nint area (int w) { return SCALE (w) * w; }\n";
+
+    let mut cfg = chiero_diff::Config::default();
+    cfg.include_paths.push(dir.clone());
+    let before =
+        Program::parse_with("geom.c", src, cfg.clone(), &mut Disk).expect("parses with includes");
+
+    std::fs::write(dir.join("scale.h"), "#define SCALE(x) ((x) * 3)\n").expect("write");
+    let after = Program::parse_with("geom.c", src, cfg, &mut Disk).expect("parses with includes");
+
+    // **The same unit name for both**, which the tutorial now says in as many words: keying by
+    // file is what makes `area` one entity rather than two.
+    let set = impact(&before, &after);
+    let names: Vec<&str> = set.entities.keys().map(|e| e.name()).collect();
+    assert!(
+        names.contains(&"area"),
+        "a macro edited in a *header* still reaches the function that expands it: {names:?}"
+    );
+}
+
 #[test]
 fn tutorial_02_change_impact() {
     let before = Program::parse("geom.c", V1).expect("parses");

@@ -83,6 +83,41 @@ One macro body changed and nothing else in the file was edited. `area` is in the
 it *expands* `SCALE`; `volume` is in it because it calls `area`. The closure is computed to a
 fixpoint, so a chain of any depth is followed.
 
+## Reading a real file, with its includes
+
+`Program::parse` takes the source as a string and follows no `#include` — fine for a snippet,
+useless for a translation unit that starts with `#include <vlib/vlib.h>`. For that there is
+`Program::parse_with`, which takes a preprocessor `Config` and something that can open a file:
+
+```rust
+use chiero_diff::{Config, FileLoader, Program};
+use std::path::Path;
+
+struct Disk;
+
+impl FileLoader for Disk {
+    // **`io::Result`, not `Option`.** A header that is missing and a header that is
+    // unreadable are different problems, and the message a reader gets should say which.
+    fn load (&mut self, path: &Path) -> std::io::Result<String> {
+        std::fs::read_to_string (path)
+    }
+}
+
+let mut cfg = Config::default ();
+cfg.include_paths.push ("src".into ());
+
+let src = std::fs::read_to_string ("src/geom.c")?;
+let before = Program::parse_with ("geom.c", &src, cfg, &mut Disk)
+    .ok_or ("geom.c did not parse")?;
+```
+
+**Both sides must be parsed under the same unit name.** `chiero-diff` keys entities by file, so
+parsing `old/geom.c` and `new/geom.c` under their own names compares two different `area`s and
+every entity in the file "changed". Pass one name — `"geom.c"` — for both.
+
+`chiero-diff` re-exports `Config` and `FileLoader` from `chiero-pp` so a caller doing this does
+not have to depend on the preprocessor crate directly.
+
 ## Every entry says why
 
 ```rust
