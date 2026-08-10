@@ -234,3 +234,50 @@ fn a_line_reached_through_an_undecided_branch_is_not_proven_reachable() {
         "and it says what stopped it: {v}"
     );
 }
+
+/// A line behind a branch on a value the engine could not model at all.
+///
+/// `%2` comes from a call with no body, and the comparison is on an 80-bit float — `FOLt` is
+/// one of 023 §7's approximated gaps. So the branch condition is not a scalar and no path
+/// reaches `.line 9`.
+const BEHIND_AN_UNMODELLED_BRANCH: &str = "\
+func @f() -> i32 {
+entry:
+  .line 1
+  %0 = call @src()
+  %1 = cmp folt f80 %0, fconst:f80:0x3fff8000000000000000
+  br %1, bb1, bb2
+bb1:
+  .line 9
+  ret 1i32
+bb2:
+  .line 10
+  ret 0i32
+}
+
+func @src() -> f80";
+
+/// **A fourth route to `not_shown_reachable`, and the one where a wrong answer is worst.**
+///
+/// The three already covered are: no solver, an exhaustive proof, and a loop bound. This is
+/// *an operation chiero cannot model* — and it is the route most likely to be broken silently,
+/// because an unmodelled value produces no error and no path, which looks exactly like nothing
+/// arriving. Reporting "unreachable" here would tell a reader to delete live code on the
+/// strength of a gap in chiero.
+///
+/// Verified against the CLI on real C the same day: `long double d = src(); if (d > 1e30L)`
+/// answers `not_shown_reachable` and names `FOLt is not modeled`.
+#[test]
+fn a_line_behind_an_unmodelled_branch_is_not_shown_reachable() {
+    let env = check_reachable(&m(BEHIND_AN_UNMODELLED_BRANCH), &cfg("f"), 9);
+    let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
+    assert_eq!(
+        v["result"]["verdict"], "not_shown_reachable",
+        "an unmodelled branch is chiero not getting there, not nothing getting there: {v}"
+    );
+    assert!(!env.proven, "and it is not proven: {v}");
+    assert!(
+        v["result"]["why"].as_str().is_some_and(|s| !s.is_empty()),
+        "and it says what stopped it rather than answering bare: {v}"
+    );
+}
