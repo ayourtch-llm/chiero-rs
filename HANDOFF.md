@@ -1776,6 +1776,40 @@ indirect call. **A census only interprets a measurement if it is taken in that m
 configuration** — the same trap `measure.sh`'s own header warns about for `INCLUDES`, arrived
 at from the analysis side.
 
+### 7.33 Per-operation `--help` — and the flag it turned up that was documented nowhere
+
+User-test finding 4: `select-tests --help` printed the global page, so a reader who had already
+chosen an operation still had to work out which of eighteen options applied to it, and 030's
+`--coverage`/`--stem` semantics cost the first user three attempts. Each operation now has its
+own page — title, its own synopsis, its paragraph, and **only the options it reads**. A usage
+error prints that page rather than the global one, which is where the user actually met it: a
+complaint about `--stem`, answered with every operation in the tool.
+
+📌 **The yield was not the pages. It was what writing the gate first found.** The help text
+moved out of a hand-written `USAGE` string into two tables in `chiero-cli/src/help.rs`, and
+`crates/chiero-cli/tests/help.rs` was written before them — reading three sources of truth already in `main.rs`
+rather than restating any of them:
+
+| read from | what it decides |
+|---|---|
+| the dispatch `match` in `run` | which operations exist |
+| the `match` in `Options::parse` | which flags are accepted at all |
+| each operation function's own `o.<field>` uses | which flags **that** operation reads |
+
+The third is the one a table cannot supply, and it makes the gate bidirectional: a page must
+name every option its implementation consults, and advertise none it ignores. Five of six
+assertions were red, and one was a defect the feature had not reached — **`--march` has been
+accepted by the parser since 2026-08-09 and was documented nowhere.** That is the flag §7.30
+found to be load-bearing: every AVX2 path in vppinfra depends on it, and no reader could have
+learned it existed.
+
+⚠️ **Two under-detections in the gate itself, both in the flattering direction**, and both found
+by disbelieving a pass. `o.entry` is a prefix of `o.entry_ptr_nonnull`, so a substring test made
+every operation reading the assumption flag look as though it read `--entry`; and rustfmt writes
+`let entry = o\n    .entry\n    .clone()`, so a `contains("o.entry")` said `prove_equivalent`
+reads no options at all. A test that parses source has to be read as a *measurement instrument*,
+and both failures made the gate quieter rather than louder.
+
 ### 7.5 How to check the workspace is green — `./check.sh`
 
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
@@ -1986,9 +2020,9 @@ typing the paths ever would.
 > | 1 | **CLI `select-tests` was structurally empty** — `ingest_native` attributes no test, so `index.tests()` is empty and every invocation returned `0 selected` whatever the diff said. ⚠️ **Tutorial 3's console example runs this path; `tutorials.rs` covers the library one** — §8.3's third form inside our own tutorial | ✅ **fixed**: it refuses and names the limit. The real fix is per-test attribution (`ingest_native_as`), which `--coverage`/`--stem` cannot express — **a design question for the owner** |
 > | 2 | **First ARM run ever** (aarch64 Grace): build 11 s, 1500+ tests green, **engine portable**. The 12 failures are *all* gcc-differential gates on real x86↔ARM divergence — char signedness, 128-bit long double, predefines under `-march`, vector lanes, zero-width bit-field in a union, and `cli.rs:1482` asserting `has_sse42` unconditionally | 🆕 **not defects — the map of an ARM port**, if VPP-on-ARM ever matters |
 > | 3 | `check.sh` printed **"0 failed" while a suite failed 31/1 inside** — it summed a column that is not the failure count in every rendering | ✅ **fixed**: matches `[0-9]+ failed` by name. The verdict keyed on cargo's exit status and was always right; only the number lied |
-> | 4 | **No per-operation `--help`** — `select-tests --help` prints the global page, and 030's path/stem semantics cost three attempts. ⚠️ *But the envelope text taught them each time* — "that discipline **works** on a hostile-ignorant user; it's the best part" | 🆕 open |
+> | 4 | **No per-operation `--help`** — `select-tests --help` prints the global page, and 030's path/stem semantics cost three attempts. ⚠️ *But the envelope text taught them each time* — "that discipline **works** on a hostile-ignorant user; it's the best part" | ✅ **fixed**: each operation has its own page, listing **only the options it reads**, and a usage error prints that page rather than the global one — which is where the user actually met it. §7.33 |
 > | 5 | **Tutorial↔API drift ×3** | 🔶 **two fixed, one not found.** `ExcludedTest { test, refinement, entity, fidelity }` corrected in tutorial 3 (it said `proof`), and tutorial 1's `Fresh \| Stale \| Unknown` corrected to `Partial` with the meaning spelled out. ⚠️ **`FileLoader::load` appears nowhere in `docs/` or the README** — so the drift the user hit is in a doc comment or a path I did not search, and it is *not* fixed. Their transcript would name it |
-> | 6 | `compiler_oracle.rs:14` bare-panics on missing clang (`spawn().unwrap()`) where house style is *"an error naming the file that was looked for"* | 🆕 open |
+> | 6 | `compiler_oracle.rs:14` bare-panics on missing clang (`spawn().unwrap()`) where house style is *"an error naming the file that was looked for"* | ✅ **fixed** (`5f47100`): the panic names the compiler, says it is looked up on `PATH`, and says what to do instead |
 >
 > ⏭️ **The gap behind finding 5, and the next thing to build here: nothing compares a tutorial
 > to the API.** Both drifts were a tutorial naming a field or variant that does not exist
@@ -2038,10 +2072,17 @@ typing the paths ever would.
 > `solver: z3`) and the step, which discriminates 1 from 2 immediately. There is no `gh` CLI on
 > this machine, which is why this stops here rather than at an answer.
 >
-> 📌 **And one gap this exposed regardless of the cause:** `check.sh` does not set
-> `RUSTFLAGS=-D warnings`, so a rustc-level warning is red in CI and green locally. That is a
-> real narrowness in the local gate — §7.5 lists `check.sh` as covering six of CI's ten
-> commands, and this is a *seventh difference inside* one it claims to cover.
+> ✅ **And the one gap this exposed regardless of the cause is closed** (`17a1d4a`). `check.sh`
+> did not set `RUSTFLAGS=-D warnings`, so a rustc-level warning was red in CI and green
+> locally — a *seventh difference inside* a leg §7.5 already claims to cover. It was written
+> down here that morning as a comment telling a reader to run two commands by hand, which is
+> not a gate. It is now a leg: `cargo check --workspace --all-targets` under the flag (~8 s
+> cold, under a second warm, and its own fingerprint, so it does not invalidate the test
+> artifacts), and the `--no-default-features` build carries it too. **Mutation-tested** — an
+> unused binding turns it red.
+>
+> ⚠️ **The tree was green under it**, so this does not explain the failure; it removes the
+> local gate from the list of suspects, which leaves the two environmental candidates above.
 >
 > ### 🙋 DECISIONS WAITING ON THE OWNER — the whole list, in one place
 >
