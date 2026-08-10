@@ -2352,6 +2352,14 @@ typing the paths ever would.
 > accounting rather than about the clock. **Not changed without a reproduction**: a test
 > loosened on suspicion is a gate that stops being able to fail.
 >
+> ❌ **The reproduction was attempted and failed, which is the useful part.** `taskset -c 0,1`
+> makes this box the runner's two cores, and under it: `chiero-solver` **8/8 green**,
+> `chiero-check` + `chiero-opt` + `chiero-exec` **5/5 green** — thirteen runs, no sighting. So
+> the core count is not obviously it either, and the residue stands as *undiagnosed with three
+> hypotheses eliminated* rather than as a guess. ⏭️ **The instrument is the keeper**:
+> `taskset -c 0,1 cargo test -q -p <crate>` reproduces the runner's parallelism locally, and it
+> costs nothing to run on the next sighting.
+>
 > **Counted, as far as the budget allowed**: of the 53, **at least 34 are `Format` on both
 > legs** and **at least 3 are `z3`/`Test`**; the rest are unclassified because the anonymous API
 > allows **60 requests an hour**, and a `while read` loop over 53 runs both exhausts that and
