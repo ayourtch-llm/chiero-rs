@@ -2327,7 +2327,7 @@ typing the paths ever would.
 > | failing step | leg | cause |
 > |---|---|---|
 > | **`Format`** (most of them) | **both** | `crates/chiero-cir/tests/dominance_property.rs` was committed unformatted on 2026-08-08 and stayed that way. Verified by checking out `b7db660e` into a worktree: **6 `Diff in` lines under this machine's own rustfmt**. Fixed as a side effect by `db66306` ("a fmt reflow that was left behind") at 08:39 today |
-> | `Test` | `solver: z3` only | the earliest reds and the last one. Not reproduced: the z3 leg passes here, and every run after it is green. Possibly flaky, possibly fixed by the same window — **not diagnosed, and recorded as such** |
+> | `Test` | `solver: z3` only | the earliest reds and the last one. Not reproduced: the z3 leg passes here, and every run after it is green. **Narrowed, not solved** — see below |
 >
 > 📌 **The lesson is not "the local gate was too narrow".** `check.sh` runs `cargo fmt --all
 > --check` as its *first* leg and would have caught this instantly. The file was committed
@@ -2339,6 +2339,18 @@ typing the paths ever would.
 > deliberately — clippy is ~30 s and the suite is an hour, and **a hook that costs either gets
 > bypassed within a day, which is worse than none because it teaches the reflex**. Mutation-
 > tested: an unformatted line in `help.rs` is refused, naming the file and the line.
+>
+> ⏭️ **The `z3`/`Test` residue, narrowed on 2026-08-10 and still open.** ✅ **The z3-version
+> hypothesis is dead**: this machine is Ubuntu 24.04.3 and its apt z3 is `4.8.12-3.1build1` —
+> the *same package* `ubuntu-latest` installs, so the runner's solver is not a newer one. What
+> is left that differs is the runner's **2 cores against this machine's 12**, and flakiness.
+> ⚠️ Note the shape: one of the two candidates this file recorded for two days was falsified by
+> a single `apt-cache policy`, which nobody ran. The suspect list is bounded — **37 test files
+> do work only when a backend exists**, and `chiero-solver --test solver_rlimit` is the standing
+> one, having flaked here once already (§9.2). Its assertion is a *work-unit* bound, which is
+> deterministic by design, so a sighting on a 2-core runner would be evidence about z3's
+> accounting rather than about the clock. **Not changed without a reproduction**: a test
+> loosened on suspicion is a gate that stops being able to fail.
 >
 > **Counted, as far as the budget allowed**: of the 53, **at least 34 are `Format` on both
 > legs** and **at least 3 are `z3`/`Test`**; the rest are unclassified because the anonymous API
