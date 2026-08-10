@@ -147,7 +147,31 @@ pub struct Proposal {
 ///
 /// **Takes the module by reference and returns proposals.** 041 contract 17: no API in this
 /// crate writes to a source file, and none rewrites a module either.
+/// As [`detect`], and it also says **what the run could see**.
+///
+/// An empty proposal list means two different things — *there is nothing to find* and *the
+/// search could not look* — and `detect` alone cannot tell a caller which. 050 contract 3 makes
+/// exactly that distinction load-bearing for `find_bugs`; `find_optimizations` was choosing its
+/// fidelity from `any_advisory` alone, so **every** empty list came back `Exact` and `proven`,
+/// including for a function whose branch condition the engine never formed (2026-08-10).
+///
+/// The run's own fidelity is the answer and was already being computed here — it was simply
+/// dropped. `detect` stays for callers that only want the proposals.
+pub fn detect_reporting(m: &Module, cfg: &OppCfg) -> (Vec<Proposal>, chiero_exec::Fidelity) {
+    let seen = std::cell::Cell::new(chiero_exec::Fidelity::Exact);
+    let out = detect_with(m, cfg, &seen);
+    (out, seen.get())
+}
+
 pub fn detect(m: &Module, cfg: &OppCfg) -> Vec<Proposal> {
+    detect_with(m, cfg, &std::cell::Cell::new(chiero_exec::Fidelity::Exact))
+}
+
+fn detect_with(
+    m: &Module,
+    cfg: &OppCfg,
+    fidelity_out: &std::cell::Cell<chiero_exec::Fidelity>,
+) -> Vec<Proposal> {
     if !m.funcs.iter().any(|f| *f.name == cfg.entry) {
         return Vec::new();
     }
@@ -192,6 +216,7 @@ pub fn detect(m: &Module, cfg: &OppCfg) -> Vec<Proposal> {
         None => engine.with_solver(SolverTier::LiteOnly),
     };
     let run = engine.run(&mut arena);
+    fidelity_out.set(run.fidelity());
 
     // **Whether the search finished is what decides a proposal from a suggestion.**
     let truncated: Vec<String> = run

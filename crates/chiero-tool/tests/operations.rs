@@ -666,3 +666,52 @@ fn no_operation_writes_to_the_tree() {
         "an operation touched the tree.\n  new or modified: {changed:?}\n  gone: {vanished:?}"
     );
 }
+
+/// **An empty proposal list is only a proof if the search could see the code.**
+///
+/// 050 contract 3 imposes exactly this on `find_bugs` — *"the string 'no defects found' never
+/// appears unqualified"*, because an empty list is wrong precisely when the search did not
+/// finish. `find_optimizations` answers the same shape of question and had no such rule: its
+/// fidelity was chosen from `any_advisory` alone, so **every** empty list came back `Exact` and
+/// `proven`.
+///
+/// Measured on the CLI 2026-08-10, the pair that shows it:
+///
+/// | program | proposals | verdict |
+/// |---|---|---|
+/// | `if (x > 10 && x < 5)` | 2 | `Exact`, proven — correct |
+/// | the same dead branch behind an unmodelled `long double` call | **0** | `Exact`, **proven** |
+///
+/// The second is a function that provably contains a dead branch, and chiero says there are no
+/// optimizations *and that this holds for all inputs*.
+#[test]
+fn an_empty_proposal_list_is_not_proven_when_the_run_could_not_see_the_code() {
+    // `g` has no body and `FpToSi 80 -> 32` is unmodelled, so the branch condition is a value
+    // the engine never forms — the dead branch is real and invisible.
+    let src = "\
+func @f() -> i32 {
+entry:
+  .line 1
+  %0 = call @g()
+  %1 = fptosi f80 %0 to i32
+  %2 = cmp sgt i32 %1, 10i32
+  br %2, bb1, bb2
+bb1:
+  .line 2
+  ret 1i32
+bb2:
+  .line 3
+  ret 0i32
+}
+
+func @g() -> f80";
+    let m = chiero_cir::text::parse(src).unwrap_or_else(|e| panic!("fixture: {e:?}"));
+    let env = chiero_tool::find_optimizations(&m, &chiero_opt::opportunity::OppCfg::new("f"));
+    let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
+    assert_eq!(v["result"]["count"], 0, "nothing is detectable here: {v}");
+    assert!(
+        !env.proven,
+        "an empty list from a run that could not model the branch condition is not a proof \
+         that there is nothing to find: {v}"
+    );
+}

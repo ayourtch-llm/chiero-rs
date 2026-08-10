@@ -2135,7 +2135,12 @@ pub fn find_optimizations(
             cfg.entry
         ));
     }
-    let proposals = chiero_opt::opportunity::detect(module, cfg);
+    // **What the run could see decides whether an empty list is a proof.** 050 contract 3
+    // makes that distinction load-bearing for `find_bugs`; this operation answers the same
+    // shape of question and used to take its fidelity from `any_advisory` alone, so every
+    // empty list came back `Exact` and `proven` — including for a function whose branch
+    // condition the engine never formed, which provably *had* a dead branch (2026-08-10).
+    let (proposals, run_fidelity) = chiero_opt::opportunity::detect_reporting(module, cfg);
     let any_advisory = proposals.iter().any(|p| p.advisory);
     let rendered: Vec<serde_json::Value> = proposals
         .iter()
@@ -2176,10 +2181,12 @@ pub fn find_optimizations(
             "proposals": rendered,
             "count": proposals.len(),
         }),
-        if any_advisory {
-            Fidelity::Bounded
-        } else {
-            Fidelity::Exact
+        // The weaker of the two claims: an advisory proposal bounds the answer, and so does a
+        // run that could not model everything it walked past.
+        match (any_advisory, exec_fidelity(run_fidelity)) {
+            (_, f) if f != Fidelity::Exact => f,
+            (true, _) => Fidelity::Bounded,
+            (false, _) => Fidelity::Exact,
         },
     )
     .with_blind_spot(
