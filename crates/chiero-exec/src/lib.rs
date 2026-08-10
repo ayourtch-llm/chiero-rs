@@ -6609,7 +6609,20 @@ impl<'m> Engine<'m> {
         // 1, so `addr_of` will never answer for it. Without this, `p->next = NULL` was a
         // lowering gap: the store never happened and the reload invented an
         // uninitialized-read about memory the program had just written.
-        let base = if p.base == ObjectId::NULL {
+        // **`UNBOUND` is address `off`, for the same reason `NULL` is address zero.**
+        //
+        // `int_to_ptr` builds `Pointer { base: UNBOUND, off: <the address> }` for an integer
+        // matching no object, and `addr_of` cannot answer for it — it is not in the address
+        // space. Without this arm the store below never happened, so `int *p = (int *) 0x1234;`
+        // left `p` uninitialized and the reload reported *that*, masking the `wild-pointer`
+        // finding the dereference should produce. Measured 2026-08-10: it masked every shape
+        // real C uses — a variable, a struct field, an array element and a **parameter** — and
+        // only a bare `*(int *) 0x1234` reported. Item 8e.
+        //
+        // The base is 0 and the whole address rides in `off`, which is what `int_to_ptr` put
+        // there; `remember_provenance` below then carries `UNBOUND` with the term, so the
+        // eventual access still faults as a wild pointer rather than as a read of nothing.
+        let base = if p.base == ObjectId::NULL || p.base == ObjectId::UNBOUND {
             0
         } else {
             let Some(b) = s.mem.addr_of(p.base) else {
