@@ -159,7 +159,10 @@ const CASES: &[(&str, &str, &str, &str)] = &[
         "uninit_read",
         "int probe(void) { int x; return x + 1; }",
         "int probe(void) { int x = 0; return x + 1; }",
-        "uninitialized",
+        // **The exact slug, not a prefix.** This said `"uninitialized"` and passed on a
+        // `contains`, while `MemFault::kind` calls it `uninitialized-read` — caught by
+        // `defect_vocabulary.rs` on its first run, which is the drift that gate exists for.
+        "uninitialized-read",
     ),
     (
         // **The second default checker** (`chiero_check::default_checkers()` is
