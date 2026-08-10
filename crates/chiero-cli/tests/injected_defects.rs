@@ -105,7 +105,20 @@ const CASES: &[(&str, &str, &str, &str)] = &[
         "use-after-scope",
     ),
     (
-        "wild_pointer",
+        // **The direct form works, and it is here so a fix to the one below cannot break it.**
+        // Without a variable in the way, chiero says exactly the right thing:
+        // `wild-pointer: access through a pointer at address 4660 matching no known object`.
+        "wild_pointer_direct",
+        "int probe(void) { return *(int *) 0x1234; }",
+        "int probe(void) { int v = 1; return *&v; }",
+        "wild-pointer",
+    ),
+    (
+        // **The same defect through a variable, and it is masked** (item 8e). The store of a
+        // `Pointer { base: UNBOUND }` writes no bytes, so the slot stays uninitialized and the
+        // load reports *that* — the wild-pointer finding never happens. The pair with the case
+        // above is the point: identical fault, one instruction of round-trip between them.
+        "wild_pointer_via_variable",
         "int probe(void) { int *p = (int *) 0x1234; return *p; }",
         "int probe(void) { int v = 1; int *p = &v; return *p; }",
         "wild-pointer",
@@ -166,7 +179,14 @@ fn an_injected_defect_is_reported_and_its_control_is_not() {
 
     // **What the two standing misses are, measured 2026-08-10 — neither is silence.**
     //
-    // `wild_pointer` — `*(int *)0x1234` is reported as
+    // `wild_pointer_via_variable` — and its twin `wild_pointer_direct` **passes**, which is
+    //   what turned this from a puzzle into a diagnosis (item 8e). `int_to_ptr` correctly
+    //   returns `Pointer { base: UNBOUND, off: 4660 }`; **storing that pointer writes no
+    //   bytes**, so the variable's slot stays uninitialized and the load reports that instead.
+    //   The wild-pointer finding is *masked*, not missing. When 8e is fixed this pair goes to
+    //   8/9 and the `direct` case guards the path that already worked.
+    //
+    // (kept for the record) `*(int *)0x1234` is reported as
     //   *"uninitialized-read: read at offset 0 of p touches bit 0, which was never written"*.
     //   chiero knows exactly what happened; the envelope carries *"IntToPtr of an integer with
     //   no provenance: the object was found by address"*. `wild-pointer` exists
