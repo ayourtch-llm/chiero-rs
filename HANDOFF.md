@@ -2986,6 +2986,33 @@ longer sits between a fresh context and the live work.
    when it succeeds**. That is a trade worth making — but knowingly, and with the numbers re-taken
    afterwards, not as a side effect of a wave that was about something else.
 
+8e. 🆕 **A wild-pointer dereference is reported as an uninitialized read *of the pointer
+   variable*.** Found by the injected-defect corpus (§7.31), then characterised — the finding is
+   not wrong that something is amiss, it points at the wrong object and calls it the wrong kind.
+
+   ```c
+   int probe(void) { int *zebra = (int *) 0x1234; return *zebra; }
+   ```
+   → `uninitialized-read: read at offset 0 of zebra touches bit 0, which was never written`
+
+   `zebra` **is** written, on the line above. What is uninitialized is the invented object at
+   `0x1234`, and the sentence sends a reader to the wrong line.
+
+   | probe | result |
+   |---|---|
+   | `0x1234`, `0x100000`, `0xdeadbeef000` | **identical message every time** — so it is *not* an address colliding with a real object |
+   | `int v = 7; int *p = (int *)(long) &v; return *p;` | **clean, no findings** — provenance works, so the deref path is fine in general |
+   | a write, `*(int *)0x1234 = 5` | same message |
+   | `wild-pointer` | exists (`MemFault::WildPointer`, `chiero-mem/src/lib.rs:1102`) and fires in `chiero-mem`'s own tests, so the kind is not missing |
+
+   📌 **Where to start.** `object_name` (`chiero-exec/src/lib.rs:6925`) resolves the name through
+   the *current frame's* `frame_objs`, and it **matched** — so the fault carries the pointer
+   variable's own `ObjectId`, not the invented target's. Either the no-provenance `IntToPtr`
+   path reuses the pointer's object, or the fault is raised against the wrong id. The envelope
+   already says the right thing in its assumptions — *"IntToPtr of an integer with no
+   provenance: the object was found by address"* — so the knowledge is present and only the
+   finding is wrong.
+
 8d. 🔶 **Point the measurement harness at the compile database instead of a hand-kept flag list**
    (§7.30). ✅ **The capability landed 2026-08-09**: `cargo run -p xtask -- compile-flags --db
    <db> <source>` prints what the build actually passes, reading a database and never running
