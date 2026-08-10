@@ -290,3 +290,15 @@ visible.
 17. Every error response has a machine `code` and a `retryable` flag.
 18. The CLI and the MCP surface expose the same operation set with the same names —
     checked mechanically, so the two cannot drift.
+19. **The command line's exit status is part of the interface, and it distinguishes three
+    things.** `0` — the operation ran and the envelope is the answer, *including* when that
+    answer is "nothing found" or "not proven"; `2` — the request was malformed, so nothing
+    was analysed; `1` — the request was well formed and the operation could not complete
+    (a file that will not parse, coverage that cannot be read). An agent branches on this
+    before it reads a byte of output, and `0` versus `1` is the difference between *"the
+    tool answered"* and *"the tool did not run"* — which no amount of envelope fidelity can
+    express, because there is no envelope in the second case. Asserted per operation on a
+    forced instance of each.
+20. **A failure prints nothing on stdout.** A caller doing `chiero find-bugs … --json | jq`
+    must be able to treat stdout as the envelope and stderr as the reason; a diagnostic on
+    stdout makes malformed JSON out of a run that failed cleanly.
