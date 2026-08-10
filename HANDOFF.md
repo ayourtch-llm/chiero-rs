@@ -1432,9 +1432,20 @@ the remaining value is:
   is not. **The pair is what made it a diagnosis** rather than a puzzle: identical fault, one
   instruction of round-trip apart. Storing a `Pointer { base: UNBOUND }` writes no bytes, so the
   slot stays uninitialized and the load reports *that*. Full mechanism in item 8e.
-- **`pointer_outside_object`** — forming `a + 8` reports nothing; dereferencing it reports
-  `out-of-bounds`. C 6.5.6p8 makes the formation undefined on its own. A real divergence, and a
-  small one: the access is the part that hurts.
+- **`pointer_outside_object`** — **it fires only for *symbolic* offsets**, characterised
+  2026-08-10. `int *p = a + 8;` (constant) is silent; `a + (i & 31) + 8` reports
+  *"pointer-outside-object: a pointer into a (16 bytes) can be computed at …"* with no
+  dereference needed. The reason is in the code: the fault is raised inside the symbolic-offset
+  enumeration path in `chiero-exec/src/lib.rs:4986`, reached when enumeration fails and a
+  feasibility query returns `Sat`, and its witness comes from the solver model. A concrete
+  offset never reaches that block.
+
+  C 6.5.6p8 makes the *computation* undefined however the offset is spelled, so the constant
+  case is a real gap — a narrow one, and possibly deliberate: the variant's own doc says
+  "forming a pointer past the end is deliberate in a few real idioms". ⏭️ **Worth an owner's
+  view rather than a fix**, since reporting every constant `&a[n]` past the end would be noisy
+  in exactly the idioms that comment protects. It also explains 5i: the `vnet/` class is
+  symbolic-index heavy, which is the only shape that reports.
 
 Recorded rather than asserted — pinning today's kind would make a future fix look like a
 regression.
