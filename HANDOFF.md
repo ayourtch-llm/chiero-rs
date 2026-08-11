@@ -3654,9 +3654,11 @@ reached 952 lines again, 316 of them finished work:
    `isError` and `structuredContent` optional); `Tool` requires `name` and `inputSchema`;
    `Implementation` requires `name` and `version`; and the schema's own path names the protocol
    version. **With a schema and a validator this is buildable *and* checkable** — the objection
-   was real in form and false in fact. ⏭️ It stays unstarted only for room, and whoever takes it
-   should vendor the schema into the repo rather than fetch it in a gate: a test that needs the
-   network is a test that fails on a train.
+   was real in form and false in fact. ✅ **The schema is vendored** at `tests/corpus/mcp/schema-2025-06-18.json` (2026-08-11,
+   unmodified, provenance and licence in the README beside it) — because a test that needs the
+   network is a test that fails on a train, and worse, one that *passes* when the network hands
+   it something else. ⏭️ The MCP half now needs only room: the oracle is in the repo and
+   `jsonschema` 4.10.3 is on the machine.
 
    ⚠️ **One design note for whoever does it**: MCP requires an `inputSchema` per tool, and the
    honest one here is `{"arguments": ["string", …]}` — *pass the command line* — because the real
