@@ -2132,6 +2132,41 @@ would.
 🚧 The files axis is still unmeasured: it needs an impact set spanning several translation units,
 and `impact(&before, &after)` does not take one. Unfaked rather than faked.
 
+### 7.43 M7's missing surface, and the five words that kept it missing
+
+080 had said *"M7 🟡 … **no MCP or JSON-RPC server yet**, so contract 18's CLI/MCP identity check
+cannot run"* for as long as its table had marks, and §9.1 never carried it — because a queue is
+built from what people trip over, and **nothing trips you over an absence**. Filed as 6a on
+2026-08-11 and half built the same day.
+
+`chiero serve`: newline-delimited JSON-RPC 2.0 on stdin/stdout, `tools/list` and `tools/call`.
+
+📌 **The second surface *is* the first.** `tools/list` renders `help::catalogue()` — the table
+`--help` already used — and `tools/call` goes through `crate::run`, the function `argv` reaches.
+So 050 contract 18's identity is **structural**: there is no second list to drift from and no
+second dispatch to disagree. `crates/chiero-cli/tests/serve.rs` asserts it against the dispatch
+`match` anyway, because *cannot drift by construction* is a claim about code that changes, and
+cites contract 18 so the coverage tool counts what it checks (050: 14/23 → 15/23).
+
+**What the tests pinned, each of which is a way to get a second surface wrong:**
+
+| | |
+|---|---|
+| the envelope arrives whole — `fidelity`, `proven`, `assumptions`, `blind_spots` | 050 §2's qualification travels on every surface or it is decoration |
+| a failed operation returns **the operation's own sentence** | "operation failed" throws away the words the CLI spent effort making act-on-able |
+| the session survives a bad line | a server that dies on malformed input makes a caller's bug look like a crash |
+| a non-string argument is refused, not coerced | `42` and `"42"` are the same on a command line and not in JSON; guessing is how a tool analyses a file called `true` |
+| `serve` is **not** in the tool catalogue | it answers no question about a program, and offering it would invite a caller to recurse into it |
+
+⚠️ **It is not MCP, and every file that mentions it says so** — 050 §3, 080's M7 row,
+`docs/LIMITS.md`, the CHANGELOG and `--help` itself. No `initialize`, no content blocks, no
+notifications; a client expecting MCP will not talk to it. Letting "speaks JSON over a pipe" and
+"implements MCP" blur is the same move as a `findings: []` that means nobody looked.
+
+⏭️ The MCP half is specified in 6a, its schema is vendored at `tests/corpus/mcp/`, and it carries
+one decision that is not mine: MCP's `content` blocks and this surface's `envelope` cannot both
+be the reply.
+
 ### 7.5 How to check the workspace is green — `./check.sh`
 
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
@@ -2610,6 +2645,10 @@ typing the paths ever would.
 > built from, a regex stopping at a markdown bold. Every one erred toward *nothing is wrong*.
 > Two were about to become published findings. **Point the instrument at a case whose answer you
 > already know.**
+>
+> 🛠️ **M7's missing surface exists** (§7.43): `chiero serve` speaks JSON-RPC 2.0, the ten
+> operations dispatch through the same `run` the command line calls, and 050 contract 18's
+> identity check went from *cannot run* to structural. **Not MCP**, and five files say so.
 >
 > 🔒 **Three gates that cannot be skipped or misread**: `.githooks/pre-commit` (the fmt gate that
 > 34 CI failures went around), `./ci-status.sh` (anonymous, and it refuses a sweep the quota
