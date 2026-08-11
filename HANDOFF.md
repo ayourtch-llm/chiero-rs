@@ -2567,6 +2567,34 @@ typing the paths ever would.
 > for months (*a green gate is evidence about the corpus, not about the tree*). Then §9.1 for
 > the next target.
 >
+> ### 🔥 What 2026-08-11 did, in one block
+>
+> **The day's thread was: every claim of the form *"there is no way to check X"* turned out to be
+> false.** Four of them, and each one had been sitting in this file as fact.
+>
+> | the record said | the probe took | what it found |
+> |---|---|---|
+> | the failing CI leg cannot be identified, there is no `gh` here | two `curl`s — the repo is **public** | **CI solved**: 34 of 53 reds were one file committed unformatted, green since 2026-08-10 10:59 |
+> | the newer z3 on the runner is a candidate | one `apt-cache policy` | same distro, same package, **hypothesis dead** |
+> | a plain `git push` cannot work from here | §3, which already documented the deploy key | 60 commits pushed |
+> | a `CoverageIndex` can only come from real gcov artefacts | reading the crate | **`ingest_json_as`** — JSON is text, and now it can name its test |
+>
+> ✅ **`select_with` was quadratic and is now linear** (§7.42) — 10x faster at 4000 entities,
+> found by building the size axis `ingest_json_as` unblocked, one day after selection became a
+> shipping CLI operation. `impact` joined the same axis: an honest zero. **Reading had named the
+> wrong suspect**, which is 5b's own warning coming true a tenth time.
+>
+> 🧪 **§8.3 gained step 0**, after three instruments produced clean output that was wrong — a
+> rate-limited API answering 200 with no data, a coverage criterion blind to the case it was
+> built from, a regex stopping at a markdown bold. Every one erred toward *nothing is wrong*.
+> Two were about to become published findings. **Point the instrument at a case whose answer you
+> already know.**
+>
+> 🔒 **Three gates that cannot be skipped or misread**: `.githooks/pre-commit` (the fmt gate that
+> 34 CI failures went around), `./ci-status.sh` (anonymous, and it refuses a sweep the quota
+> cannot finish), and a **skip counter** in `check.sh` — which immediately showed the solverless
+> leg reporting the same 2368 passes as the full one while **44 assertions did not run**.
+>
 > ### 🔥 What 2026-08-10 did, in one block
 >
 > **The bar, then the surfaces it exposed.** Four of the five done-enough-to-use conditions
