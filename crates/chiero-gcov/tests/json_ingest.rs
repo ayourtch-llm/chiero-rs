@@ -119,3 +119,46 @@ fn both_ingest_paths_merge_two_objects_the_same_way() {
         "five executions in each of two objects is ten"
     );
 }
+
+/// **A JSON ingest can carry a test name, and until 2026-08-11 it could not.**
+///
+/// `ingest_native_as` has taken a `TestId` since it was written; the JSON path had no `_as`
+/// sibling, so an index built from `gcov --json-format` output had `test: None` on every line
+/// and **selection over it was empty by construction** — the same wall the CLI hit in §7.34.
+///
+/// That mattered beyond convenience. Native ingest needs `.gcno`/`.gcda`, which are binary and
+/// produced only by a real instrumented build; JSON is text, so a caller holding one file per
+/// test run — or a *generated* corpus, which is what a size axis for selection needs — could
+/// not attribute any of it.
+#[test]
+fn json_ingest_attributes_a_test_when_it_is_given_one() {
+    let mut idx = chiero_gcov::CoverageIndex::default();
+    chiero_gcov::ingest_json_as(&mut idx, chiero_gcov::TestId(7), &corpus(), "t")
+        .expect("the pinned JSON fixture");
+    assert_eq!(
+        idx.tests(),
+        vec![chiero_gcov::TestId(7)],
+        "the index must know the test that produced this coverage"
+    );
+    // `t.c:3` is the line the fixture's `main` executes — the one contract 2 is written about.
+    assert_eq!(
+        idx.tests_for_line("t.c", 3),
+        Some(vec![chiero_gcov::TestId(7)]),
+        "and the line must name it, or selection cannot use it"
+    );
+}
+
+/// The unattributed spelling keeps its meaning: `Unknown`, not "no test covers this".
+#[test]
+fn json_ingest_without_a_test_still_answers_unknown() {
+    let idx = chiero_gcov::ingest_json(&corpus(), "t").expect("the pinned JSON fixture");
+    assert!(
+        idx.tests().is_empty(),
+        "no test was named, so none is known"
+    );
+    assert_eq!(
+        idx.tests_for_line("t.c", 3),
+        None,
+        "`None` is 'nobody recorded which tests', which is not the empty set"
+    );
+}
