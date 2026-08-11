@@ -2176,6 +2176,30 @@ and I had vendored that schema twenty minutes earlier); *no client to test again
 and it is the one that survived — so it is the one the files state). **Two of the three
 dissolved by reading the artefact I already had.** §8.3's step 0b is written from this.
 
+### 7.44 Reading the roadmap against the tree — one milestone closed, three explained
+
+080 carries a status mark per milestone *"because a roadmap with no marks on it is a plan rather
+than a report"*. Nobody had checked the marks against the tree. Done 2026-08-11, one exit
+criterion at a time:
+
+| | before | after |
+|---|---|---|
+| **M7** tool surface | 🟡 *"no MCP or JSON-RPC server"* | ✅ **all four criteria verified** — envelope schema over every operation, `proven` only at `Exact`, sandboxing, and the CLI/MCP identity check that had **never run in the project's history** because there was no second surface |
+| **M6** adjudication | 🟡, reason unstated | 🟡 **on evidence**: 041 c7 and c8 describe comparing caller-visible memory and detecting an extra `free`, and `Claim::Memory` is *declared and never compared* (6d) |
+| **M5** defect checkers | 🟡 *"2 of ~25"* | 🟡, and the six are named with a channel and a blocker each (6b) |
+| **M3** provenance verticals | 🟡, reason unstated | 🟡 **on evidence**: two of three criteria are a *spend* — run the recipe sweep, publish the parser-coverage number (6e) |
+
+📌 **What the audit is actually for.** Two of the three largest gaps in the product — the MCP
+server and the sixteen unwritten checkers — **were not on §9.1 at all** before this. A queue is
+built from what people trip over, and *nothing trips you over an absence*: a checker that does
+not exist raises no finding, a server that does not exist refuses no connection. The roadmap is
+the only artefact that lists what was *intended*, so diffing it against the queue is the
+corrective — and it should be re-run when a mark moves, not remembered.
+
+⚠️ **And the yellows are mostly measurements, not features.** M3's two remaining lines and M8
+entirely are numbers nobody has taken with machinery that already exists. That is a different
+kind of debt from M5's unwritten checkers, and worth separating before deciding what to fund.
+
 ### 7.5 How to check the workspace is green — `./check.sh`
 
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
@@ -2654,6 +2678,11 @@ typing the paths ever would.
 > built from, a regex stopping at a markdown bold. Every one erred toward *nothing is wrong*.
 > Two were about to become published findings. **Point the instrument at a case whose answer you
 > already know.**
+>
+> 🗺️ **The roadmap was read against the tree for the first time** (§7.44): **M7 exits** — its
+> CLI/MCP identity check had never run in the project's history — and M3, M5 and M6 each gained a
+> named, checkable reason for staying yellow. The remaining yellows are mostly *measurements
+> nobody has taken*, not features nobody has written.
 >
 > 🛠️ **M7's missing surface exists** (§7.43): `chiero serve` speaks JSON-RPC 2.0, the ten
 > operations dispatch through the same `run` the command line calls, and 050 contract 18's
