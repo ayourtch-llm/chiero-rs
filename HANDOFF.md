@@ -3542,9 +3542,27 @@ reached 952 lines again, 316 of them finished work:
    `crates/chiero-cli/tests/injected_defects.rs` is paired C through the real CLI with a control
    per case, and `defect_vocabulary.rs` fails when a new `MemFault` kind appears with neither a
    case nor a recorded reason. A new checker's red test is four lines of C and its own control.
-   ⏭️ Order by what a corpus can settle: *lossy implicit conversion* and *`__builtin_unreachable`
-   on a feasible path* are decidable from one path and need no new machinery; *memory leak* wants
-   an escape analysis and is the one to do last, not first.
+   ⏭️ Order by what a corpus can settle. ⚠️ **And the first ordering here was written from the
+   spec rather than the code, so it was wrong** — checked 2026-08-11:
+
+   - **`__builtin_unreachable` on a feasible path** does *not* need "no new machinery". The
+     frontend lowers it to an **`opaque … builtin "__builtin_unreachable"` instruction**, not to
+     `Terminator::Unreachable(BuiltinUnreachable)` — verified with `chiero cir`, where execution
+     runs straight past it into the function's `ret`. The engine's `Unreachable` arm, which looks
+     like the natural hook, is never reached for it. So this is either a **lowering change** (the
+     right shape — it is a terminator in every real compiler IR, and it makes the code after it
+     dead) or an opaque-builtin special case in the engine. A design choice, not an afternoon.
+   - **Lossy implicit conversion** looks like the genuine first one: 014 contract 11 already
+     requires every implicit conversion to appear as an explicit `Cast` node, so the engine can
+     compare the value across one and report when it changes. Contained in `chiero-exec`, no
+     lowering change. ⏭️ Confirm that by reading the `Cast` handling before starting, since this
+     paragraph's predecessor is what happens when you do not.
+   - **Memory leak** wants an escape analysis and is still last.
+
+   ✅ **The path a new UB checker takes is already paved by gates**, which is what makes any of
+   these tractable: a new `UbKind` variant is a **compile error** in `chiero-check`'s `ub_phrase`
+   match until it is named (deliberate, wave 169), and `defect_vocabulary.rs` then demands a
+   corpus case or a recorded reason. The gates drive; the author follows.
 
 6a. 🆕 **The MCP/JSON-RPC server — the one thing 080 says M7 is missing, and it is not on this
    list.** Noticed 2026-08-11 while looking for work: 080's status table reads *"M7 🟡 — 10
