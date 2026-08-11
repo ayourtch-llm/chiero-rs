@@ -74,11 +74,12 @@ defects found", unless `proven` is true.
 > **What is built, 2026-08-06.** Ten operations, each reachable both as a Rust function and as
 > `chiero <op>`: `expansion_sites`, `explain_macro_expansion`, `impact`, `select_tests`,
 > `find_bugs`, `check_reachable`, `prove_equivalent` (and `_with_replay`), `find_optimizations`,
-> `layout`. ✅ **A JSON-RPC surface exists as of 2026-08-11** — `chiero serve`, newline-delimited
-> JSON-RPC 2.0 on stdin/stdout with `tools/list` and `tools/call` — so contract 18's mechanical
+> `layout`. ✅ **`chiero serve` exists as of 2026-08-11** — MCP's tools surface (`initialize`,
+> `tools/list`, `tools/call`) over newline-delimited JSON-RPC 2.0 — so contract 18's mechanical
 > identity check **runs**, in `chiero-cli/tests/serve.rs`, against the dispatch `match` itself.
-> ⚠️ **There is still no MCP handshake**: no `initialize` lifecycle, no content blocks, no
-> notifications. The two are named separately here because they are separate claims. `get_cfg`,
+> ⚠️ **Two limits, both stated in the module and in `docs/LIMITS.md`**: only the `tools`
+> capability (no resources, prompts, logging or completions), and every shape verified against a
+> *vendored* copy of the protocol schema rather than against a real client. `get_cfg`,
 > `coverage_of`, `symbolic_run`, `explain_finding`, `locality_report` as a distinct operation,
 > `validate_recipe`/`apply_recipe` and the job surface in §5 are specified and unbuilt. The
 > registry test `chiero-tool/tests/operations.rs` fails if a library operation is added without

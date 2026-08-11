@@ -327,9 +327,10 @@ pub(crate) fn usage() -> String {
          Run `chiero <operation> --help` for that operation's arguments and the\n\
          options it reads — each operation takes a handful of the list below.\n\
          \n\
-         `chiero serve` speaks newline-delimited JSON-RPC 2.0 on stdin/stdout —\n\
-         `tools/list` and `tools/call`, the same operations, dispatched through the\n\
-         same code. It is not MCP: no `initialize`, no content blocks.  (050 §3)\n\
+         `chiero serve` speaks MCP's tools surface over newline-delimited JSON-RPC\n\
+         2.0 on stdin/stdout — `initialize`, `tools/list`, `tools/call` — offering\n\
+         the same operations through the same code. Shapes are checked against a\n\
+         vendored schema, never against a real client.  (050 §3)\n\
          \n\
          OPERATIONS:\n",
     );

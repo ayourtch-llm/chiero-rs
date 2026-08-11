@@ -26,10 +26,12 @@ Ten operations, each a command and a library call, each returning an
 
 ### Added
 
-- **`chiero serve`** — the ten operations over newline-delimited JSON-RPC 2.0 on stdin/stdout:
-  `tools/list` and `tools/call`, dispatched through the same code the command line uses, so the
-  two surfaces cannot disagree. ⚠️ It is **not MCP**: no `initialize` lifecycle, no content
-  blocks, no notifications, and a client expecting MCP will not talk to it.
+- **`chiero serve`** — the ten operations over MCP's tools surface (`initialize`,
+  `tools/list`, `tools/call`) on newline-delimited JSON-RPC 2.0, dispatched through the same code
+  the command line uses, so the two surfaces cannot disagree. Results carry both halves: a text
+  rendering in `content` and the envelope in `structuredContent`. ⚠️ **Only `tools`** — no
+  resources, prompts, logging or completions — and the shapes are verified against a vendored
+  copy of the protocol schema, **never against a real client**.
 
 - **`select-tests` works from the command line.** `--test NAME=PATH`, once per test run, or
   `--coverage-manifest <file>` with a `NAME<TAB>PATH` line each. The selection carries the
