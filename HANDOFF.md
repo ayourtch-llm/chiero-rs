@@ -3433,12 +3433,21 @@ reached 952 lines again, 316 of them finished work:
    ⚠️ **Reading is not the method, and 5b says so in its own entry**: *"none of the nine was
    found by the grep"* — they were found by sampling under a size axis. These two are
    *hypotheses* until measured.
-   🚧 **The blocker is testability, not effort**: a `CoverageIndex` can only be populated by
-   `ingest_native*` from real gcov artefacts, so there is no way to build a 4000-entity index in
-   a test. The fix is a test-only constructor in `chiero-gcov` — the `_for_test` convention
-   already exists there (`object_size_for_test`, `loop_keys_for_test`) — and then a
-   `scale.rs` in `chiero-select` shaped like `chiero-lower`'s: min of five runs, a discarded
-   warm-up, a span ratio rather than adjacent pairs (§7.39's lessons are all reusable).
+   🚧 **The blocker, stated correctly at the second attempt.** The first version of this entry
+   said a `CoverageIndex` "can only be populated by `ingest_native*` from real gcov artefacts,
+   so there is no way to build a 4000-entity index in a test" — **wrong, and it is the fourth
+   claimed impossibility to fail a probe on 2026-08-10.** `ingest_json`/`ingest_json_into` read
+   gcov's **JSON** format, which is plain text under a gzip and trivially synthesizable:
+   `{format_version, gcc_version, files: [{file, functions, lines: [{line_number,
+   function_name, count, …}]}]}`. A 4000-entity index is a generated file.
+   ⚠️ **What is actually missing is one function.** Only the *native* path takes a `TestId`
+   (`ingest_native_as`); the JSON path has no `_as` sibling, so a JSON-built index has
+   `test: None` and selection over it is empty by construction — the same wall §7.34's CLI work
+   hit. So the fix is **`ingest_json_as`**, mirroring `ingest_native_as` in three lines, which
+   is smaller than the test-only constructor first proposed *and* useful beyond tests: a caller
+   holding one gcov JSON per test run can build an attributed index without `.gcda` files at
+   all. Then a `scale.rs` in `chiero-select` shaped like `chiero-lower`'s — min of five runs, a
+   discarded warm-up, a span ratio rather than adjacent pairs (§7.39's lessons all transfer).
 
 5s. 🆕 **`contract-coverage` counts a citation, not an execution — and M1's 166/166 included a
    test that had not run since it was `#[ignore]`d.** Found 2026-08-10 by auditing the ignored
