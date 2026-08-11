@@ -42,9 +42,12 @@ and both gate. Two things it cannot cover, stated because a badge is a claim:
 - **Three contracts need a VPP checkout the runner does not have**: every VPP source lexing
   without a panic, all 1967 translation units preprocessing, and the compile database parsing.
   Their tests skip there and run on a machine that has the tree.
-- **The solverless leg skips 44 assertions**, by construction — they are the ones asserting what
-  a *complete* solver decides, and there isn't one. The suite reports that count beside the
-  passes rather than leaving both legs looking identical.
+- **The solverless leg skips between 50 and 151 assertions**, by construction — they are the
+  ones asserting what a *complete* solver decides, and there isn't one. Up to 6% of the suite.
+  The pair is what the suite reports beside the passes, rather than leaving the two legs looking
+  identical: the lower figure counts distinct messages and undercounts where one guard speaks for
+  many tests, the upper counts every announcement and overcounts where a test calls a guard
+  twice.
 
 ## The analysis
 
