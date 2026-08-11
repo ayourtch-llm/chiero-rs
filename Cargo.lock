@@ -240,7 +240,9 @@ dependencies = [
  "chiero-gcov",
  "chiero-opt",
  "chiero-span",
+ "flate2",
  "indexmap",
+ "serde_json",
 ]
 
 [[package]]
