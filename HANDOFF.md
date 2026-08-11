@@ -3704,15 +3704,16 @@ reached 952 lines again, 316 of them finished work:
    no reply — which the dispatcher already handles, since it answers `None` for a request with
    no `id`.
 
-   ⚠️ **And one decision that is not mine to take: does `serve` speak both shapes, or does MCP
-   replace the current one?** `tools/call` returns `{"envelope": …}` today and MCP requires
-   `content` blocks; the two cannot both be the reply. Either the server negotiates on
-   `initialize` (two shapes, one process, and every future change must be made twice), or the
-   JSON-RPC shape becomes MCP's and the plain-JSON-RPC caller has to read the envelope out of a
-   text block. **The second is simpler and loses something real**: an envelope inside a string is
-   a structure a caller has to re-parse, which is the opposite of why this surface exists.
-   `structuredContent` — optional in the schema — is very likely the answer, and *"very likely"*
-   is why it should be checked against a client rather than reasoned about here.
+   ✅ **The decision I raised here does not exist, and the schema I had just vendored says so.**
+   I wrote that *"`tools/call` returns `{"envelope": …}` today and MCP requires `content` blocks;
+   the two cannot both be the reply"*, and left it as an owner call. `CallToolResult` has **both**
+   fields: `content` (required, the unstructured rendering) and `structuredContent` — *"an
+   optional JSON object that represents the structured result of the tool call"*,
+   `additionalProperties: {}`, which is precisely an envelope. So the answer is: the envelope
+   goes in `structuredContent`, a human-readable rendering goes in `content`, and nothing is
+   negotiated or lost. ⚠️ **Sixth false impossibility of 2026-08-11, and the artefact refuting it
+   had been in the repository for twenty minutes, put there by me.** Reading a schema is not the
+   same as consulting it.
 
    🔧 **How to validate**: there is no JSON-Schema crate in this tree and 001 §4 says not to add
    one for this. `tests/corpus/handoff/lint.py` is the precedent — a Python gate `check.sh`
