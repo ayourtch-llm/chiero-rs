@@ -3499,6 +3499,28 @@ reached 952 lines again, 316 of them finished work:
    stay untyped — and the variant's own doc says forming such a pointer "is deliberate in a few
    real idioms". **Owner's call.**
 
+6c. 🆕 **The roadmap-versus-queue audit, finished — and it should be repeated, not remembered.**
+   Comparing 080's milestone marks against §9.1 on 2026-08-11 found **two of the three largest
+   remaining gaps missing from the queue entirely** (6a, 6b). The rest of the sweep, for the
+   record:
+
+   | 080 says | on the queue? |
+   |---|---|
+   | M3 🟡 — the `chiero-recipe` tier-1 sweep over all of VPP is not published | ❌ **no**, and it is a *spend* rather than a build: the capability exists (`recipe-sweep`), the numbers are not taken |
+   | M4 🟡 — 032 c18's replay corpus has no `observed` entry | ✅ item 8, costed |
+   | M5 🟡 — 2 of ~25 checkers | ❌ → 6b |
+   | M6 🟡 — adjudication | ⚠️ **the mark may be stale**: its exit is "041 contracts 1–24 green", and `contract-coverage` reports **041 at 10/30 cited**. Not evidence either way — a citation is not an execution (5s) — but the two numbers have never been compared |
+   | M7 🟡 — no MCP server | ❌ → 6a |
+   | M8 ⬜ — VPP at scale | 🔶 partly, as the two costed spends |
+
+   📌 **The lesson is about queues, not about these items.** Every entry in §9.1 was filed by
+   somebody who tripped over something, and **nothing trips you over an absence** — a checker
+   that does not exist raises no finding, a server that does not exist refuses no connection.
+   The roadmap is the only artefact that lists what was *intended*, so diffing it against the
+   queue is the corrective. ⏭️ Worth re-running whenever a milestone mark moves, and worth
+   remembering that `contract-coverage` answers the M6 question only if 5s's
+   citation-versus-execution gap is closed first.
+
 6b. 🆕 **Six checkers 040 §1 names as unbuilt, and none of them is on this list either.** Found
    by the same audit that produced 6a — comparing 080's milestone marks against §9.1 — and it is
    the same blind spot twice: *"M5 🟡 — `chiero-check` implements **2** of 040's ~25 checkers"*.
