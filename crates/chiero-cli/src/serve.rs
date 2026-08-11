@@ -4,10 +4,18 @@
 //! CLI/MCP identity check cannot run"* since it gained marks. This is the half that makes the
 //! check runnable.
 //!
-//! ⚠️ **JSON-RPC, not MCP, and the difference is stated rather than blurred.** There is no
-//! `initialize` lifecycle, no content blocks and no notifications here. 050 §3 asks for both
-//! surfaces; naming this one "MCP" because it speaks JSON over a pipe would be the overclaim
-//! this project exists to refuse — the same move as a `findings: []` that means "nobody looked".
+//! **MCP's tools surface, and exactly that.** `initialize` (protocol `2025-06-18`),
+//! `tools/list` with an `inputSchema` per tool, `tools/call` returning a `TextContent` block
+//! and the envelope in `structuredContent`, and notifications answered with silence.
+//!
+//! ⚠️ **What that claim rests on, and what it does not.** Every shape here is asserted against
+//! the schema vendored at `tests/corpus/mcp/` — each definition's own `required` list, read at
+//! test time. That is *field presence*, not full JSON-Schema validation: there is no validator
+//! crate in this tree (001 §4) and the types go unchecked. **And nothing here has ever spoken to
+//! a real client.** Resources, prompts, logging and completions are not implemented, which
+//! `capabilities` says by carrying only `tools`. Saying "MCP" without those two sentences would
+//! be the overclaim this project exists to refuse — the same move as a `findings: []` that means
+//! "nobody looked".
 //!
 //! **One table, two surfaces.** The tools come from [`crate::help::catalogue`], which is what
 //! `--help` renders from, so contract 18's parity is structural: there is no second list to

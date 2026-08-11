@@ -393,3 +393,25 @@ fn an_operation_that_refuses_is_an_error_result_not_a_protocol_error() {
         "the reason must name the file:\n{text}"
     );
 }
+
+/// The content block is a `TextContent`, by the schema's own `required` list.
+#[test]
+fn a_content_block_is_a_valid_text_content() {
+    let d = std::env::temp_dir().join(format!("chiero-serve-tc-{}", std::process::id()));
+    std::fs::create_dir_all(&d).expect("scratch");
+    let c = d.join("t.c");
+    std::fs::write(&c, "struct s { char a; };\n").expect("write");
+    let req = serde_json::json!({
+        "jsonrpc": "2.0", "id": 11, "method": "tools/call",
+        "params": { "name": "layout", "arguments": [c.display().to_string(), "--no-system-headers"] },
+    })
+    .to_string();
+    let block = &serve(&[&req])[0]["result"]["content"][0];
+    for key in mcp_required("TextContent") {
+        assert!(
+            block.get(&key).is_some(),
+            "a content block without `{key}`:\n{block:#}"
+        );
+    }
+    assert_eq!(block["type"], "text", "{block:#}");
+}
