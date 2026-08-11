@@ -20,9 +20,14 @@ jobs:
   #                   answer what tier 1 can answer and say `Unknown` for the rest, never a
   #                   wrong answer. This is the configuration a reader gets by default, and
   #                   until now it was the *only* one CI ran — by accident rather than design.
-  #   solver: z3    — the solver-dependent half of the suite. Five `chiero-check` tests assert
-  #                   what a complete solver decides about forced overflow; with no backend
-  #                   they have nothing to decide against and now skip, and a skip in the one
+  #   solver: z3    — the solver-dependent half of the suite. **44 distinct assertions**, counted
+  #                   2026-08-11 once `check.sh` learned to report skips; this comment said
+  #                   "five `chiero-check` tests … about forced overflow" and was wrong by most
+  #                   of an order of magnitude. They reach the engine, the memory model and
+  #                   reachability — `a_branch_tier_one_cannot_decide_is_escalated`,
+  #                   `a_byte_written_at_a_symbolic_index_is_initialized_when_read_back`,
+  #                   `an_exhaustively_unreached_line_is_proven_unreachable`. With no backend
+  #                   they have nothing to decide against and skip, and a skip in the one
   #                   place that runs on every commit is 070 §4's "a gate nobody runs is a gate
   #                   that is already failing".
   #
