@@ -2282,6 +2282,16 @@ stops work altogether**, and it never announces itself, because nobody audits th
 decided not to attempt. ⏭️ The rule: before recording something as impossible, name the command
 that would prove it — and run that one.
 
+📋 **Step 0c: the queue is made of things that hurt someone, so diff it against the plan.**
+2026-08-11 read 080's milestone marks against the tree for the first time (§7.44) and found that
+**two of the three largest gaps in the product were not in §9.1 at all** — the MCP server and
+the sixteen unwritten checkers of 040. Neither was forgotten; neither had ever been *filed*,
+because a queue grows from encounters and **nothing trips you over an absence**: a checker that
+does not exist raises no finding, a server that does not exist refuses no connection. Only the
+roadmap says what was *intended*. ⏭️ Re-run the diff when a mark moves, and expect the same
+asymmetry — what is missing from a queue is systematically the work nobody has bumped into,
+which is not the same as the work that matters least.
+
 This has now paid out many times, each time on the first run after a widening:
 
 | widened | cost | yield |
