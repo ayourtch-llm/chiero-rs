@@ -22,7 +22,7 @@ record. Re-measure with `cargo xtask contract-coverage`, `./check.sh`, and
 | M4 | 🟡 | gcov exact on all of VPP; impact 20/20; selection 18/20 — mutation gate 100% recall, 65% reduction; contract 18's replay corpus has no `observed` entry yet |
 | M5 | 🟡 | `chiero-check` implements **2** of 040's ~25 checkers; `chiero-replay` compiles and runs harnesses; the discipline checker is unbuilt |
 | M6 | 🟡 | `prove_equivalent` proves `x*2 == x<<1` over all 2³² and finds `INT_MIN` for `abs`, with gcc confirming; locality analysis ships as `layout` |
-| M7 | 🟡 | 10 operations, reachable as `chiero <op>` **and over MCP's tools surface** (`chiero serve`, 2026-08-11): `initialize`, `tools/list`, `tools/call`, so contract 18's identity check runs — structurally, since both surfaces render one table. **Left**: only the `tools` capability is offered, no shape has met a real client, and 050 §5's job surface is unbuilt |
+| M7 | ✅ | **All four exit criteria hold, 2026-08-11.** Envelope schema over every operation and `proven` only at `Exact` (`chiero-tool/tests/operations.rs`, 9 green); sandboxing (`chiero-replay/tests/sandbox.rs`, 8 green); and the CLI/MCP operation sets verified identical (`chiero-cli/tests/serve.rs`, 11 green) — the last of which had never run before today. ⚠️ **The exit is not the whole spec**: only the `tools` capability is offered, no shape has met a real client, and 050 §5's job surface is unbuilt. Those are 050's, not M7's |
 | M8 | ⬜ | not started as a milestone, though its measurement harness is checked in: `find-bugs` has been run over the pinned 40 vppinfra/vlib entries, 220 across `vnet/`, 207 in the ACL plugin and 477 across 92 plugins |
 
 ## M0 — Skeleton
