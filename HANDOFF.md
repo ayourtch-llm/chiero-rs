@@ -3609,12 +3609,20 @@ reached 952 lines again, 316 of them finished work:
    - **041 c8** — a rewrite that **frees an object the original did not** is `Differs`. Nothing
      in the tree mentions it.
 
-   📌 **These are exactly the claims `docs/LIMITS.md` makes to a user**: *"`prove_equivalent`
-   compares return values, termination and side effects"* — memory is in the `Claim` enum and
-   the limits page does not promise it, which is honest, but c7 says the spec expects it. ⏭️ So
-   the first question is not "write two tests" but **which of the spec and the limits page is
-   right**, and that is answerable by reading `equiv.rs` for whether `Claim::Memory` is ever
-   compared or only declared.
+   ✅ **Read 2026-08-11, and the answer is that the limits page is right and the spec is
+   ahead of the code.** `Footprint::compared` is built at `chiero-opt/src/equiv.rs:503` from
+   exactly three claims — `Termination`, `ReturnValue` when returns were compared, `SideEffects`
+   when effects were — and **`Claim::Memory` is never among them**. `Divergence::Memory` appears
+   three times in that file and every one is a `match` arm (the swap for symmetry, the ranking);
+   nothing constructs it. So caller-visible memory is *declared and never compared*.
+
+   📌 **And the tool already says so, on every answer.** `chiero-tool` emits a blind spot —
+   *"caller-visible memory was not compared (041 §1.1); the verdict is silent about it"* —
+   whenever `compared` lacks it, which is always. `docs/LIMITS.md`'s *"compares return values,
+   termination and side effects"* is exact. **The gap is real, declared on every run, and 041 c7
+   describes behaviour nobody has built** — which makes M6's exit false rather than uncited, and
+   makes c7 a *feature* rather than a missing test. ⏭️ c8 (a rewrite that frees what the original
+   did not) is the same shape: `Divergence` has no variant for it at all.
 
 6b. 🆕 **Six checkers 040 §1 names as unbuilt, and none of them is on this list either.** Found
    by the same audit that produced 6a — comparing 080's milestone marks against §9.1 — and it is
