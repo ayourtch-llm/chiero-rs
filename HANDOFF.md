@@ -3555,8 +3555,17 @@ reached 952 lines again, 316 of them finished work:
    - **Lossy implicit conversion** looks like the genuine first one: 014 contract 11 already
      requires every implicit conversion to appear as an explicit `Cast` node, so the engine can
      compare the value across one and report when it changes. Contained in `chiero-exec`, no
-     lowering change. ⏭️ Confirm that by reading the `Cast` handling before starting, since this
-     paragraph's predecessor is what happens when you do not.
+     lowering change. ✅ **Read 2026-08-11, as this entry told the next reader to**: the `Cast`
+     arm in `chiero-exec` has `kind`, `from`, `to`, the operand's value and both bit widths in
+     hand at the point of evaluation, so a `Trunc` that does not round-trip is decidable right
+     there — concretely for a ground value, and as a *may* for a symbolic one, both patterns
+     already present in the file (`SignedOverflow` / `MaybeSignedOverflow`).
+     ⚠️ **But it is not `UbKind`, and that is the design question hiding in it.** Narrowing an
+     integer is *implementation-defined* for signed and *well-defined wrapping* for unsigned — it
+     is not undefined behaviour. Filing it under the UB channel would overclaim in exactly the
+     direction 050 §2 exists to prevent, and the vocabulary gate would then bless the overclaim.
+     So the first decision is **which channel a lint-shaped finding belongs to**, not which arm
+     to edit.
    - **Memory leak** wants an escape analysis and is still last.
 
    ✅ **The path a new UB checker takes is already paved by gates**, which is what makes any of
