@@ -253,3 +253,70 @@ fn the_global_help_says_serve_exists() {
          to recurse into it: {names:?}"
     );
 }
+
+/// The vendored MCP schema — the oracle, read rather than remembered.
+///
+/// **Not a full JSON-Schema validation**: there is no validator crate in this tree and 001 §4
+/// says not to add one for this. What it does instead is take each definition's own `required`
+/// list out of the schema and assert those keys are present, so the *shape* this surface claims
+/// cannot drift from the specification even though the types are unchecked. Partial, and
+/// honest about which part.
+fn mcp_required(definition: &str) -> Vec<String> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("tests/corpus/mcp/schema-2025-06-18.json");
+    let text = std::fs::read_to_string(&path).expect("the vendored schema");
+    let doc: serde_json::Value = serde_json::from_str(&text).expect("schema parses");
+    doc["definitions"][definition]["required"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no `required` for {definition} in the schema"))
+        .iter()
+        .filter_map(|v| v.as_str().map(str::to_owned))
+        .collect()
+}
+
+#[test]
+fn initialize_answers_with_every_field_the_schema_requires() {
+    let responses = serve(&[
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}"#,
+    ]);
+    let r = &responses[0]["result"];
+    for key in mcp_required("InitializeResult") {
+        assert!(
+            r.get(&key).is_some(),
+            "`initialize` answered without `{key}`, which the schema marks required:\n{r:#}"
+        );
+    }
+    for key in mcp_required("Implementation") {
+        assert!(
+            r["serverInfo"].get(&key).is_some(),
+            "`serverInfo` is an Implementation and needs `{key}`:\n{r:#}"
+        );
+    }
+    assert_eq!(
+        r["protocolVersion"], "2025-06-18",
+        "the version must be the one whose schema is vendored, or the oracle is not the oracle"
+    );
+}
+
+#[test]
+fn every_tool_has_the_fields_the_schema_requires() {
+    let responses = serve(&[r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#]);
+    let tools = responses[0]["result"]["tools"].as_array().expect("tools");
+    let required = mcp_required("Tool");
+    for t in tools {
+        for key in &required {
+            assert!(
+                t.get(key).is_some(),
+                "a tool without `{key}`, which the schema marks required:\n{t:#}"
+            );
+        }
+        assert_eq!(
+            t["inputSchema"]["type"], "object",
+            "an inputSchema is a JSON Schema object:\n{t:#}"
+        );
+    }
+}
