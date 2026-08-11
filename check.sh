@@ -158,6 +158,14 @@ if [ $rc -eq 0 ] && [ $both_legs -eq 1 ]; then
   echo "second leg: $p2 passed, $s2 distinct skips, exit $rc"
 fi
 
+# **The list, not just the count.** A number says something was skipped; the list says whether
+# it mattered. Only when there is one, and capped — on a machine with everything installed this
+# is empty and prints nothing, which is the common case and should stay silent.
+if [ "$skipped" -gt 0 ]; then
+  echo "$out" | grep -oiE "(skipping|skipped:).*" | sort -u | head -10 | sed 's/^/  skipped: /'
+  [ "$skipped" -gt 10 ] && echo "  … $((skipped - 10)) more"
+fi
+
 if [ $rc -eq 0 ]; then
   if [ $lints -eq 1 ]; then
     echo "GREEN: $passed passed across $suites suites, $skipped distinct skips, fmt and clippy clean"
