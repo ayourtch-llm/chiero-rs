@@ -3499,6 +3499,29 @@ reached 952 lines again, 316 of them finished work:
    stay untyped — and the variant's own doc says forming such a pointer "is deliberate in a few
    real idioms". **Owner's call.**
 
+6a. 🆕 **The MCP/JSON-RPC server — the one thing 080 says M7 is missing, and it is not on this
+   list.** Noticed 2026-08-11 while looking for work: 080's status table reads *"M7 🟡 — 10
+   operations, all reachable as `chiero <op>`; **no MCP or JSON-RPC server yet**, so contract
+   18's CLI/MCP identity check cannot run"*, and §9.1 has never carried it as an item. **The
+   largest missing piece of the product was absent from the queue**, which is its own small
+   lesson about where a queue comes from: everything here was filed by someone who tripped over
+   it, and nobody trips over an absent surface.
+
+   📌 **It is a build, not a design question.** 050 §3 specifies the operation set, the envelope
+   is already the wire format (`Envelope::to_json`), and 050 contract 18 states the exit
+   criterion — *the CLI and MCP surfaces expose the same operations with the same names, checked
+   mechanically*. `crates/chiero-cli/src/help.rs` already holds that operation table as data
+   (§7.33), so the parity gate reads one list rather than comparing two hand-kept ones.
+
+   ⚠️ **The constraint that shapes it**: 001 §4 keeps this tree linking almost nothing, and an
+   MCP server does not need an async runtime — it is newline-delimited JSON-RPC on stdio, which
+   `serde_json` and `std::io` already cover. Reaching for `tokio` here would cost the property
+   003 §3 is written to protect.
+   ⏭️ Sized as *a wave, not an hour*: transport, the tool descriptors, the dispatch, contract
+   18's gate, and 050's `jobs` shape for long operations (§5) — which is the part with a real
+   design question in it, since the CLI answers synchronously and 050 contract 15 wants a job
+   handle carrying a full envelope.
+
 5t. ✅ **CLOSED 2026-08-11 — selection was quadratic, and is now linear (§7.42).** Was: **Selection has no size axis, and reading it finds two of 5b's shape.** `chiero-select`
    is absent from 5b's per-crate census exactly as `chiero-lower` and `chiero-mem` were — the
    two crates four of the nine instances lived in — and as of 2026-08-10 it is a *shipping CLI
