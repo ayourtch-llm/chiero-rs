@@ -892,6 +892,39 @@ pub fn ingest_json_into(
     dir: &Path,
     stem: &str,
 ) -> Result<(), IngestError> {
+    json_into(idx, None, dir, stem)
+}
+
+/// The same, attributing every line it reads to `test` — the JSON sibling of
+/// [`ingest_native_as`].
+///
+/// **Without this, JSON coverage could not be selected against at all.** A line ingested with no
+/// test is `Tests::Unknown`, so `index.tests()` is empty and every selection over it is empty
+/// whatever the diff says — the wall `chiero select-tests` hit until 2026-08-10. Native ingest
+/// has taken a `TestId` since it was written; this path had no way to say the same thing.
+///
+/// **And the two are not interchangeable inputs.** `.gcno`/`.gcda` are binary and come only from
+/// a real instrumented build; `gcov --json-format` output is text. A caller holding one JSON per
+/// test run — or generating one — can now build an attributed index without a build tree.
+///
+/// ⚠️ The detail level stays [`CoverageDetail::Lines`]: naming the test does not add the arc
+/// information the native format carries, and claiming otherwise is how a downstream selection
+/// asks a question this data cannot answer.
+pub fn ingest_json_as(
+    idx: &mut CoverageIndex,
+    test: TestId,
+    dir: &Path,
+    stem: &str,
+) -> Result<(), IngestError> {
+    json_into(idx, Some((test, Variant::None)), dir, stem)
+}
+
+fn json_into(
+    idx: &mut CoverageIndex,
+    test: Option<(TestId, Variant)>,
+    dir: &Path,
+    stem: &str,
+) -> Result<(), IngestError> {
     let path = dir.join(format!("{stem}.gcov.json.gz"));
     if !path.exists() {
         return Err(IngestError::Missing { path });
@@ -927,6 +960,12 @@ pub fn ingest_json_into(
                 why: "no `files` array".into(),
             })?;
 
+    // **After parsing, before recording** — contract 6's rule, and the native path's comment
+    // says why: noting a test up front leaves it looking ingested when the object is refused.
+    if let Some((t, v)) = &test {
+        idx.note_test(*t);
+        idx.note_variant(v);
+    }
     for file in files {
         let Some(name) = file.get("file").and_then(|f| f.as_str()) else {
             return Err(IngestError::Malformed {
@@ -948,9 +987,13 @@ pub fn ingest_json_into(
             // **Saturating, and merged rather than replaced.** One object's coverage may be
             // ingested beside another's, and two runs of the same line add up — a count that
             // wrapped would read as a line nothing executed.
-            let f = idx.intern_file(name);
-            let e = idx.lines.entry((f, n as u32)).or_default();
-            e.count = e.count.saturating_add(c);
+            match &test {
+                // **Through the same door the native path uses.** Writing `idx.lines` directly
+                // was how this path came to have no way of recording a test: the entry it
+                // reaches for has a `tests` field and the raw insert simply never touched it.
+                Some((t, v)) => idx.add_line_for_variant(*t, v, name.to_string(), n as u32, c),
+                None => idx.add_line(name.to_string(), n as u32, c),
+            }
         }
     }
 
