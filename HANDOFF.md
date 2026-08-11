@@ -3658,7 +3658,27 @@ reached 952 lines again, 316 of them finished work:
    unmodified, provenance and licence in the README beside it) — because a test that needs the
    network is a test that fails on a train, and worse, one that *passes* when the network hands
    it something else. ⏭️ The MCP half now needs only room: the oracle is in the repo and
-   `jsonschema` 4.10.3 is on the machine.
+   `jsonschema` 4.10.3 is on the machine. **The four additions**, read off the vendored schema
+   rather than remembered: `initialize` → `{protocolVersion, capabilities, serverInfo}`;
+   `tools/list` entries gain the **required** `inputSchema`; `tools/call` returns
+   `{content: [ContentBlock], isError?}`; `notifications/initialized` is a notification and gets
+   no reply — which the dispatcher already handles, since it answers `None` for a request with
+   no `id`.
+
+   ⚠️ **And one decision that is not mine to take: does `serve` speak both shapes, or does MCP
+   replace the current one?** `tools/call` returns `{"envelope": …}` today and MCP requires
+   `content` blocks; the two cannot both be the reply. Either the server negotiates on
+   `initialize` (two shapes, one process, and every future change must be made twice), or the
+   JSON-RPC shape becomes MCP's and the plain-JSON-RPC caller has to read the envelope out of a
+   text block. **The second is simpler and loses something real**: an envelope inside a string is
+   a structure a caller has to re-parse, which is the opposite of why this surface exists.
+   `structuredContent` — optional in the schema — is very likely the answer, and *"very likely"*
+   is why it should be checked against a client rather than reasoned about here.
+
+   🔧 **How to validate**: there is no JSON-Schema crate in this tree and 001 §4 says not to add
+   one for this. `tests/corpus/handoff/lint.py` is the precedent — a Python gate `check.sh`
+   already runs — so a script that pipes a session through `chiero serve` and validates each
+   reply against the vendored schema fits the shape the repository already has.
 
    ⚠️ **One design note for whoever does it**: MCP requires an `inputSchema` per tool, and the
    honest one here is `{"arguments": ["string", …]}` — *pass the command line* — because the real
