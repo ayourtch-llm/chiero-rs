@@ -3613,7 +3613,18 @@ reached 952 lines again, 316 of them finished work:
    `eprintln` is invisible because cargo captures output for passing tests. **103 skip messages
    across the suite** say how wide the class is; most are honest guards for gcc, gcov or VPP, and
    every one of them is a green test that checked nothing in the environment where it printed
-   that line. ✅ **Built the same day, and it immediately said something.** `check.sh` runs both legs with
+   that line.
+
+   ⚠️ **And the count is a floor, because the counter shares the blind spot it was built to
+   expose.** Found 2026-08-11 by reading one test for an unrelated reason:
+   `chiero-opt/tests/adversarial.rs` opens with `let Some(cfg) = cfg() else { return };` — a
+   solver guard that returns **silently**, printing nothing to count. There are **54 such returns
+   across the suite**, 52 of them that exact shape. So the solverless leg skips *at least* 44
+   assertions and an unknown number more. ⏭️ The fix is at the call sites — a guard that returns
+   should say so, which is what the 103 announcing ones already do — not in the counter. **Until
+   then this file must quote 44 as a floor and not as a total.**
+
+   ✅ **Built the same day, and it immediately said something.** `check.sh` runs both legs with
    `--nocapture` and reports **distinct skips** beside the passes:
 
    ```text
