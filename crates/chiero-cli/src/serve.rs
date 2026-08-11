@@ -45,12 +45,26 @@ fn tools() -> serde_json::Value {
             serde_json::json!({
                 "name": name,
                 "description": description,
-                // **The command line, verbatim, rather than a JSON schema.** A schema would be a
-                // second description of the arguments, and `Options::parse` is the first; two
-                // descriptions of one thing is what `tests/help.rs` exists to prevent. Until the
-                // parser can *emit* a schema, saying how the operation is invoked is the honest
-                // form — and it is what a caller needs to build the `arguments` array below.
+                // **The command line, verbatim.** `usage` is not an MCP field; it is here
+                // because it is what a caller needs to fill `arguments` in, and the alternative
+                // — a JSON Schema describing each operation's flags — would be a second
+                // description of a grammar `Options::parse` already owns. Two descriptions of
+                // one thing is what `tests/help.rs` exists to prevent.
                 "usage": format!("chiero {name} {args}"),
+                // **Required by MCP, and deliberately shallow.** The tool takes a command line;
+                // saying so is true, and enumerating each operation's flags here would be the
+                // second parser again. A caller reads `usage` to build the array.
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "arguments": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "The command line after the operation name, as `usage` shows it.",
+                        }
+                    },
+                    "required": ["arguments"],
+                },
             })
         })
         .collect();
@@ -66,12 +80,31 @@ fn dispatch(req: &serde_json::Value) -> Option<serde_json::Value> {
         return Some(error(id, INVALID_REQUEST, "jsonrpc must be \"2.0\""));
     }
     match req.get("method").and_then(|m| m.as_str()) {
+        // **The MCP handshake's opening, answered from the vendored schema's own `required`
+        // list** (`tests/corpus/mcp/`). `protocolVersion` is the version of the schema in this
+        // repository: claiming a version whose shape is not the one being validated against
+        // would be the overclaim the vendoring exists to prevent.
+        Some("initialize") => Some(result(
+            id,
+            serde_json::json!({
+                "protocolVersion": "2025-06-18",
+                // Tools and nothing else. Resources, prompts, logging and completions are not
+                // implemented, and an empty capability object is how MCP says so.
+                "capabilities": { "tools": {} },
+                "serverInfo": { "name": "chiero", "version": env!("CARGO_PKG_VERSION") },
+                "instructions": "Every operation answers with an envelope: `fidelity`, \
+                                 `proven`, `assumptions`, `blind_spots`. An empty result is \
+                                 not the same as a clean one — read the envelope.",
+            }),
+        )),
         Some("tools/list") => Some(result(id, tools())),
         Some("tools/call") => Some(call(id, req.get("params"))),
         Some(other) => Some(error(
             id,
             METHOD_NOT_FOUND,
-            &format!("no method `{other}`; this surface offers tools/list and tools/call"),
+            &format!(
+                "no method `{other}`; this surface offers initialize, tools/list and tools/call"
+            ),
         )),
         None => Some(error(id, INVALID_REQUEST, "no method")),
     }
