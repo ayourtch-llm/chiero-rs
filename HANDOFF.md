@@ -2172,7 +2172,7 @@ be the reply.
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
 three xtask gates were red: a crate whose test *binary* fails to build emits no `test result`
 line at all, so counting successes cannot detect a missing success. `./check.sh` keys on
-cargo's exit status and prints the failing suites first. Current: **2377 passed, 297 suites** (2026-08-10), and **both legs** — the second, `CHIERO_SMT_SOLVER=/nonexistent`, passes 2377 too. Worth running that leg before committing anything whose answer depends on a solver: `injected_rewrites.rs` would have been red on half of CI otherwise (§7.35).
+cargo's exit status and prints the failing suites first. Current: **2382 passed, 297 suites** (2026-08-10), and **both legs** — the second, `CHIERO_SMT_SOLVER=/nonexistent`, passes 2382 too. Worth running that leg before committing anything whose answer depends on a solver: `injected_rewrites.rs` would have been red on half of CI otherwise (§7.35).
 
 ⏱️ **It now takes over an hour per leg**, and that is the session's dominant cost — see §9's
 note on the corpus. `conversions` and `semantics` are ~55 s each, the two VPP gates ~60 s, and
@@ -3650,7 +3650,7 @@ reached 952 lines again, 316 of them finished work:
    match until it is named (deliberate, wave 169), and `defect_vocabulary.rs` then demands a
    corpus case or a recorded reason. The gates drive; the author follows.
 
-6a. 🔶 **HALF DONE 2026-08-11 — `chiero serve` speaks JSON-RPC and contract 18's check runs; the MCP handshake does not exist.** Was: **The MCP/JSON-RPC server — the one thing 080 says M7 is missing, and it is not on this
+6a. ✅ **CLOSED 2026-08-11 — `chiero serve` speaks MCP's tools surface, contract 18's check runs, and both limits are stated in five files (§7.43).** ⏭️ What is deliberately *not* done and is not this item: the other capabilities (resources, prompts, logging, completions), a conversation with a real client, and 050 §5's job surface. Was: **The MCP/JSON-RPC server — the one thing 080 says M7 is missing, and it is not on this
    list.** Noticed 2026-08-11 while looking for work: 080's status table reads *"M7 🟡 — 10
    operations, all reachable as `chiero <op>`; **no MCP or JSON-RPC server yet**, so contract
    18's CLI/MCP identity check cannot run"*, and §9.1 has never carried it as an item. **The
@@ -3674,8 +3674,15 @@ reached 952 lines again, 316 of them finished work:
    anyway. `tools/call` goes through `crate::run`, the same function `argv` reaches, so the
    second surface **is** the first rather than resembling it. 050 §3, 080's M7 row and
    `docs/LIMITS.md` are corrected; 050 is 15/23 cited.
-   ⏭️ **What is left is the MCP handshake** — `initialize`, content blocks, notifications — and
-   050 §5's job surface for long operations, which is the piece with a design question in it
+   ✅ **The MCP half landed the same day**, once the schema was vendored: `initialize`
+   (protocol `2025-06-18`, `capabilities` carrying only `tools`), an `inputSchema` per tool,
+   `tools/call` returning a `TextContent` block **and** the envelope in `structuredContent`, and
+   a refusing tool answering `isError` rather than a protocol error — the schema's distinction,
+   since MCP reserves protocol errors for protocol problems. Every shape is asserted from the
+   vendored file's own `required` lists, so the tests cannot drift from the specification.
+   ⏭️ **Left, and named rather than implied**: field presence is not full JSON-Schema validation
+   (no validator crate, 001 §4); **no shape has met a real client**; the other capabilities are
+   unimplemented; and 050 §5's job surface is still the piece with a design question in it
    (contract 15 wants a job handle carrying a full envelope; the CLI answers synchronously).
    ✅ **The MCP half has an oracle after all, and finding that took one `curl`.** I first wrote
    here that it was blocked — *"no `node`/`npx`, no MCP client, no copy of the protocol schema
