@@ -2530,7 +2530,7 @@ typing the paths ever would.
 >
 > ### 🙋 DECISIONS WAITING ON THE OWNER — the whole list, in one place
 >
-> Eight questions accumulated across sessions, each recorded where it arose and therefore
+> Nine questions accumulated across sessions, each recorded where it arose and therefore
 > scattered.
 > Gathered here with **what it costs and what it unblocks**, so they can be answered in one pass.
 > None is urgent; none can be answered by a wave.
@@ -2546,6 +2546,8 @@ typing the paths ever would.
 | 7 | **Two spends**: make `COMPDB_INCLUDES` the default and re-take the plugin sweep (~65 min, recovers ~40 files); and fire the replay gate's gcov build (item 8, `make test-cov`, a separate build tree so the baseline is safe) | ~65 min and one gcov build | both are *additions* — neither re-litigates a published number, and the second is what gets 032 c18 past `recall 0.0%` |
 >
 > | 8 | **040 contract 16 — `blind_spots` non-empty in *every* report?** Contradicted by a deliberate behaviour: `expansion_sites_envelope` on a page carries its qualification in `truncation`, the field 050 §2 created for it, and demanding a blind spot too would be demanding it said twice (§7.37) | a one-line spec amendment | amend c16 to 050 §2's form — *the envelope carries the qualification somewhere structural*. The behaviour is right and the contract is older than the field |
+>
+> | 9 | **Which channel does a lint-shaped finding use?** 040 §1 lists *lossy implicit conversion that changes value* among the checkers, and it is **not undefined behaviour** — narrowing is implementation-defined for signed and defined wrapping for unsigned. `UbKind` is the only vocabulary a new arithmetic finding has today, and using it would overclaim in the direction 050 §2 forbids, with the vocabulary gate blessing the result (a gate cannot tell a wrong channel from a right one). Blocks the first of 6b's six checkers, which is otherwise ready — the `Cast` arm has everything it needs | a vocabulary decision, then a small checker | either a second kind beside `UbKind` for *defined but suspicious*, or an explicit `severity` on a finding. ⚠️ Not a naming question: `find-bugs` is read by agents that branch on kind, and a lint arriving as UB is a false positive with a proof-shaped label |
 >
 > 📌 **Nothing else in §9.1 is blocked.** Every other live item is either a spend already costed
 > above, a historical note kept for its reasoning, or work done this session.
