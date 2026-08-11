@@ -140,3 +140,79 @@ fn a_bad_request_gets_an_error_object_and_the_server_keeps_going() {
         responses[2]
     );
 }
+
+/// **`tools/call` runs the operation and returns its envelope.**
+///
+/// The argument shape is the command line, because that is what `tools/list` advertises under
+/// `usage` and what `Options::parse` already reads. A second argument grammar would be a second
+/// parser, and 050 §1's "thin wrapper" rule is about exactly that: the one thing in this system
+/// that must not have two implementations is the answer.
+#[test]
+fn tools_call_runs_the_operation_and_returns_its_envelope() {
+    let d = std::env::temp_dir().join(format!("chiero-serve-{}", std::process::id()));
+    std::fs::create_dir_all(&d).expect("scratch");
+    let c = d.join("t.c");
+    std::fs::write(&c, "struct s { char a; int b; char c; };\n").expect("write");
+    let req = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "tools/call",
+        "params": { "name": "layout", "arguments": [c.display().to_string(), "--no-system-headers"] },
+    })
+    .to_string();
+    let responses = serve(&[&req]);
+    let r = &responses[0];
+    assert_eq!(r["id"], 7, "{r:#}");
+    let env = &r["result"]["envelope"];
+    assert!(
+        env["result"]["records"].is_array(),
+        "the envelope must be the operation's own, whole:\n{r:#}"
+    );
+    // 050 §2: the qualification travels with the answer on every surface, not just the CLI's.
+    for k in ["fidelity", "proven", "assumptions", "blind_spots"] {
+        assert!(
+            env.get(k).is_some(),
+            "the envelope reached the caller without `{k}` — the whole point of it:\n{r:#}"
+        );
+    }
+}
+
+/// An operation that refuses says so as a JSON-RPC error, and the session survives.
+#[test]
+fn a_failing_operation_is_an_error_object_not_a_crash() {
+    let req = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 8,
+        "method": "tools/call",
+        "params": { "name": "layout", "arguments": ["/nonexistent/nope.c"] },
+    })
+    .to_string();
+    let after = r#"{"jsonrpc":"2.0","id":9,"method":"tools/list"}"#;
+    let responses = serve(&[&req, after]);
+    assert!(
+        responses[0]["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("nope.c")),
+        "the failure must name the file, as the CLI's does:\n{:#}",
+        responses[0]
+    );
+    assert!(
+        responses[1]["result"]["tools"].is_array(),
+        "one operation's failure must not end the session:\n{:#}",
+        responses[1]
+    );
+}
+
+/// A tool nobody offers is refused by name.
+#[test]
+fn an_unknown_tool_is_refused_and_says_which() {
+    let req = r#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"nope","arguments":[]}}"#;
+    let responses = serve(&[req]);
+    assert!(
+        responses[0]["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("nope")),
+        "{:#}",
+        responses[0]
+    );
+}
