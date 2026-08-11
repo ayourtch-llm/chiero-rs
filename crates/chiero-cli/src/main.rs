@@ -13,6 +13,7 @@ use std::process::ExitCode;
 
 mod frontend;
 mod help;
+mod serve;
 
 use frontend::{Frontend, lower};
 
@@ -30,6 +31,12 @@ fn main() -> ExitCode {
             // would need `libc`: 001 §4 keeps this tree linking nothing, and one match arm
             // is a smaller price than a dependency for a behaviour this local.
             use std::io::Write as _;
+            // **Nothing to print is printed as nothing.** `serve` answers on stdout as it goes
+            // and returns no final text; a blank line after the session would be one more thing
+            // for a caller parsing the stream to have to ignore.
+            if text.is_empty() {
+                return ExitCode::SUCCESS;
+            }
             let mut out = std::io::stdout().lock();
             match writeln!(out, "{text}").and_then(|()| out.flush()) {
                 Ok(()) => ExitCode::SUCCESS,
@@ -78,6 +85,13 @@ fn run(args: &[String]) -> Result<String, Fault> {
         return Ok(help::op_help(&args[0]).unwrap_or_else(help::usage));
     }
 
+    // **Before the option parser**, because this one takes no options: it is a mode, not an
+    // operation, and it must not appear in the operation catalogue that `--help` and
+    // `tools/list` both render (050 contract 18 is about *operations*).
+    if args[0] == "serve" {
+        serve::run().map_err(|e| Fault::Failed(format!("serving: {e}")))?;
+        return Ok(String::new());
+    }
     let opts = Options::parse(&args[1..])?;
     // **Not an envelope, and deliberately so.** Every other operation answers a question about a
     // program and carries 050's fidelity/assumptions with it. This one answers a question about

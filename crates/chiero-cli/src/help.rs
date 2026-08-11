@@ -380,3 +380,31 @@ pub(crate) fn op_help(name: &str) -> Option<String> {
     s.push_str(ENVELOPE_NOTE);
     Some(s)
 }
+
+/// Every operation, as `(name, one-line description, the arguments a reader types)`.
+///
+/// **One table, two surfaces.** `chiero serve` offers these as JSON-RPC tools and `--help`
+/// renders the same rows, which is 050 contract 18's identity check made structural rather than
+/// checked after the fact — the two cannot drift because there is nothing to drift *from*.
+/// `crates/chiero-cli/tests/serve.rs` asserts it anyway, against the dispatch `match` itself,
+/// because "cannot drift by construction" is a claim about code that changes.
+pub(crate) fn catalogue() -> Vec<(&'static str, String, &'static str)> {
+    OPS.iter()
+        .map(|o| {
+            // **The whole first paragraph, not the first sentence.** An agent choosing between
+            // ten tools needs to know what each one answers; "Adjudicate a rewrite" is a title,
+            // not a description, and it is what the first-sentence rule produced.
+            let text: String = o
+                .about
+                .lines()
+                .take_while(|l| !l.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            (
+                o.name,
+                text.split_whitespace().collect::<Vec<_>>().join(" "),
+                o.args,
+            )
+        })
+        .collect()
+}
