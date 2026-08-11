@@ -26,6 +26,11 @@ Ten operations, each a command and a library call, each returning an
 
 ### Added
 
+- **`chiero serve`** — the ten operations over newline-delimited JSON-RPC 2.0 on stdin/stdout:
+  `tools/list` and `tools/call`, dispatched through the same code the command line uses, so the
+  two surfaces cannot disagree. ⚠️ It is **not MCP**: no `initialize` lifecycle, no content
+  blocks, no notifications, and a client expecting MCP will not talk to it.
+
 - **`select-tests` works from the command line.** `--test NAME=PATH`, once per test run, or
   `--coverage-manifest <file>` with a `NAME<TAB>PATH` line each. The selection carries the
   caller's own test names back, so a consumer does not have to join on `TestId` integers.
