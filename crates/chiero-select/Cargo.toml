@@ -15,6 +15,11 @@ chiero-opt.workspace = true
 indexmap.workspace = true
 
 [dev-dependencies]
+# **A size axis needs a corpus it can generate**, and gcov's JSON is written gzipped.
+# `chiero-gcov`'s `ingest_json_as` reads it; `tests/scale.rs` writes it. Dev-only: nothing
+# shipped by this crate gains a dependency (001 §4).
+flate2.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true
