@@ -3619,6 +3619,21 @@ reached 952 lines again, 316 of them finished work:
    ⏭️ **What is left is the MCP handshake** — `initialize`, content blocks, notifications — and
    050 §5's job surface for long operations, which is the piece with a design question in it
    (contract 15 wants a job handle carrying a full envelope; the CLI answers synchronously).
+   🚧 **And the MCP half has a blocker that was checked rather than assumed** (2026-08-11, after
+   an invented blocker on this same item earlier the same day): **there is no oracle for it on
+   this machine.** No `node`/`npx`, no MCP client, no copy of the protocol schema anywhere on
+   disk. Every detail that decides whether a client can talk to it — the `protocolVersion`
+   string, the exact `initialize` result shape, whether `tools/call` returns `content` blocks or
+   `structuredContent` — would be written from memory and tested against nothing. **A surface
+   that claims a protocol it cannot check is the overclaim this project exists to refuse**, one
+   level up from a finding. The JSON-RPC half needed no oracle: its error codes and envelope are
+   in the specification's own text, and `crates/chiero-cli/tests/serve.rs` asserts them. ⏭️ Unblocking it is a
+   *spend* — fetch the schema, or a client to talk to — not a design decision.
+
+   ⚠️ **One design note for whoever does it**: MCP requires an `inputSchema` per tool, and the
+   honest one here is `{"arguments": ["string", …]}` — *pass the command line* — because the real
+   grammar is `Options::parse` and a JSON Schema restating it would be the second parser 050 §1
+   forbids. That is what the `usage` field already documents.
    ⚠️ **A client expecting MCP will not talk to this**, which is why every file that mentions it
    says JSON-RPC.
    ⏭️ Was sized as *a wave, not an hour*: transport, the tool descriptors, the dispatch, and
