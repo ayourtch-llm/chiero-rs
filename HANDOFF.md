@@ -3568,7 +3568,24 @@ reached 952 lines again, 316 of them finished work:
      direction 050 §2 exists to prevent, and the vocabulary gate would then bless the overclaim.
      So the first decision is **which channel a lint-shaped finding belongs to**, not which arm
      to edit.
-   - **Memory leak** wants an escape analysis and is still last.
+   - **Memory leak** wants an escape analysis and is still last. It is at least *unblocked*: a
+     leak is a memory-safety fact, so it belongs in the `MemFault` vocabulary beside `bad-free`
+     and `double-free` rather than needing a new channel.
+
+   📊 **Which of the six decision 9 blocks, mapped 2026-08-11 — and it is most of them.**
+
+   | checker | channel | blocked by 9? |
+   |---|---|---|
+   | lossy implicit conversion | a lint: defined behaviour | **yes** |
+   | unchecked error return | a lint: defined behaviour | **yes** |
+   | assertion failure | arguably its own kind, not UB | **yes** |
+   | reaching `__builtin_unreachable` | genuine UB | no — blocked by the *lowering* question above |
+   | infinite loop with no side effects | genuine UB (C11 6.8.5p6 lets a compiler assume termination) | no — but proving *no exit* is a solver problem, not an afternoon |
+   | memory leak | `MemFault` | no — but wants escape analysis |
+
+   ⏭️ **So answering decision 9 is what unblocks the tractable half.** The three it does not
+   block are the three that are hard for other reasons, which is worth knowing before deciding
+   how much the decision is worth.
 
    ✅ **The path a new UB checker takes is already paved by gates**, which is what makes any of
    these tractable: a new `UbKind` variant is a **compile error** in `chiero-check`'s `ub_phrase`
