@@ -219,3 +219,37 @@ fn an_unknown_tool_is_refused_and_says_which() {
         responses[0]
     );
 }
+
+/// **A mode nobody can find is a mode nobody has.** `serve` is not an operation — it takes no
+/// `<file.c>`, answers no question about a program, and must stay out of the catalogue
+/// `tools/list` renders — so it needs its own line in the global help rather than a row in the
+/// operations table.
+#[test]
+fn the_global_help_says_serve_exists() {
+    let out = std::process::Command::new(bin())
+        .arg("--help")
+        .output()
+        .expect("run");
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        text.contains("chiero serve"),
+        "`--help` never mentions the JSON-RPC surface:\n{text}"
+    );
+    assert!(
+        text.contains("JSON-RPC"),
+        "and it must say what the mode speaks, since it is not MCP:\n{text}"
+    );
+    // And it must NOT be an operation: the catalogue is what `tools/list` serves.
+    let listed = serve(&[r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#]);
+    let names: Vec<&str> = listed[0]["result"]["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    assert!(
+        !names.contains(&"serve"),
+        "`serve` is a mode, not an operation, and offering it as a tool would invite a caller \
+         to recurse into it: {names:?}"
+    );
+}
