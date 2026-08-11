@@ -166,7 +166,9 @@ fn tools_call_runs_the_operation_and_returns_its_envelope() {
     let responses = serve(&[&req]);
     let r = &responses[0];
     assert_eq!(r["id"], 7, "{r:#}");
-    let env = &r["result"]["envelope"];
+    // MCP: the structured half rides in `structuredContent`, which the schema describes as
+    // "an optional JSON object that represents the structured result of the tool call".
+    let env = &r["result"]["structuredContent"]["envelope"];
     assert!(
         env["result"]["records"].is_array(),
         "the envelope must be the operation's own, whole:\n{r:#}"
@@ -319,4 +321,65 @@ fn every_tool_has_the_fields_the_schema_requires() {
             "an inputSchema is a JSON Schema object:\n{t:#}"
         );
     }
+}
+
+#[test]
+fn a_tool_call_answers_in_the_shape_the_schema_requires() {
+    let d = std::env::temp_dir().join(format!("chiero-serve-mcp-{}", std::process::id()));
+    std::fs::create_dir_all(&d).expect("scratch");
+    let c = d.join("t.c");
+    std::fs::write(&c, "struct s { char a; int b; };\n").expect("write");
+    let req = serde_json::json!({
+        "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+        "params": { "name": "layout", "arguments": [c.display().to_string(), "--no-system-headers"] },
+    })
+    .to_string();
+    let r = &serve(&[&req])[0]["result"];
+    for key in mcp_required("CallToolResult") {
+        assert!(
+            r.get(&key).is_some(),
+            "a tools/call result without `{key}`, which the schema marks required:\n{r:#}"
+        );
+    }
+    // **`content` is the unstructured half and must actually say something.** A client that
+    // renders only content — which the schema permits, since `structuredContent` is optional —
+    // must still learn the answer rather than being handed an empty list.
+    let content = r["content"].as_array().expect("content is an array");
+    assert!(!content.is_empty(), "empty content:\n{r:#}");
+    assert_eq!(content[0]["type"], "text", "{r:#}");
+    let text = content[0]["text"].as_str().expect("text");
+    assert!(
+        text.contains("fidelity") && text.contains("proven"),
+        "the rendering must carry the envelope's qualification, or a content-only client is \
+         reading a bare answer — the one thing 050 §2 forbids:\n{text}"
+    );
+    assert!(
+        r["structuredContent"]["envelope"]["result"].is_object(),
+        "and the structured half is the envelope itself:\n{r:#}"
+    );
+}
+
+/// A failed operation is `isError`, not a JSON-RPC error, once a client is speaking MCP.
+///
+/// ⚠️ **This is a real difference and it is the schema's, not a preference.** MCP reserves
+/// protocol errors for protocol problems; a tool that ran and refused is a *result* with
+/// `isError: true`, so a client can show the reason instead of treating the session as broken.
+#[test]
+fn an_operation_that_refuses_is_an_error_result_not_a_protocol_error() {
+    let req = serde_json::json!({
+        "jsonrpc": "2.0", "id": 5, "method": "tools/call",
+        "params": { "name": "layout", "arguments": ["/nonexistent/nope.c"] },
+    })
+    .to_string();
+    let r = &serve(&[&req])[0];
+    assert!(
+        r.get("error").is_none(),
+        "a tool that ran and refused is not a protocol failure:\n{r:#}"
+    );
+    assert_eq!(r["result"]["isError"], true, "{r:#}");
+    let text = r["result"]["content"][0]["text"].as_str().expect("text");
+    assert!(
+        text.contains("nope.c"),
+        "the reason must name the file:\n{text}"
+    );
 }
