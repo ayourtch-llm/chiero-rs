@@ -3499,6 +3499,27 @@ reached 952 lines again, 316 of them finished work:
    stay untyped — and the variant's own doc says forming such a pointer "is deliberate in a few
    real idioms". **Owner's call.**
 
+6b. 🆕 **Six checkers 040 §1 names as unbuilt, and none of them is on this list either.** Found
+   by the same audit that produced 6a — comparing 080's milestone marks against §9.1 — and it is
+   the same blind spot twice: *"M5 🟡 — `chiero-check` implements **2** of 040's ~25 checkers"*.
+   040 §1 names what is missing precisely: **memory leaks, unchecked error returns, infinite
+   loops with no side effects, reaching `__builtin_unreachable` on a feasible path, assertion
+   failures, and lossy implicit conversions.**
+
+   📌 **This is expansion, not repair, and the distinction is load-bearing.** The gap is safe
+   *because* it is declared: every `find-bugs` envelope, including every clean one, carries
+   *"only the 2 checkers of 040 ran; a defect no checker looks for is not reported"*. 040 §1 says
+   in as many words that this is the only reason the gap is tolerable. Nothing is lying; the tool
+   simply looks for less than the spec describes.
+
+   ✅ **The harness is already there**, which is what makes these tractable one at a time:
+   `crates/chiero-cli/tests/injected_defects.rs` is paired C through the real CLI with a control
+   per case, and `defect_vocabulary.rs` fails when a new `MemFault` kind appears with neither a
+   case nor a recorded reason. A new checker's red test is four lines of C and its own control.
+   ⏭️ Order by what a corpus can settle: *lossy implicit conversion* and *`__builtin_unreachable`
+   on a feasible path* are decidable from one path and need no new machinery; *memory leak* wants
+   an escape analysis and is the one to do last, not first.
+
 6a. 🆕 **The MCP/JSON-RPC server — the one thing 080 says M7 is missing, and it is not on this
    list.** Noticed 2026-08-11 while looking for work: 080's status table reads *"M7 🟡 — 10
    operations, all reachable as `chiero <op>`; **no MCP or JSON-RPC server yet**, so contract
