@@ -19,11 +19,12 @@
 
 use std::io::{BufRead as _, Write as _};
 
-/// JSON-RPC 2.0's own codes. Only the ones this surface can produce.
+/// JSON-RPC 2.0's own codes. Only the ones this surface can produce — which stopped including
+/// `-32603 Internal error` when a failed *tool* became an `isError` result rather than a
+/// protocol failure. The compiler noticed before I did.
 const PARSE_ERROR: i64 = -32700;
 const INVALID_REQUEST: i64 = -32600;
 const METHOD_NOT_FOUND: i64 = -32601;
-const INTERNAL_ERROR: i64 = -32603;
 
 fn error(id: serde_json::Value, code: i64, message: &str) -> serde_json::Value {
     serde_json::json!({
@@ -152,18 +153,50 @@ fn call(id: serde_json::Value, params: Option<&serde_json::Value>) -> serde_json
             }
         }
     }
-    argv.push("--json".to_string());
-    match crate::run(&argv) {
-        Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
-            Ok(envelope) => result(id, serde_json::json!({ "envelope": envelope })),
+    // **Twice, and the second time is not waste.** MCP's `CallToolResult` carries an
+    // unstructured `content` for a client to render and an optional `structuredContent` for one
+    // that parses; `--json` gives the second and the plain rendering gives the first. A client
+    // may honour either, so a surface that supplies only one is guessing which client it has.
+    //
+    // ⚠️ Built by *adding* `--json` to a copy rather than by filtering it out of one, because
+    // the first version of this did the latter and the `--json` it filtered had been deleted
+    // along with the code that pushed it: both calls then produced the rendering, the parse
+    // failed silently, and `structuredContent` simply never appeared. The test caught it; the
+    // shape that cannot go wrong is two explicit vectors.
+    let mut json_argv = argv.clone();
+    json_argv.push("--json".to_string());
+    let rendered = crate::run(&argv);
+    let structured = crate::run(&json_argv);
+    match (rendered, structured) {
+        (Ok(text), Ok(json)) => {
+            let mut r = serde_json::json!({
+                "content": [{ "type": "text", "text": text }],
+            });
             // `cir` answers in 020's normative text and carries no envelope, by design (050 §2
-            // attaches a fidelity to an answer about a *program*, and that one is about chiero).
-            Err(_) => result(id, serde_json::json!({ "text": text })),
-        },
-        // **The operation's own words.** A JSON-RPC error carrying "operation failed" would
-        // throw away the sentence the CLI spent effort making act-on-able.
-        Err(crate::Fault::Usage(m)) => error(id, INVALID_REQUEST, &m),
-        Err(crate::Fault::Failed(m)) => error(id, INTERNAL_ERROR, &m),
+            // attaches a fidelity to an answer about a *program*, and that one is about chiero),
+            // so there is nothing structured to offer and the key stays absent.
+            if let Ok(envelope) = serde_json::from_str::<serde_json::Value>(&json) {
+                r["structuredContent"] = serde_json::json!({ "envelope": envelope });
+            }
+            result(id, r)
+        }
+        // **A tool that ran and refused is a result, not a protocol error** — the schema's
+        // distinction, not a preference: MCP reserves protocol errors for protocol problems, so
+        // a client can show the reason instead of treating the session as broken. The words are
+        // the operation's own; "operation failed" would throw away the sentence the CLI spent
+        // effort making act-on-able.
+        (Err(e), _) | (_, Err(e)) => {
+            let why = match e {
+                crate::Fault::Usage(m) | crate::Fault::Failed(m) => m,
+            };
+            result(
+                id,
+                serde_json::json!({
+                    "content": [{ "type": "text", "text": why }],
+                    "isError": true,
+                }),
+            )
+        }
     }
 }
 

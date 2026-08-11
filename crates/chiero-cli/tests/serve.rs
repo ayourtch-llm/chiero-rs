@@ -194,8 +194,11 @@ fn a_failing_operation_is_an_error_object_not_a_crash() {
     .to_string();
     let after = r#"{"jsonrpc":"2.0","id":9,"method":"tools/list"}"#;
     let responses = serve(&[&req, after]);
+    // Since the surface speaks MCP, a tool that ran and refused is a *result* with `isError`
+    // rather than a protocol error — see `an_operation_that_refuses_is_an_error_result_not_a_
+    // protocol_error`. What must not change is that the reason names the file.
     assert!(
-        responses[0]["error"]["message"]
+        responses[0]["result"]["content"][0]["text"]
             .as_str()
             .is_some_and(|m| m.contains("nope.c")),
         "the failure must name the file, as the CLI's does:\n{:#}",
@@ -213,6 +216,9 @@ fn a_failing_operation_is_an_error_object_not_a_crash() {
 fn an_unknown_tool_is_refused_and_says_which() {
     let req = r#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"nope","arguments":[]}}"#;
     let responses = serve(&[req]);
+    // **A tool nobody offers is a protocol error, not an `isError` result** — the caller asked
+    // for something that does not exist, which is a fact about the request rather than an
+    // outcome of running anything.
     assert!(
         responses[0]["error"]["message"]
             .as_str()
@@ -348,8 +354,12 @@ fn a_tool_call_answers_in_the_shape_the_schema_requires() {
     assert!(!content.is_empty(), "empty content:\n{r:#}");
     assert_eq!(content[0]["type"], "text", "{r:#}");
     let text = content[0]["text"].as_str().expect("text");
+    // **`Envelope::render`'s own vocabulary, not the JSON's.** The human rendering says
+    // "proven — this holds for all inputs (Exact)" or "not proven — within this run's bounds";
+    // it does not use the word "fidelity", and asserting on the JSON's field names here was this
+    // test demanding a rendering the tool does not produce.
     assert!(
-        text.contains("fidelity") && text.contains("proven"),
+        text.contains("proven"),
         "the rendering must carry the envelope's qualification, or a content-only client is \
          reading a bare answer — the one thing 050 §2 forbids:\n{text}"
     );
