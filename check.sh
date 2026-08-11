@@ -159,7 +159,7 @@ if [ $rc -eq 0 ] && [ $both_legs -eq 1 ]; then
   # nothing; this one is the configuration that skips, so printing the count and withholding the
   # names would put the useful half where it cannot be read.
   if [ "$s2" -gt 0 ]; then
-    echo "$out2" | grep -oiE "(skipping|skipped:).*" | sort -u | head -10 | sed 's/^/  skipped: /'
+    echo "$out2" | grep -oiE "(skipping|skipped:).*" | sort -u | head -10 | sed 's/^/  - /'
     [ "$s2" -gt 10 ] && echo "  … $((s2 - 10)) more"
   fi
   echo "second leg: $p2 passed, $s2 distinct skips, exit $rc"
@@ -169,7 +169,7 @@ fi
 # it mattered. Only when there is one, and capped — on a machine with everything installed this
 # is empty and prints nothing, which is the common case and should stay silent.
 if [ "$skipped" -gt 0 ]; then
-  echo "$out" | grep -oiE "(skipping|skipped:).*" | sort -u | head -10 | sed 's/^/  skipped: /'
+  echo "$out" | grep -oiE "(skipping|skipped:).*" | sort -u | head -10 | sed 's/^/  - /'
   [ "$skipped" -gt 10 ] && echo "  … $((skipped - 10)) more"
 fi
 
