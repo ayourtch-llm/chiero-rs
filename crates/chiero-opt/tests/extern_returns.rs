@@ -27,9 +27,23 @@ fn m(body: &str) -> Module {
         .unwrap_or_else(|e| panic!("fixture does not parse: {e:?}\n{body}"))
 }
 
+/// **The solver guard, and it says when it fires.**
+///
+/// Every caller is `let Some(cfg) = cfg() else { return }` — which returned in silence until
+/// 2026-08-11, so on the solverless leg these tests reported `ok` having asserted nothing and
+/// `check.sh`'s skip counter could not see them. 54 returns across the suite were invisible that
+/// way, against 103 that announced. The message belongs here rather than at each call site
+/// because this is what knows *why*.
 fn cfg() -> Option<EquivCfg> {
     let c = EquivCfg::new("f");
-    c.backend.is_some().then_some(c)
+    if c.backend.is_none() {
+        eprintln!(
+            "skipping a solver-dependent assertion in extern_returns.rs: no SMT-LIB backend on PATH \
+             (022 contract 2)"
+        );
+        return None;
+    }
+    Some(c)
 }
 
 #[track_caller]

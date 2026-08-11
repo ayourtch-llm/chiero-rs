@@ -139,6 +139,11 @@ suites=$(echo "$out" | grep -cE "^test result:")
 # Approximate on purpose: standardising 103 call sites is the expensive half, and a number that
 # moves is useful before it.
 skipped=$(echo "$out" | grep -oiE "(skipping|skipped:).*" | sort -u | wc -l)
+# **Both numbers, because neither alone is the answer.** Distinct messages undercount when many
+# tests share one guard's wording — six `cfg()` helpers announce for 49 call sites — and total
+# occurrences overcount when one test calls a guard twice. The pair brackets the truth; a single
+# figure would be quoted as though it were it, which this file did for a day.
+skipped_total=$(echo "$out" | grep -ociE "(skipping|skipped:)")
 if [ $rc -eq 0 ] && [ $both_legs -eq 1 ]; then
   # **The no-solver leg.** `discover()` consults `$CHIERO_SMT_SOLVER` first, so a path that
   # does not exist is what CI uses to prove the tree works with no solver at all.
@@ -151,6 +156,7 @@ if [ $rc -eq 0 ] && [ $both_legs -eq 1 ]; then
   fi
   p2=$(echo "$out2" | grep -E "^test result: ok" | awk -F'[ ;]' '{p+=$4} END {print p+0}')
   s2=$(echo "$out2" | grep -oiE "(skipping|skipped:).*" | sort -u | wc -l)
+  s2t=$(echo "$out2" | grep -ociE "(skipping|skipped:)")
   # **The number this leg exists to make visible.** With no backend the five `chiero-check`
   # tests that assert what a *complete* solver decides announce themselves and return; counting
   # them is the difference between "the solverless configuration passes" and "it passes and here
@@ -162,7 +168,7 @@ if [ $rc -eq 0 ] && [ $both_legs -eq 1 ]; then
     echo "$out2" | grep -oiE "(skipping|skipped:).*" | sort -u | head -10 | sed 's/^/  - /'
     [ "$s2" -gt 10 ] && echo "  … $((s2 - 10)) more"
   fi
-  echo "second leg: $p2 passed, $s2 distinct skips, exit $rc"
+  echo "second leg: $p2 passed, $s2 distinct skips ($s2t in all), exit $rc"
 fi
 
 # **The list, not just the count.** A number says something was skipped; the list says whether
@@ -175,16 +181,16 @@ fi
 
 if [ $rc -eq 0 ]; then
   if [ $lints -eq 1 ]; then
-    echo "GREEN: $passed passed across $suites suites, $skipped distinct skips, fmt and clippy clean"
+    echo "GREEN: $passed passed across $suites suites, $skipped distinct skips ($skipped_total in all), fmt and clippy clean"
     # ⚠️ **Still not identical to CI**, and the remaining differences are environmental rather
     # than commands: CI resolves `dtolnay/rust-toolchain@stable` on the runner, so a newer
     # rustc can introduce a lint this machine's toolchain does not have, and its `solver: z3`
     # leg installs z3 from apt rather than using the one here. `--both-legs` covers the
     # solverless configuration; nothing local can cover a toolchain this machine has not got.
   else
-    echo "GREEN (tests only, lints skipped): $passed passed across $suites suites, $skipped distinct skips"
+    echo "GREEN (tests only, lints skipped): $passed passed across $suites suites, $skipped distinct skips ($skipped_total in all)"
   fi
 else
-  echo "RED (cargo exit $rc): $passed passed, $failed failed, $skipped distinct skips across $suites suites"
+  echo "RED (cargo exit $rc): $passed passed, $failed failed, $skipped distinct skips ($skipped_total in all) across $suites suites"
 fi
 exit $rc
