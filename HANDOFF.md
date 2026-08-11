@@ -2163,9 +2163,18 @@ cites contract 18 so the coverage tool counts what it checks (050: 14/23 → 15/
 notifications; a client expecting MCP will not talk to it. Letting "speaks JSON over a pipe" and
 "implements MCP" blur is the same move as a `findings: []` that means nobody looked.
 
-⏭️ The MCP half is specified in 6a, its schema is vendored at `tests/corpus/mcp/`, and it carries
-one decision that is not mine: MCP's `content` blocks and this surface's `envelope` cannot both
-be the reply.
+✅ **And by the afternoon it was MCP's tools surface**, once the schema was vendored: the
+handshake, an `inputSchema` per tool, a `TextContent` block beside the envelope in
+`structuredContent`, and `isError` for a tool that ran and refused. The claim in those five
+files moved with the evidence and carries two limits — field presence is not full validation,
+and **no shape has met a real client**.
+
+📌 **The instructive part is the sequence, not the surface.** I recorded three reasons it could
+not be done, in this order, over about ninety minutes: *no oracle on this machine* (there was a
+network); *the `content`/`envelope` conflict needs an owner* (the schema has `structuredContent`,
+and I had vendored that schema twenty minutes earlier); *no client to test against* (still true,
+and it is the one that survived — so it is the one the files state). **Two of the three
+dissolved by reading the artefact I already had.** §8.3's step 0b is written from this.
 
 ### 7.5 How to check the workspace is green — `./check.sh`
 
