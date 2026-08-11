@@ -72,12 +72,12 @@ fn main() -> ExitCode {
 /// **Two kinds of failure, because they mean different things to whoever is reading.**
 /// `Usage` is "you asked for something I do not offer" and reprints the operations; `Failed`
 /// is "I tried and could not", which is about the input rather than the request.
-enum Fault {
+pub(crate) enum Fault {
     Usage(String),
     Failed(String),
 }
 
-fn run(args: &[String]) -> Result<String, Fault> {
+pub(crate) fn run(args: &[String]) -> Result<String, Fault> {
     if args.is_empty() {
         return Err(Fault::Usage("no operation given".into()));
     }
