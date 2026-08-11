@@ -3615,7 +3615,17 @@ reached 952 lines again, 316 of them finished work:
    every one of them is a green test that checked nothing in the environment where it printed
    that line.
 
-   ⚠️ **And the count is a floor, because the counter shares the blind spot it was built to
+   ✅ **Resolved 2026-08-11: the figure is a pair — 50 distinct skip messages, 151 in all.** The
+   six `cfg()` helpers announce now, so the 48 sites that returned in silence are visible, and
+   `check.sh` prints both because neither alone is the answer: distinct undercounts where one
+   guard speaks for many tests, total overcounts where a test calls a guard twice. **Against 2371
+   passes on the same leg that is up to 6% of the suite asserting nothing**, on a configuration
+   CI gates. The number's history is the lesson — `ci.yml` said **5** for months, the first
+   counter said **102** (it counted lines), then **44** (distinct only), and the honest answer is
+   a bracket. ⏭️ Making it exact needs each guard to name its test: 48 call-site edits, for less
+   than the bracket already says.
+
+   ⚠️ **Was: the count is a floor, because the counter shares the blind spot it was built to
    expose.** Found 2026-08-11 by reading one test for an unrelated reason:
    `chiero-opt/tests/adversarial.rs` opens with `let Some(cfg) = cfg() else { return };` — a
    solver guard that returns **silently**, printing nothing to count. There are **54 such returns

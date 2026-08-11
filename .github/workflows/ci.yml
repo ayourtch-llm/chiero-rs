@@ -20,10 +20,12 @@ jobs:
   #                   answer what tier 1 can answer and say `Unknown` for the rest, never a
   #                   wrong answer. This is the configuration a reader gets by default, and
   #                   until now it was the *only* one CI ran — by accident rather than design.
-  #   solver: z3    — the solver-dependent half of the suite. **At least 44 distinct assertions**,
-  #                   counted 2026-08-11 once `check.sh` learned to report skips — a *floor*, not
-  #                   a total: 54 tests skip through a silent `else { return }` that prints
-  #                   nothing to count. This comment said
+  #   solver: z3    — the solver-dependent half of the suite. **50 distinct skip messages, 151 in
+  #                   all**, measured 2026-08-11 after `check.sh` learned to count them and the
+  #                   six silent `cfg()` guards learned to announce. The pair brackets the truth:
+  #                   distinct undercounts where one guard speaks for many tests, total
+  #                   overcounts where a test calls a guard twice. Up to 6% of a 2371-assertion
+  #                   suite, on a leg that gates. This comment said
   #                   "five `chiero-check` tests … about forced overflow" and was wrong by most
   #                   of an order of magnitude. They reach the engine, the memory model and
   #                   reachability — `a_branch_tier_one_cannot_decide_is_escalated`,
