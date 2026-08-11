@@ -3644,7 +3644,23 @@ reached 952 lines again, 316 of them finished work:
    ⏭️ The gate to build: a citation from a file whose citing test is `#[ignore]`d does not count.
    Naive "any `#[ignore]` in a citing file" over-flags — a file may hold twenty running tests and
    one deliberate reproduction — so it has to associate each `Covers:`/inline citation with the
-   tests that carry it, or move to per-test citations. 📌 **The measurement was attempted, and the number is not usable — which is the finding.**
+   tests that carry it, or move to per-test citations.
+
+   🔁 **And it under-credits as well, which is the other half of "the number is not what it
+   looks like".** Measured 2026-08-11 while checking whether M6's 🟡 is stale (080's exit is
+   *041 contracts 1–24 green*; the tool reports **041 at 10/30 cited**): the scanner requires
+   `NNN contract K`, and **231 mentions across 70 test files** are written bare — *"**Contract
+   5.** Reordering independent statements…"* — because the file's header already says which
+   document. **55 of those 70 name a document in their `//!` header**, so a bare mention there
+   has an unambiguous anchor in the same file; the other 15 have none and are correctly uncited.
+   ⏭️ The rule to add: *a bare `Contract K` resolves to the document the file's header cites.*
+   ⚠️ **It raises a coverage number, which is the flattering direction, so it needs §8.3 step 0
+   before anyone believes it.** 041 c5 is the case with a known answer — `chiero-opt/tests/
+   adversarial.rs` tests it and writes "Contract 5" — and note that file has **no `Covers:`
+   header at all**, so the proposed rule would *not* fix it: the honest repair there is a header,
+   not a cleverer regex. A rule that moves anything else is wrong.
+
+   📌 **The measurement was attempted, and the number is not usable — which is the finding.**
    A file-level scan (*is every file citing this contract one that contains an `#[ignore]`?*)
    reports **0 of the 166**, over 170 citations seen. ⚠️ **That zero is worthless and must not be
    quoted**: 023 c21, the instance found by hand an hour earlier, is *also* cited by
