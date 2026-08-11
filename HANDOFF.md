@@ -2195,6 +2195,25 @@ have found the thing I already know?** Two of the three were about to become pub
 ⚠️ Note the direction — every one of them erred toward *nothing is wrong*, which is the error a
 reader will not query.
 
+🚫 **Step 0b, and 2026-08-11 supplied five examples in one day: "I have no way to check X" is a
+claim about the world, and it is nearly always false.** Each of these sat in this file or in my
+own reasoning as settled fact, and each fell to a single command:
+
+| the claim | the probe | how long it had stood |
+|---|---|---|
+| the failing CI leg cannot be identified — there is no `gh` here | `curl api.github.com/…/actions/runs` (the repo is public) | two days |
+| the runner's newer z3 is a candidate cause | `apt-cache policy z3` — same distro, same package | two days |
+| a plain `git push` cannot work from this machine | §3 of *this file*, which documents the deploy key | one message |
+| a `CoverageIndex` can only come from real gcov artefacts | reading the crate: `ingest_json` takes text | one hour |
+| MCP cannot be built here: no client, no schema on disk | `curl …/schema.json` → **200** | forty minutes |
+
+⚠️ **The last two were mine, written the same day, and the fifth was published as a *considered*
+judgement — in a sentence that said I had checked rather than assumed.** The check I had run was
+`ls`; the check that mattered was `curl`. A false capability misdirects; **a false impossibility
+stops work altogether**, and it never announces itself, because nobody audits the things they
+decided not to attempt. ⏭️ The rule: before recording something as impossible, name the command
+that would prove it — and run that one.
+
 This has now paid out many times, each time on the first run after a widening:
 
 | widened | cost | yield |
