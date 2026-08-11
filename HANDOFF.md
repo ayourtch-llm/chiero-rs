@@ -2088,6 +2088,42 @@ kept `solver_rlimit` untouched. `drop_null` is the tool if somebody takes it on.
 was regenerated from its own run rather than edited. Eight lines of `(none)` left the pages —
 `verdict: unreachable / line: 6 / proven` is three lines now instead of five.
 
+### 7.42 Selection was quadratic, and reading had guessed the wrong site
+
+The last of 5b's class to be found, in the crate 5b's own census omitted — and the day after
+selection became a shipping CLI operation (§7.34), which is what made its cost curve matter.
+
+| | 500→1000 | 1000→2000 | 2000→4000 | over the 8x span |
+|---|---|---|---|---|
+| before | 3.7x | 4.0x | 3.9x | **56.7x** |
+| after | 2.0x | 2.0x | 2.1x | **9.0x** |
+
+n=4000 impacted entities: **0.1098 s → 0.0108 s**.
+
+The cost was `if !slot.contains(&r)` — a linear scan of one test's reasons, per reason added,
+over a `Vec` growing to one entry per (entity, line) per test. 📌 **For `CoversEntity` it could
+never find a duplicate**: the reason carries the line, so every one is distinct by construction.
+Pure cost, and the whole cost. `AlwaysRun` *can* duplicate, which is why the fix is an
+`IndexSet` rather than deleting the check — and `IndexSet` because 032 wants a deterministic
+order and insertion order is what the `Vec` gave. `Selection.tests` stays `Vec` at the boundary.
+
+⏭️ **Two lessons, and the second is the one to carry.**
+
+1. **Reading guessed wrong.** 5t recorded two candidates from reading `select_refined`, and named
+   the file scan first. The measurement says it was the other one — the file scan is invisible at
+   one file per unit, which is what a single translation unit always is. 5b says *none of its
+   nine was found by the grep*; this is the tenth, and reading picked the wrong suspect even
+   after being told not to trust reading.
+2. ⚠️ **The first fixture measured an empty loop and produced a respectable curve.** It spread
+   coverage over `n/10` files to exercise the file scan, and every run selected **0 tests**,
+   because `Program::parse` gives every entity the *unit's* name — so no entity's file was in the
+   coverage. The `selected > 0` guard, written before the first run, is the only thing that
+   stopped a published number about nothing. **A size axis needs a liveness assertion as much as
+   a ratio.**
+
+🚧 The files axis is still unmeasured: it needs an impact set spanning several translation units,
+and `impact(&before, &after)` does not take one. Unfaked rather than faked.
+
 ### 7.5 How to check the workspace is green — `./check.sh`
 
 **Do not sum "N passed" out of `cargo test`.** I reported "0 failed" for a long stretch while
@@ -3419,7 +3455,7 @@ reached 952 lines again, 316 of them finished work:
    stay untyped — and the variant's own doc says forming such a pointer "is deliberate in a few
    real idioms". **Owner's call.**
 
-5t. 🆕 **Selection has no size axis, and reading it finds two of 5b's shape.** `chiero-select`
+5t. ✅ **CLOSED 2026-08-11 — selection was quadratic, and is now linear (§7.42).** Was: **Selection has no size axis, and reading it finds two of 5b's shape.** `chiero-select`
    is absent from 5b's per-crate census exactly as `chiero-lower` and `chiero-mem` were — the
    two crates four of the nine instances lived in — and as of 2026-08-10 it is a *shipping CLI
    operation* (§7.34), so its scale matters more than it did yesterday. Read in
