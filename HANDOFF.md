@@ -3594,6 +3594,28 @@ reached 952 lines again, 316 of them finished work:
    remembering that `contract-coverage` answers the M6 question only if 5s's
    citation-versus-execution gap is closed first.
 
+6d. 🆕 **M6's yellow is correct, and two named 041 contracts are why.** The audit that closed
+   M7 (§7.43) run on the next milestone: 080's M6 exit is *"041 contracts 1–24 green"*, and
+   sampling the ones `contract-coverage` calls uncited found the count unreliable in **both**
+   directions — c5 is covered by `chiero-opt/tests/adversarial.rs` in prose the scanner cannot
+   read (5s), and c6 by `side_effects.rs`, which cites it properly. But two look genuinely
+   untested, and both are substantive claims about *what `prove_equivalent` compares*:
+
+   - **041 c7** — a rewrite leaving different garbage in a *stack temporary* is `Equivalent`
+     (temporaries are outside the footprint), while different bytes in a **caller-visible
+     buffer** are `Differs` with `Divergence::Memory`. `Divergence::Memory` exists in
+     `chiero-opt/src/equiv.rs` and `Claim::Memory` is a variant, so the machinery is there; no
+     test names either half.
+   - **041 c8** — a rewrite that **frees an object the original did not** is `Differs`. Nothing
+     in the tree mentions it.
+
+   📌 **These are exactly the claims `docs/LIMITS.md` makes to a user**: *"`prove_equivalent`
+   compares return values, termination and side effects"* — memory is in the `Claim` enum and
+   the limits page does not promise it, which is honest, but c7 says the spec expects it. ⏭️ So
+   the first question is not "write two tests" but **which of the spec and the limits page is
+   right**, and that is answerable by reading `equiv.rs` for whether `Claim::Memory` is ever
+   compared or only declared.
+
 6b. 🆕 **Six checkers 040 §1 names as unbuilt, and none of them is on this list either.** Found
    by the same audit that produced 6a — comparing 080's milestone marks against §9.1 — and it is
    the same blind spot twice: *"M5 🟡 — `chiero-check` implements **2** of 040's ~25 checkers"*.
