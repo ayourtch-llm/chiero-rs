@@ -3395,6 +3395,14 @@ reached 952 lines again, 316 of them finished work:
    chiero-exec 6, chiero-tool 5) **omits `chiero-lower` and `chiero-mem` entirely**, where four
    of them lived. The 79-site number measures neither the class nor the codebase.
 
+   ✅ **`chiero-span` checked 2026-08-11 and clean by construction** — worth recording because
+   today's work made it hot: `expansion_loc` is now called once per finding and once per proposal
+   (§7.40). Its `for _ in 0..=self.expansions.len()` reads like a scan of every expansion and is
+   not: it returns the moment `ctx.is_root()`, so the cost is the **chain depth**, and the bound
+   is a cycle guard. `lookup_file` and `line_of_offset` are both `partition_point` — binary
+   searches. No axis built: the control flow is three lines and unambiguous, which is the one
+   case where reading settles it.
+
    ✅ **The method that works is sampling under a size axis**, and both axes now exist:
    `crates/chiero-lower/tests/scale.rs` for the frontend, and the all-concrete-conditions
    program of §7.28 for the engine. Every one of the nine was found that way; **none** was found
