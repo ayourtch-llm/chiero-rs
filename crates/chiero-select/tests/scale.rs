@@ -115,8 +115,15 @@ fn write_coverage(dir: &Path, n: usize, test: usize) -> String {
 
 struct Point {
     n: usize,
+    /// `select_with`, the operation this file was written for.
     secs: f64,
+    /// `chiero_diff::impact`, timed from the same parse because the parse is the expensive part
+    /// and `chiero-diff` has no size axis of its own. It is the step *feeding* selection: the
+    /// CLI's `impact` command and every `select-tests` run go through it, and 5b's class lives
+    /// in closure walks as readily as in selection's.
+    impact_secs: f64,
     selected: usize,
+    entities: usize,
 }
 
 fn measure(n: usize) -> Point {
@@ -133,6 +140,19 @@ fn measure(n: usize) -> Point {
     // names compare two different entities and everything "changed" for the wrong reason.
     let before = Program::parse("u.c", &source(n, "+")).expect("parses");
     let after = Program::parse("u.c", &source(n, "-")).expect("parses");
+    let mut impact_best = f64::INFINITY;
+    for round in 0..=REPEATS {
+        let t0 = Instant::now();
+        let s = impact(&before, &after);
+        let secs = t0.elapsed().as_secs_f64();
+        assert!(
+            !s.entities.is_empty(),
+            "an empty impact set measures nothing"
+        );
+        if round > 0 {
+            impact_best = impact_best.min(secs);
+        }
+    }
     let set = impact(&before, &after);
     assert!(
         set.entities.len() >= n,
@@ -160,7 +180,9 @@ fn measure(n: usize) -> Point {
     Point {
         n,
         secs: best,
+        impact_secs: impact_best,
         selected,
+        entities: set.entities.len(),
     }
 }
 
@@ -192,8 +214,29 @@ fn selection_does_not_grow_quadratically_in_entities_and_files() {
     }
     let (first, last) = (&points[0], points.last().unwrap());
     let span = last.n as f64 / first.n as f64;
-    let ratio = last.secs / first.secs;
     let ceiling = 2.0 * span.powf(1.25);
+
+    // **`impact` too, from the same parse.** `chiero-diff` has no size axis of its own and it is
+    // the step every selection runs through; the parse is the expensive part of this fixture, so
+    // measuring a second operation on it is nearly free. Asserted on the same curve rule.
+    let impact_ratio = last.impact_secs / first.impact_secs;
+    eprintln!(
+        "impact: {} entities at n={} in {:.4} s; {span:.0}x the input costs {impact_ratio:.1}x",
+        last.entities, last.n, last.impact_secs
+    );
+    assert!(
+        impact_ratio < ceiling,
+        "`impact` cost {impact_ratio:.1}x for {span:.0}x the entities, over the \
+         {ceiling:.1}x this span allows; linear is {span:.0}x and quadratic is {:.0}x. \
+         Points: {:?}",
+        span * span,
+        points
+            .iter()
+            .map(|p| (p.n, p.impact_secs))
+            .collect::<Vec<_>>()
+    );
+
+    let ratio = last.secs / first.secs;
     assert!(
         ratio < ceiling,
         "{}x the entities and files cost {ratio:.1}x, over the {ceiling:.1}x this span allows; \

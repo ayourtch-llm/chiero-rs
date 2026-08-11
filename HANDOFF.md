@@ -2121,6 +2121,14 @@ order and insertion order is what the `Vec` gave. `Selection.tests` stays `Vec` 
    stopped a published number about nothing. **A size axis needs a liveness assertion as much as
    a ratio.**
 
+✅ **`chiero-diff::impact` is on the same axis now, and it is an honest zero.** It had no size
+axis of any kind, and it is the step *every* selection runs through — so it was measured from the
+same parse, which is nearly free because the parse is what costs. **8x the entities costs 12.7x**:
+mildly superlinear (about n^1.2, allocation and hashing growth), far from the 64x a quadratic
+would show, and inside the same ceiling. Recorded because a zero from a standing instrument is
+worth more than a zero from an afternoon — it will catch the regression that a reading never
+would.
+
 🚧 The files axis is still unmeasured: it needs an impact set spanning several translation units,
 and `impact(&before, &after)` does not take one. Unfaked rather than faked.
 
