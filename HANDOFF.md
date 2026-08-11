@@ -2592,8 +2592,12 @@ typing the paths ever would.
 >
 > 🔒 **Three gates that cannot be skipped or misread**: `.githooks/pre-commit` (the fmt gate that
 > 34 CI failures went around), `./ci-status.sh` (anonymous, and it refuses a sweep the quota
-> cannot finish), and a **skip counter** in `check.sh` — which immediately showed the solverless
-> leg reporting the same 2368 passes as the full one while **44 assertions did not run**.
+> cannot finish), and a **skip counter** in `check.sh` — which showed the solverless leg
+> reporting the same passes as the full one while **50 to 151 assertions did not run**, up to 6%
+> of the suite. ⚠️ That figure took four attempts: `ci.yml` had said **5** for months, the
+> counter's first version said **102** because it counted lines, its second said **44** because
+> it counted only distinct messages, and 48 more skips were invisible until six silent `cfg()`
+> guards were taught to announce. Each wrong figure erred toward *less trouble than there is*.
 >
 > ### 🔥 What 2026-08-10 did, in one block
 >
