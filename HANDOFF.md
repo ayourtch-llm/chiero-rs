@@ -3594,6 +3594,23 @@ reached 952 lines again, 316 of them finished work:
    remembering that `contract-coverage` answers the M6 question only if 5s's
    citation-versus-execution gap is closed first.
 
+6e. 🆕 **M3's yellow rests on one unpublished number, and the machinery for it exists.** The
+   roadmap audit finished (M7 closed, M6 open on evidence — 6d). M3's exit is three lines:
+
+   | criterion | state |
+   |---|---|
+   | `explain_macro_expansion` answers for `vec_add1` and a `foreach_*` site | ✅ three test files exercise it (`chiero-tool/tests/explain_macro_expansion.rs` and two more) |
+   | tier-1 recipe sweep runs over VPP in budget; the catalogue passes its fixtures (042 c4) | 🔶 `cargo xtask recipe-sweep` **exists and is wired**; **042 contract 4 is cited by nothing** |
+   | VPP parser-coverage percentage **published and tracked from here on** | ❌ the phrase appears nowhere in this file or the README |
+
+   📌 **Two of the three are a *spend*, not a build** — run the sweep, publish the number — which
+   is why this has sat yellow while the code beneath it was finished. That is the same shape as
+   M8, and it is worth noticing that the roadmap's remaining yellows are mostly *measurements
+   nobody has taken* rather than features nobody has written. ⚠️ The exception is the third line:
+   "tracked from here on" is a standing commitment, and standing commitments in this project have
+   a habit of decaying into a sentence nobody re-runs (§9.2's lost instruments). Publishing it
+   once satisfies the letter; a gate satisfies the intent.
+
 6d. 🆕 **M6's yellow is correct, and two named 041 contracts are why.** The audit that closed
    M7 (§7.43) run on the next milestone: 080's M6 exit is *"041 contracts 1–24 green"*, and
    sampling the ones `contract-coverage` calls uncited found the count unreliable in **both**
