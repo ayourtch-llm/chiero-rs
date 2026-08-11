@@ -39,10 +39,6 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-/// Functions per file. Ten keeps the file count proportional to the entity count, which is the
-/// product the suspected scan walks.
-const PER_FILE: usize = 10;
-
 /// Entity counts. The top point has to dominate process noise; below a few milliseconds a
 /// "ratio" is mostly scheduler.
 const SIZES: [usize; 4] = [500, 1000, 2000, 4000];
@@ -53,13 +49,18 @@ const TESTS: usize = 8;
 
 const REPEATS: usize = 5;
 
+// ⏱️ **~75 s, and almost all of it is the frontend.** Parsing 15 000 one-line functions to
+// build the four impact sets dwarfs the thing being timed, which is why the parse sits outside
+// the timer and the sizes have not been trimmed: the axis has to span 8x to tell 8x from 64x,
+// and it earned its place by finding a 10x defect on its first run.
+
 fn scratch() -> PathBuf {
     let d = std::env::temp_dir().join(format!("chiero-select-scale-{}", std::process::id()));
     std::fs::create_dir_all(&d).expect("scratch");
     d
 }
 
-/// `n` functions spread over `n / PER_FILE` files, as one translation unit.
+/// `n` functions in one translation unit.
 ///
 /// One statement each and a distinct name, so every function is its own entity and the parse
 /// stays linear in `n`. `body` differs between the two versions, which is what makes every

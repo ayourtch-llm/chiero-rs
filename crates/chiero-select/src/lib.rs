@@ -33,7 +33,7 @@
 //! is safe by construction: without it the selection is a superset, which is the direction that
 //! never misses a regression.
 
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 
 use chiero_diff::{Completeness, ImpactSet, Program};
 use chiero_gcov::{CoverageIndex, TestId};
@@ -111,7 +111,7 @@ pub struct ExcludedTest {
 /// **Every selected test carries at least one** (contract 15). A maintainer told to run 400 tests
 /// must be able to ask why of any one of them, and a selection is only actionable if the answer
 /// is per-test rather than per-run.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SelectionReason {
     /// It executed a line of an impacted entity.
     CoversEntity {
@@ -211,14 +211,21 @@ pub fn select_refined(
     suite: &Suite,
     prover: &mut dyn Prover,
 ) -> Selection {
-    let mut tests: IndexMap<TestId, Vec<SelectionReason>> = IndexMap::new();
+    // **A set, because the linear dedup below was the whole cost of selection.** Measured
+    // 2026-08-11 on a generated size axis: 500→4000 impacted entities cost 3.7x, 4.0x and 3.9x
+    // per doubling — **56.7x over an 8x span**, quadratic to within measurement. The scan was
+    // `if !slot.contains(&r)` over a `Vec` holding one reason per (entity, line) per test, and
+    // for `CoversEntity` it could never find a duplicate: the reason carries the line, so every
+    // one is distinct by construction. It was pure cost. `AlwaysRun` *can* duplicate, which is
+    // why this is a set rather than a deletion.
+    //
+    // `IndexSet`, not `HashSet`: 032 requires a deterministic order, the workspace bans the
+    // unordered maps for that reason, and insertion order is exactly what the `Vec` gave.
+    let mut tests: IndexMap<TestId, IndexSet<SelectionReason>> = IndexMap::new();
     let mut reasons: Vec<String> = Vec::new();
 
-    let add = |t: TestId, r: SelectionReason, tests: &mut IndexMap<_, Vec<_>>| {
-        let slot: &mut Vec<SelectionReason> = tests.entry(t).or_default();
-        if !slot.contains(&r) {
-            slot.push(r);
-        }
+    let add = |t: TestId, r: SelectionReason, tests: &mut IndexMap<_, IndexSet<_>>| {
+        tests.entry(t).or_insert_with(IndexSet::new).insert(r);
     };
 
     // **§3.1, before the intersection.** Refinement removes an *entity*, so proving one
@@ -468,7 +475,12 @@ pub fn select_refined(
     excluded.sort_by_key(|e| e.test.0);
 
     Selection {
-        tests,
+        // Back to a `Vec` at the boundary: the public shape is unchanged, and `IndexSet`
+        // iterates in insertion order, so the sequence a caller sees is the one it always was.
+        tests: tests
+            .into_iter()
+            .map(|(t, rs)| (t, rs.into_iter().collect()))
+            .collect(),
         excluded,
         confidence: if reasons.is_empty() {
             Confidence::Full
