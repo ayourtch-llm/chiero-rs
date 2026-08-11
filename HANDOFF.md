@@ -3610,10 +3610,14 @@ reached 952 lines again, 316 of them finished work:
    MCP server does not need an async runtime — it is newline-delimited JSON-RPC on stdio, which
    `serde_json` and `std::io` already cover. Reaching for `tokio` here would cost the property
    003 §3 is written to protect.
-   ⏭️ Sized as *a wave, not an hour*: transport, the tool descriptors, the dispatch, contract
-   18's gate, and 050's `jobs` shape for long operations (§5) — which is the part with a real
-   design question in it, since the CLI answers synchronously and 050 contract 15 wants a job
-   handle carrying a full envelope.
+   ⏭️ Sized as *a wave, not an hour*: transport, the tool descriptors, the dispatch, and contract
+   18's gate. ⚠️ **Correcting this entry's first version: it is not blocked.** I wrote that
+   050 §5's `jobs` shape was the design question gating it — but contract 18's exit is *operation-
+   set parity*, not jobs, and the CLI is synchronous today, so a synchronous server is a complete
+   and honest surface with the job half declared as a blind spot (which this project does well).
+   The only thing holding it is that nobody has had the room to build it in one piece. **Stating
+   a blocker that is not there is the same error as claiming a capability that is not there**, and
+   it is the one that stops work rather than misdirecting it.
 
 5t. ✅ **CLOSED 2026-08-11 — selection was quadratic, and is now linear (§7.42).** Was: **Selection has no size axis, and reading it finds two of 5b's shape.** `chiero-select`
    is absent from 5b's per-crate census exactly as `chiero-lower` and `chiero-mem` were — the
