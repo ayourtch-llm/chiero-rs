@@ -155,6 +155,13 @@ if [ $rc -eq 0 ] && [ $both_legs -eq 1 ]; then
   # tests that assert what a *complete* solver decides announce themselves and return; counting
   # them is the difference between "the solverless configuration passes" and "it passes and here
   # is what it did not ask".
+  # **The leg where the list is the point.** The first leg has everything installed and skips
+  # nothing; this one is the configuration that skips, so printing the count and withholding the
+  # names would put the useful half where it cannot be read.
+  if [ "$s2" -gt 0 ]; then
+    echo "$out2" | grep -oiE "(skipping|skipped:).*" | sort -u | head -10 | sed 's/^/  skipped: /'
+    [ "$s2" -gt 10 ] && echo "  … $((s2 - 10)) more"
+  fi
   echo "second leg: $p2 passed, $s2 distinct skips, exit $rc"
 fi
 
