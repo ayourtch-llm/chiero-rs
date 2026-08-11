@@ -1,13 +1,13 @@
 # Changelog
 
-Nothing has been released yet. This file exists so that whoever cuts the first tag can say what
-it holds, and so a consumer pinning it can tell what changed underneath them afterwards.
+`v0.1.0` is the first tag. This file says what it holds, so a consumer pinning it can tell what
+changed underneath them afterwards.
 
 The audience is a consumer of the **command line and the library**, not a reader of the commit
 log. Internal work is summarised only where it changed an answer somebody could have been
 relying on — this project publishes numbers, and a number that moved is a change.
 
-## Unreleased
+## v0.1.0 — 2026-08-11
 
 ### The surface
 
