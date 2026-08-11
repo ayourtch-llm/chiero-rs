@@ -22,7 +22,7 @@ record. Re-measure with `cargo xtask contract-coverage`, `./check.sh`, and
 | M4 | 🟡 | gcov exact on all of VPP; impact 20/20; selection 18/20 — mutation gate 100% recall, 65% reduction; contract 18's replay corpus has no `observed` entry yet |
 | M5 | 🟡 | `chiero-check` implements **2** of 040's ~25 checkers; `chiero-replay` compiles and runs harnesses; the discipline checker is unbuilt |
 | M6 | 🟡 | `prove_equivalent` proves `x*2 == x<<1` over all 2³² and finds `INT_MIN` for `abs`, with gcc confirming; locality analysis ships as `layout` |
-| M7 | 🟡 | 10 operations, all reachable as `chiero <op>`; **no MCP or JSON-RPC server yet**, so contract 18's CLI/MCP identity check cannot run |
+| M7 | 🟡 | 10 operations, reachable as `chiero <op>` **and over JSON-RPC** (`chiero serve`, 2026-08-11), so contract 18's identity check now runs — structurally, since both surfaces render one table. **No MCP handshake yet**: no `initialize`, no content blocks, no notifications |
 | M8 | ⬜ | not started as a milestone, though its measurement harness is checked in: `find-bugs` has been run over the pinned 40 vppinfra/vlib entries, 220 across `vnet/`, 207 in the ACL plugin and 477 across 92 plugins |
 
 ## M0 — Skeleton

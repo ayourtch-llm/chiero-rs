@@ -3592,7 +3592,7 @@ reached 952 lines again, 316 of them finished work:
    match until it is named (deliberate, wave 169), and `defect_vocabulary.rs` then demands a
    corpus case or a recorded reason. The gates drive; the author follows.
 
-6a. 🆕 **The MCP/JSON-RPC server — the one thing 080 says M7 is missing, and it is not on this
+6a. 🔶 **HALF DONE 2026-08-11 — `chiero serve` speaks JSON-RPC and contract 18's check runs; the MCP handshake does not exist.** Was: **The MCP/JSON-RPC server — the one thing 080 says M7 is missing, and it is not on this
    list.** Noticed 2026-08-11 while looking for work: 080's status table reads *"M7 🟡 — 10
    operations, all reachable as `chiero <op>`; **no MCP or JSON-RPC server yet**, so contract
    18's CLI/MCP identity check cannot run"*, and §9.1 has never carried it as an item. **The
@@ -3610,8 +3610,19 @@ reached 952 lines again, 316 of them finished work:
    MCP server does not need an async runtime — it is newline-delimited JSON-RPC on stdio, which
    `serde_json` and `std::io` already cover. Reaching for `tokio` here would cost the property
    003 §3 is written to protect.
-   ⏭️ Sized as *a wave, not an hour*: transport, the tool descriptors, the dispatch, and contract
-   18's gate. ⚠️ **Correcting this entry's first version: it is not blocked.** I wrote that
+   ✅ **Built 2026-08-11**: transport, descriptors, dispatch and the gate. `tools/list` renders
+   `help::catalogue()` — the table `--help` already used — so parity is *structural*: there is no
+   second list to drift from, and `crates/chiero-cli/tests/serve.rs` asserts it against the dispatch `match`
+   anyway. `tools/call` goes through `crate::run`, the same function `argv` reaches, so the
+   second surface **is** the first rather than resembling it. 050 §3, 080's M7 row and
+   `docs/LIMITS.md` are corrected; 050 is 15/23 cited.
+   ⏭️ **What is left is the MCP handshake** — `initialize`, content blocks, notifications — and
+   050 §5's job surface for long operations, which is the piece with a design question in it
+   (contract 15 wants a job handle carrying a full envelope; the CLI answers synchronously).
+   ⚠️ **A client expecting MCP will not talk to this**, which is why every file that mentions it
+   says JSON-RPC.
+   ⏭️ Was sized as *a wave, not an hour*: transport, the tool descriptors, the dispatch, and
+   contract 18's gate. ⚠️ **Correcting this entry's first version: it is not blocked.** I wrote that
    050 §5's `jobs` shape was the design question gating it — but contract 18's exit is *operation-
    set parity*, not jobs, and the CLI is synchronous today, so a synchronous server is a complete
    and honest surface with the job half declared as a blind spot (which this project does well).

@@ -1,3 +1,6 @@
+//! Covers: 050 contract 18 — the CLI and the JSON-RPC surface expose the same operations with
+//! the same names, checked mechanically.
+//!
 //! **`chiero serve` — the JSON-RPC surface, and 050 contract 18's other half.**
 //!
 //! 080 has said *"M7 🟡 — 10 operations, all reachable as `chiero <op>`; **no MCP or JSON-RPC

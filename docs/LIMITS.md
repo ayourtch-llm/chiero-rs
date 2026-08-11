@@ -22,9 +22,11 @@ answers about ARM.**
 
 ## The tool surface
 
-- **There is no MCP or JSON-RPC server yet.** [050](specs/050-tool-interface.md) §3 describes
-  one; what exists is the `chiero` command and the `chiero_tool` library behind it, with the
-  same operation set.
+- **There is a JSON-RPC surface and no MCP one.** `chiero serve` speaks newline-delimited
+  JSON-RPC 2.0 on stdin/stdout — `tools/list` and `tools/call`, the same ten operations the
+  command line has, dispatched through the same code. What is *not* there is the MCP handshake:
+  no `initialize` lifecycle, no content blocks, no notifications. A client expecting MCP will not
+  talk to it.
 - **`--json` on stdout, diagnostics on stderr, and the exit status means something**: `0` the
   operation ran, `1` it could not, `2` the request was malformed (050 contracts 19–20). An
   operation that ran and found nothing exits `0` — "nothing found" is an answer.
